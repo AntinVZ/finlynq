@@ -36,6 +36,8 @@ import { TransactionTable } from "./transaction-table";
 import { TransactionsCalendar, describeCalendarSelection, refreshTransactionsCalendar } from "./transactions-calendar";
 import { buildTransactionQuery } from "@/lib/transactions/build-query";
 import { toTagList } from "@/lib/tags";
+import useSWR from "swr";
+import { jsonFetcher } from "@/lib/swr";
 import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { exportCsv, type CsvColumn } from "@/lib/csv-export";
@@ -312,9 +314,19 @@ export function TransactionsWorkspace({
   const [bulkNote, setBulkNote] = useState("");
   const [bulkPayee, setBulkPayee] = useState("");
   const [bulkTags, setBulkTags] = useState("");
-  // Suggestions for the bulk Add / Remove tag input: the tags on the rows in
-  // view (one entry per tag, first spelling kept).
-  const bulkTagSuggestions = useMemo(() => toTagList(txns.map((t) => t.tags ?? "")), [txns]);
+  // Suggestions for the bulk Add / Remove tag input: every tag from
+  // GET /api/tags (fetched once the action is picked), else the tags on the
+  // rows in view (one entry per tag, first spelling kept).
+  const wantsTagSuggestions = bulkAction === "add_tag" || bulkAction === "remove_tag";
+  const { data: allTags } = useSWR<{ tags: Array<{ tag: string }> }>(
+    wantsTagSuggestions ? "/api/tags" : null,
+    jsonFetcher,
+    { revalidateOnFocus: false },
+  );
+  const bulkTagSuggestions = useMemo(
+    () => (allTags?.tags?.length ? allTags.tags.map((t) => t.tag) : toTagList(txns.map((t) => t.tags ?? ""))),
+    [allTags, txns],
+  );
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
