@@ -10,7 +10,16 @@
  *   update_date         — set date for all ids[]
  *   update_note         — set note for all ids[]
  *   update_payee        — set payee for all ids[]
- *   update_tags         — set tags for all ids[]
+ *   update_tags         — set tags for all ids[] (replaces the whole list)
+ *   add_tag             — add `tag` (one tag or a comma list) to every row,
+ *                         keeping each row's existing tags and their order
+ *   remove_tag          — remove `tag` (one tag or a comma list) from every row
+ *
+ * `add_tag` / `remove_tag` compare tags by `normalizeForMatch` (lib/tags.ts):
+ * `Acme`, `acme ` and `ACME` are one tag. Each row is read,
+ * decrypted, edited and re-encrypted through `rewriteTransactionTags`, in
+ * batches; rows that wouldn't change are not written. `affected` reports the
+ * rows actually changed.
  *
  * `delete` runs through the shared `deleteTransactionsCascade` chokepoint
  * (2026-07-30) — it used to be a bare `DELETE WHERE id IN (…)`, which orphaned
@@ -34,6 +43,8 @@ import { and, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
 import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
 import { verifyOwnership, OwnershipError } from "@/lib/verify-ownership";
 import { deleteTransactionsCascade } from "@/lib/transactions/delete-cascade";
+import { rewriteTransactionTags } from "@/lib/transactions/rewrite-tags";
+import { addTags, removeTags, toTagList } from "@/lib/tags";
 
 const { transactions } = schema;
 
@@ -41,6 +52,10 @@ const { transactions } = schema;
 // timestamp reflects the row's last mutation. Hoisted into a constant so
 // re-using it in each switch arm reads as one chokepoint.
 const AUDIT_BUMP = { updatedAt: sql`NOW()` } as const;
+
+// add_tag / remove_tag rewrite each row individually; same per-call ceiling as
+// the MCP bulk tools.
+const BULK_TAG_MAX_IDS = 10_000;
 
 const bulkSchema = z.discriminatedUnion("action", [
   z.object({
@@ -77,6 +92,16 @@ const bulkSchema = z.discriminatedUnion("action", [
     ids: z.array(z.number()).min(1),
     tags: z.string(),
   }),
+  z.object({
+    action: z.literal("add_tag"),
+    ids: z.array(z.number()).min(1).max(BULK_TAG_MAX_IDS),
+    tag: z.string().max(500).refine((v) => toTagList(v).length > 0, { message: "tag is required" }),
+  }),
+  z.object({
+    action: z.literal("remove_tag"),
+    ids: z.array(z.number()).min(1).max(BULK_TAG_MAX_IDS),
+    tag: z.string().max(500).refine((v) => toTagList(v).length > 0, { message: "tag is required" }),
+  }),
 ]);
 
 export async function POST(request: NextRequest) {
@@ -94,7 +119,9 @@ export async function POST(request: NextRequest) {
   const needsDek =
     parsed.data.action === "update_note" ||
     parsed.data.action === "update_payee" ||
-    parsed.data.action === "update_tags";
+    parsed.data.action === "update_tags" ||
+    parsed.data.action === "add_tag" ||
+    parsed.data.action === "remove_tag";
 
   let userId: string;
   let dek: Buffer | null = null;
@@ -236,6 +263,22 @@ export async function POST(request: NextRequest) {
           .where(and(inArray(transactions.id, ids), eq(transactions.userId, userId)))
           ;
         break;
+
+      case "add_tag":
+      case "remove_tag": {
+        const wanted = toTagList(parsed.data.tag);
+        const edit = action === "add_tag"
+          ? (t: string) => addTags(t, wanted)
+          : (t: string) => removeTags(t, wanted);
+        const res = await rewriteTransactionTags({ executor: db, userId, dek, ids, transform: edit });
+        if (res.changed > 0) invalidateUserTxCache(userId);
+        return NextResponse.json({
+          success: true,
+          affected: res.changed,
+          matched: res.scanned,
+          ...(res.undecryptable > 0 ? { skippedUndecryptable: res.undecryptable } : {}),
+        });
+      }
     }
 
     invalidateUserTxCache(userId);
