@@ -52,6 +52,7 @@ import {
   csvToRawTransactionsWithMapping,
 } from "../src/lib/csv-parser.js";
 import { parseOfx } from "../src/lib/ofx-parser.js";
+import { normalizeForMatch } from "../src/lib/text-normalize.js";
 import { type RawTransaction } from "../src/lib/import-pipeline.js";
 
 // FINLYNQ-84: rules are JSONB conditions+actions. Stdio matcher mirrors
@@ -73,8 +74,8 @@ function matchesRule(
   if (conds.length === 0) return false;
   return conds.every((c) => {
     if (c.field === "payee" || c.field === "tags") {
-      const haystack = (c.field === "tags" ? (txn.tags ?? "") : (txn.payee ?? "")).toLowerCase();
-      const needle = String(c.value ?? "").toLowerCase();
+      const haystack = normalizeForMatch(c.field === "tags" ? (txn.tags ?? "") : (txn.payee ?? ""));
+      const needle = normalizeForMatch(String(c.value ?? ""));
       if (c.op === "contains") return haystack.includes(needle);
       if (c.op === "exact") return haystack === needle;
       if (c.op === "regex") {
@@ -144,13 +145,13 @@ type StdioAccountResolveResult =
   | { ok: false; reason: "low_confidence"; suggestion: SqliteRow };
 function resolveAccountStrict(input: string, options: SqliteRow[]): StdioAccountResolveResult {
   if (!input || !options.length) return { ok: false, reason: "missing" };
-  const lo = input.toLowerCase().trim();
-  const exact = options.find(o => String(o.name ?? "").toLowerCase() === lo);
+  const lo = normalizeForMatch(input);
+  const exact = options.find(o => normalizeForMatch(String(o.name ?? "")) === lo);
   if (exact) return { ok: true, account: exact, tier: "exact" };
-  const alias = options.find(o => String(o.alias ?? "").toLowerCase() === lo);
+  const alias = options.find(o => normalizeForMatch(String(o.alias ?? "")) === lo);
   if (alias) return { ok: true, account: alias, tier: "alias" };
   const starts = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     return n !== "" && n.startsWith(lo);
   });
   if (starts) return { ok: true, account: starts, tier: "startsWith" };
@@ -163,16 +164,16 @@ function resolveAccountStrict(input: string, options: SqliteRow[]): StdioAccount
     return false;
   };
   const sub = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     if (n === "") return false;
     if (!n.includes(lo) && !lo.includes(n)) return false;
     return sharesToken(n);
   });
   if (sub) return { ok: true, account: sub, tier: "substring" };
   const legacy =
-    options.find(o => String(o.name ?? "").toLowerCase().includes(lo)) ??
+    options.find(o => normalizeForMatch(String(o.name ?? "")).includes(lo)) ??
     options.find(o => {
-      const n = String(o.name ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o.name ?? ""));
       return n !== "" && lo.includes(n);
     });
   return legacy
@@ -194,11 +195,11 @@ type StdioCategoryResolveResult =
   | { ok: false; reason: "low_confidence"; suggestion: SqliteRow };
 function resolveCategoryStrict(input: string, options: SqliteRow[]): StdioCategoryResolveResult {
   if (!input || !options.length) return { ok: false, reason: "missing" };
-  const lo = input.toLowerCase().trim();
-  const exact = options.find(o => String(o.name ?? "").toLowerCase() === lo);
+  const lo = normalizeForMatch(input);
+  const exact = options.find(o => normalizeForMatch(String(o.name ?? "")) === lo);
   if (exact) return { ok: true, category: exact, tier: "exact" };
   const starts = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     return n !== "" && n.startsWith(lo);
   });
   if (starts) return { ok: true, category: starts, tier: "startsWith" };
@@ -211,16 +212,16 @@ function resolveCategoryStrict(input: string, options: SqliteRow[]): StdioCatego
     return false;
   };
   const sub = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     if (n === "") return false;
     if (!n.includes(lo) && !lo.includes(n)) return false;
     return sharesToken(n);
   });
   if (sub) return { ok: true, category: sub, tier: "substring" };
   const legacy =
-    options.find(o => String(o.name ?? "").toLowerCase().includes(lo)) ??
+    options.find(o => normalizeForMatch(String(o.name ?? "")).includes(lo)) ??
     options.find(o => {
-      const n = String(o.name ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o.name ?? ""));
       return n !== "" && lo.includes(n);
     });
   return legacy
@@ -249,18 +250,18 @@ type StdioHoldingResolveResult =
   | { ok: false; reason: "low_confidence"; suggestion: SqliteRow };
 function resolvePortfolioHoldingStrict(input: string, options: SqliteRow[]): StdioHoldingResolveResult {
   if (!input || !options.length) return { ok: false, reason: "missing" };
-  const lo = input.toLowerCase().trim();
-  const exactName = options.find(o => String(o.name ?? "").toLowerCase() === lo);
+  const lo = normalizeForMatch(input);
+  const exactName = options.find(o => normalizeForMatch(String(o.name ?? "")) === lo);
   if (exactName) return { ok: true, holding: exactName, tier: "exact-name" };
-  const exactSymbol = options.find(o => String(o.symbol ?? "").toLowerCase() === lo);
+  const exactSymbol = options.find(o => normalizeForMatch(String(o.symbol ?? "")) === lo);
   if (exactSymbol) return { ok: true, holding: exactSymbol, tier: "exact-symbol" };
   const startsName = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     return n !== "" && n.startsWith(lo);
   });
   if (startsName) return { ok: true, holding: startsName, tier: "startsWith-name" };
   const startsSymbol = options.find(o => {
-    const s = String(o.symbol ?? "").toLowerCase();
+    const s = normalizeForMatch(String(o.symbol ?? ""));
     return s !== "" && s.startsWith(lo);
   });
   if (startsSymbol) return { ok: true, holding: startsSymbol, tier: "startsWith-symbol" };
@@ -273,16 +274,16 @@ function resolvePortfolioHoldingStrict(input: string, options: SqliteRow[]): Std
     return false;
   };
   const sub = options.find(o => {
-    const n = String(o.name ?? "").toLowerCase();
+    const n = normalizeForMatch(String(o.name ?? ""));
     if (n === "") return false;
     if (!n.includes(lo) && !lo.includes(n)) return false;
     return sharesToken(n);
   });
   if (sub) return { ok: true, holding: sub, tier: "substring" };
   const legacy =
-    options.find(o => String(o.name ?? "").toLowerCase().includes(lo)) ??
+    options.find(o => normalizeForMatch(String(o.name ?? "")).includes(lo)) ??
     options.find(o => {
-      const n = String(o.name ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o.name ?? ""));
       return n !== "" && lo.includes(n);
     });
   return legacy

@@ -109,7 +109,7 @@ import {
 } from "../../src/lib/portfolio/lots/types";
 import { registerManageTool } from "./_consolidate";
 import { scanInBatches } from "../lib/scan-in-batches";
-import { hasTextFilter, matchesTextFilters, type TextFilters } from "../lib/text-match";
+import { hasTextFilter, compileTextFilters, type TextFilters } from "../lib/text-match";
 import { parseBusinessParam } from "../../src/lib/reports/business-filter";
 import { businessFilterCondition } from "../../src/lib/reports/business-filter-sql";
 
@@ -2481,7 +2481,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         `);
         return rows.map((r) => decryptTxRowFields(dek, { ...r }));
       },
-      match: (r) => matchesTextFilters(r, textFilters),
+      match: compileTextFilters(textFilters),
       limit: BULK_MAX_IDS + 1,
       batchSize: BULK_SCAN_BATCH,
       maxScan: BULK_MAX_SCAN,

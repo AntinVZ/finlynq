@@ -21,6 +21,7 @@ import { and, asc, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/db";
 import { decryptEmailRuleFields } from "./crypto";
 import { STRING_FIELDS, type EmailCondition, type EmailConditionField, type EmailConditionGroup } from "./schema";
+import { normalizeForMatch } from "../text-normalize";
 
 /** Cap the body haystack before any user-authored regex test (body is
  *  attacker-controlled + large → bounds catastrophic backtracking). */
@@ -163,9 +164,9 @@ function matchText(field: string, op: string, value: unknown, ctx: EmailMatchCon
   let haystack = textHaystack(field, ctx);
   switch (op) {
     case "contains":
-      return haystack.toLowerCase().includes(value.toLowerCase());
+      return normalizeForMatch(haystack).includes(normalizeForMatch(value));
     case "exact":
-      return haystack.trim().toLowerCase() === value.trim().toLowerCase();
+      return normalizeForMatch(haystack) === normalizeForMatch(value);
     case "regex":
       // ReDoS guard: cap the body haystack before a user-authored regex.
       if (field === "body" && haystack.length > MAX_BODY_REGEX) {

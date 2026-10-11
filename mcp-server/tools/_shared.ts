@@ -14,7 +14,8 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { normalizeDbRows } from "../../src/lib/db-utils";
 import { decryptField } from "../../src/lib/crypto/envelope";
-import { encryptName, nameLookup } from "../../src/lib/crypto/encrypted-columns";
+import { encryptName, nameLookupCandidates } from "../../src/lib/crypto/encrypted-columns";
+import { normalizeForMatch } from "../../src/lib/text-normalize";
 import { SUPPORTED_CURRENCIES } from "../../src/lib/fx/supported-currencies";
 import { resolveOrCreateInvestmentIncomeCategory } from "../../src/lib/investment-income-category";
 import {
@@ -129,7 +130,7 @@ export function suggestionList(
   const includeIds = opts?.includeIds ?? false;
   const field = opts?.field ?? "name";
   if (!options.length) return "(no candidates)";
-  const lo = (query ?? "").toLowerCase().trim();
+  const lo = normalizeForMatch(query ?? "");
   const editDistance = (a: string, b: string): number => {
     if (!a.length) return b.length;
     if (!b.length) return a.length;
@@ -151,7 +152,7 @@ export function suggestionList(
     .map(o => {
       const name = String(o[field] ?? "").trim();
       if (!name) return null;
-      const lname = name.toLowerCase();
+      const lname = normalizeForMatch(name);
       let bucket = 3;
       if (lo && lname.startsWith(lo)) bucket = 0;
       else if (lo && lname.includes(lo)) bucket = 1;
@@ -185,13 +186,13 @@ export const supportedCurrencyEnum = z.enum(
  */
 export function fuzzyFind(input: string, options: Row[]): Row | null {
   if (!input || !options.length) return null;
-  const lo = input.toLowerCase().trim();
+  const lo = normalizeForMatch(input);
   return (
-    options.find(o => String(o.name  ?? "").toLowerCase() === lo) ??
-    options.find(o => String(o.alias ?? "").toLowerCase() === lo) ??
-    options.find(o => String(o.name  ?? "").toLowerCase().startsWith(lo)) ??
-    options.find(o => String(o.name  ?? "").toLowerCase().includes(lo)) ??
-    options.find(o => lo.includes(String(o.name ?? "").toLowerCase())) ??
+    options.find(o => normalizeForMatch(String(o.name  ?? "")) === lo) ??
+    options.find(o => normalizeForMatch(String(o.alias ?? "")) === lo) ??
+    options.find(o => normalizeForMatch(String(o.name  ?? "")).startsWith(lo)) ??
+    options.find(o => normalizeForMatch(String(o.name  ?? "")).includes(lo)) ??
+    options.find(o => lo.includes(normalizeForMatch(String(o.name ?? "")))) ??
     null
   );
 }
@@ -240,7 +241,7 @@ interface ResolveOpts {
 
 export function resolveStrict(input: string, options: Row[], opts: ResolveOpts): ResolveResult {
   if (!input || !options.length) return { ok: false, reason: "missing" };
-  const lo = input.toLowerCase().trim();
+  const lo = normalizeForMatch(input);
   // 1. Exact tiers, in order.
   // With `ambiguous:true` an exact match on ≥2 rows FAILS LOUD (holdings can
   // share an exact display name across accounts — FINLYNQ-267). Accounts/
@@ -248,11 +249,11 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
   // them. With `ambiguous:false` (legacy) it keeps the first-hit `.find`.
   for (const { field, tier } of opts.exactFields) {
     if (opts.ambiguous) {
-      const hits = options.filter(o => String(o[field] ?? "").toLowerCase() === lo);
+      const hits = options.filter(o => normalizeForMatch(String(o[field] ?? "")) === lo);
       if (hits.length === 1) return { ok: true, row: hits[0], tier };
       if (hits.length >= 2) return { ok: false, reason: "ambiguous", tier, candidates: hits.slice(0, 5) };
     } else {
-      const hit = options.find(o => String(o[field] ?? "").toLowerCase() === lo);
+      const hit = options.find(o => normalizeForMatch(String(o[field] ?? "")) === lo);
       if (hit) return { ok: true, row: hit, tier };
     }
   }
@@ -261,7 +262,7 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
     // Single startsWith field, fail-loud on ties (issue #234).
     const { field, tier } = opts.startsFields[0];
     const starts = options.filter(o => {
-      const n = String(o[field] ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o[field] ?? ""));
       return n !== "" && n.startsWith(lo);
     });
     if (starts.length === 1) return { ok: true, row: starts[0], tier };
@@ -269,7 +270,7 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
   } else {
     for (const { field, tier } of opts.startsFields) {
       const hit = options.find(o => {
-        const n = String(o[field] ?? "").toLowerCase();
+        const n = normalizeForMatch(String(o[field] ?? ""));
         return n !== "" && n.startsWith(lo);
       });
       if (hit) return { ok: true, row: hit, tier };
@@ -287,7 +288,7 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
   const subField = opts.substringField;
   if (opts.ambiguous) {
     const subs = options.filter(o => {
-      const n = String(o[subField] ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o[subField] ?? ""));
       if (n === "") return false;
       if (!n.includes(lo) && !lo.includes(n)) return false;
       return sharesToken(n);
@@ -296,7 +297,7 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
     if (subs.length >= 2) return { ok: false, reason: "ambiguous", tier: "substring", candidates: subs.slice(0, 5) };
   } else {
     const sub = options.find(o => {
-      const n = String(o[subField] ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o[subField] ?? ""));
       if (n === "") return false;
       if (!n.includes(lo) && !lo.includes(n)) return false;
       return sharesToken(n);
@@ -305,9 +306,9 @@ export function resolveStrict(input: string, options: Row[], opts: ResolveOpts):
   }
   // 4. No strong match — surface what fuzzyFind WOULD have matched.
   const legacy =
-    options.find(o => String(o[subField] ?? "").toLowerCase().includes(lo)) ??
+    options.find(o => normalizeForMatch(String(o[subField] ?? "")).includes(lo)) ??
     options.find(o => {
-      const n = String(o[subField] ?? "").toLowerCase();
+      const n = normalizeForMatch(String(o[subField] ?? ""));
       return n !== "" && lo.includes(n);
     });
   return legacy
@@ -505,7 +506,7 @@ export function rankCandidates(
   maxCount = 5,
 ): EntityCandidate[] {
   if (!options.length) return [];
-  const lo = (query ?? "").toLowerCase().trim();
+  const lo = normalizeForMatch(query ?? "");
   const editDistance = (a: string, b: string): number => {
     if (!a.length) return b.length;
     if (!b.length) return a.length;
@@ -531,8 +532,8 @@ export function rankCandidates(
       const symbol = String(o.symbol ?? "").trim();
       const label = name || symbol;
       if (!label) return null;
-      const lname = name.toLowerCase();
-      const lsym = symbol.toLowerCase();
+      const lname = normalizeForMatch(name);
+      const lsym = normalizeForMatch(symbol);
       let bucket = 3;
       if (lo && (lname.startsWith(lo) || (lsym && lsym.startsWith(lo)))) bucket = 0;
       else if (lo && (lname.includes(lo) || (lsym && lsym.includes(lo)))) bucket = 1;
@@ -775,8 +776,8 @@ export async function autoCategory(
       if (cond.field !== "payee" && cond.field !== "tags" && cond.field !== "note") return false;
       if (cond.field !== "payee") return false; // autoCategory: payee-only scope
       const v = String(cond.value ?? "");
-      const a = payee.toLowerCase();
-      const b = v.toLowerCase();
+      const a = normalizeForMatch(payee);
+      const b = normalizeForMatch(v);
       if (cond.op === "contains") return a.includes(b);
       if (cond.op === "exact") return a === b;
       if (cond.op === "regex") {
@@ -866,12 +867,12 @@ export async function autoCategory(
       ORDER BY date DESC, id DESC
       LIMIT 5000
     `);
-    const target = payee.toLowerCase();
+    const target = normalizeForMatch(payee);
     const counts = new Map<number, number>();
     for (const r of rows) {
       const p = decryptField(dek, String(r.payee ?? ""));
       if (!p) continue;
-      if (p.toLowerCase() === target) {
+      if (normalizeForMatch(p) === target) {
         const cid = Number(r.category_id);
         counts.set(cid, (counts.get(cid) ?? 0) + 1);
       }
@@ -931,13 +932,14 @@ export async function resolvePortfolioHoldingByName(
     };
   }
 
-  const lookup = nameLookup(dek, trimmed);
+  // Every apostrophe / NFC-NFD spelling hashes differently — accept all.
+  const lookupList = sql.join(nameLookupCandidates(dek, trimmed).map((l) => sql`${l}`), sql`, `);
   const accountFilter = accountId ? sql`AND account_id = ${accountId}` : sql``;
   const matches = await q(db, sql`
     SELECT id
       FROM portfolio_holdings
      WHERE user_id = ${userId}
-       AND (name_lookup = ${lookup} OR symbol_lookup = ${lookup})
+       AND (name_lookup IN (${lookupList}) OR symbol_lookup IN (${lookupList}))
        ${accountFilter}
      LIMIT 5
   `);
