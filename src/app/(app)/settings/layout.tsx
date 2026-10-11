@@ -28,6 +28,7 @@ import {
   Link2,
   Upload,
   Landmark,
+  Users,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -36,6 +37,8 @@ type NavItem = { href: string; label: string; icon: LucideIcon };
 // Order matches issue #57 — Developer last per user decision.
 const NAV_ITEMS: NavItem[] = [
   { href: "/settings/general", label: "General", icon: Settings2 },
+  // Personal only vs personal + business (global All / Business / Personal switch).
+  { href: "/settings/usage-mode", label: "Usage mode", icon: Users },
   { href: "/settings/account", label: "Account & Security", icon: Shield },
   { href: "/settings/data", label: "Data", icon: Database },
   { href: "/settings/categorization", label: "Categorization", icon: Tag },
