@@ -41,6 +41,9 @@ import {
   rejectProposals,
   saveProposals,
 } from "../../src/lib/payees/proposals";
+import { computePayeeInsights } from "../../src/lib/payees/insights";
+import { makeSliceConverter } from "../../src/lib/payees/service";
+import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
 import { loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
@@ -300,7 +303,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings, confidence, reasons, needsDecision for people), get, batches, review (compact pack for you to analyse), proposals. AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Direct writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings, confidence, reasons, needsDecision for people), get, batches, insights (top, monthly, new / gone, recurring, concentration), review (compact pack for you to analyse), proposals. AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Direct writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -396,6 +399,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         confirmation_token: tokenArg,
       }),
       z.object({
+        op: z.literal("insights"),
+        months: z.number().int().min(1).max(60).optional().describe("Window for top lists and monthly series (default 12)."),
+        recent_days: z.number().int().min(7).max(730).optional().describe("\"New\" = first seen within this many days (default 90)."),
+        limit: z.number().int().min(1).max(50).optional().describe("Rows per list (default 10)."),
+      }),
+      z.object({
         op: z.literal("review"),
         limit: z.number().int().positive().max(300).optional().describe("Most unrecognized payees in the pack (default 60; clusters get half)."),
       }),
@@ -489,6 +498,22 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return await writeOp({ op: "apply", entityIds: input.entity_ids }, input.confirmation_token);
           case "undo":
             return await writeOp({ op: "undo", batchId: input.batch_id }, input.confirmation_token);
+          case "insights": {
+            const directory = dek ? await loadDirectory(db, userId, dek) : [];
+            const { currency, convert } = await makeSliceConverter(userId);
+            const ins = await computePayeeInsights({
+              executor: db,
+              userId,
+              dek,
+              matcher: buildPayeeMatcher(directory),
+              convert,
+              currency,
+              months: input.months,
+              recentDays: input.recent_days,
+              limit: input.limit,
+            });
+            return dataResponse({ ...ins, ...(dek ? {} : { note: NO_DEK_NOTE }) });
+          }
           case "review": {
             const o = await loadPayeeOverview({ executor: db, userId, dek, samples: 3 });
             const drafts = dek ? await listProposals(db, userId, dek, { status: "draft" }) : [];

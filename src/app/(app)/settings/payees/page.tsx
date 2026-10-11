@@ -16,6 +16,10 @@
  * change is previewed first ("renames N rows in transactions, …") and
  * becomes a batch that "Changes" can undo for 30 days. On small screens the
  * table becomes a list of cards.
+ *
+ * P3/P4: link to AI review, import-hint / autopilot switches, an Insights
+ * tab (top counterparties, monthly spend, new / gone, regular ones,
+ * concentration) and dictionary export / import.
  */
 
 import { useMemo, useState } from "react";
@@ -42,8 +46,10 @@ import {
 } from "./_components/payee-ui";
 import { MergeDialog } from "./_components/merge-dialog";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
+import { InsightsPanel } from "./_components/insights-panel";
+import { DictionaryCard } from "./_components/dictionary-card";
 
-type Tab = "all" | "clusters" | "unrecognized" | "directory" | "changes";
+type Tab = "all" | "clusters" | "unrecognized" | "directory" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
@@ -183,6 +189,7 @@ export default function PayeesSettingsPage() {
     { id: "unrecognized", label: `Unrecognized${data ? ` (${unrecognizedCount})` : ""}` },
     { id: "directory", label: `Directory${data ? ` (${entities.length})` : ""}` },
     { id: "changes", label: "Changes" },
+    { id: "insights", label: "Insights" },
   ];
 
   return (
@@ -269,6 +276,8 @@ export default function PayeesSettingsPage() {
 
           {!data && !loadError ? (
             <p className="text-sm text-muted-foreground">Loading… (payees are decrypted and grouped on the server; large ledgers take a few seconds)</p>
+          ) : tab === "insights" ? (
+            <InsightsPanel />
           ) : tab === "clusters" ? (
             clusters.length === 0 ? (
               <p className="text-sm text-muted-foreground">{query ? "No clusters match." : "No look-alike payees found."}</p>
@@ -468,6 +477,15 @@ export default function PayeesSettingsPage() {
               )}
             </>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Dictionary file</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <DictionaryCard onImported={() => mutate()} />
         </CardContent>
       </Card>
 

@@ -111,6 +111,7 @@ const BATCH_LABEL: Record<string, string> = {
   approve: "AI proposals accepted",
   import_hint: "Canonical names on import",
   autopilot: "Autopilot",
+  dictionary_import: "Dictionary imported",
 };
 
 /** "Merged · 12 rows · by AI (MCP)" */

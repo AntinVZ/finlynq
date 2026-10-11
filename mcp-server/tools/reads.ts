@@ -98,6 +98,7 @@ import {
 } from "../../src/lib/recurring-detection";
 import {
 } from "../../src/lib/loan-calculator";
+import { resolveCounterparty } from "../../src/lib/payees/resolve";
 
 /**
  * search_transactions in-memory text-filter scan: rows read
@@ -319,12 +320,13 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       tag_exact: z.string().optional().describe("Only transactions carrying exactly this tag (whole tag, case-insensitive; `work` does not match `homework`)."),
       ...tagFilterArgs,
       business: businessArg,
+      payee_resolve: z.string().optional().describe("A counterparty from the payee directory (manage_payees): canonical name, any alias or stored spelling, or a requisite (IBAN, EDRPOU, card last 4). Matches every transaction of that counterparty, however its payee is spelled. Not in the directory → same matching key (case, apostrophes, Latin/Cyrillic, card-terminal noise ignored)."),
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, payee_resolve, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
       const businessFilter = parseBusinessParam(business);
       const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
@@ -337,7 +339,9 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       // matches are no longer dropped by a fixed newest-N window.
       const tagFilter = parseTagFilter({ tags_all, tags_any, tags_none, untagged });
       const textFilters = { payee, note, tags, search, tagExact: exactTag, tagFilter };
-      const inMemory = hasTextFilter(textFilters);
+      // Payee Studio: every spelling of one counterparty (in memory, after decryption).
+      const counterparty = payee_resolve?.trim() ? await resolveCounterparty(db, userId, dek, payee_resolve) : null;
+      const inMemory = hasTextFilter(textFilters) || counterparty != null;
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
@@ -387,7 +391,10 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       if (inMemory) {
         const scan = await scanInBatches({
           fetchPage: async (offset, size) => (await fetchPage(offset, size)).map(toRow),
-          match: compileTextFilters(textFilters),
+          match: (() => {
+            const text = compileTextFilters(textFilters);
+            return counterparty ? (row: Record<string, unknown>) => text(row) && counterparty.match(row.payee, row.note) : text;
+          })(),
           limit: lim,
           batchSize: Math.max(lim * 10, SEARCH_BATCH_SIZE),
           maxScan: SEARCH_MAX_SCAN,
@@ -441,6 +448,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           ...(hasTagFilter(tagFilter) ? { tag_filter: tagFilter } : {}),
           note: note || null,
           search: search || null,
+          ...(counterparty ? { payee_resolve: counterparty.resolvedTo } : {}),
         },
       });
     }

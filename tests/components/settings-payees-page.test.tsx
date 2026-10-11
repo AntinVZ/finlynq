@@ -62,6 +62,21 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url.startsWith("/api/payees/insights")) {
+      const cp = { id: "e:1", name: "Епіцентр", entityId: 1, count: 28, total: -10860, spend: 10860, firstDate: "2026-01-01", lastDate: "2026-09-01" };
+      return {
+        ok: true,
+        json: async () => ({
+          currency: "UAH", window: { months: 12, from: "2025-10-01" },
+          totals: { counterparties: 5, transactions: 40, spend: 15000, income: 0 },
+          topBySpend: [cp], topByCount: [cp],
+          monthly: { months: ["2026-08", "2026-09"], series: [{ id: "e:1", name: "Епіцентр", values: [-500, -700] }, { id: "other", name: "Everyone else", values: [-100, 0] }] },
+          newCounterparties: [], goneCounterparties: [],
+          recurring: [{ ...cp, intervalDays: 30, cadence: "monthly", nextExpected: "2026-10-01", typicalAmount: -390 }],
+          concentration: { top5Share: 0.91, top10Share: 1, hhi: 5600, label: "high" },
+        }),
+      };
+    }
     if (url.startsWith("/api/payees")) {
       return {
         ok: true,
@@ -130,5 +145,14 @@ describe("Settings → Payees", () => {
     fireEvent.click(screen.getByRole("tab", { name: /Changes/ }));
     expect(screen.getByText(/Merged · 12 rows · by AI \(MCP\)/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
+  });
+
+  it("shows insights: concentration, monthly spend and regular counterparties", async () => {
+    setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Insights/ }));
+    expect(await screen.findByText("91%")).toBeTruthy();
+    expect(screen.getByRole("img", { name: /Spend per month/ })).toBeTruthy();
+    expect(screen.getByText(/monthly · ~30 days/)).toBeTruthy();
   });
 });
