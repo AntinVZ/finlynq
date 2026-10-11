@@ -4,6 +4,8 @@ import { apiHandler } from "@/lib/api-handler";
 import { AppError } from "@/lib/validate";
 import { getDisplayCurrency, getRateMap } from "@/lib/fx-service";
 import { convertReportingSlice, selfHealReportingAmounts } from "@/lib/fx/reporting-amount";
+import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
+import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 import {
   CALENDAR_DATE_RE,
   CALENDAR_MONTH_RE,
@@ -22,7 +24,7 @@ function optionalId(raw: string | null, name: string): number | undefined {
 }
 
 /**
- * GET /api/transactions/calendar?month=YYYY-MM[&accountId=][&categoryId=][&currency=]
+ * GET /api/transactions/calendar?month=YYYY-MM[&accountId=][&categoryId=][&business=true|false|all][&currency=]
  * GET /api/transactions/calendar?start=YYYY-MM-DD&end=YYYY-MM-DD[&…same filters]
  *
  * Per-day income / spending / transaction count for one month, or for any
@@ -64,6 +66,9 @@ export const GET = apiHandler({ auth: "auth" }, async ({ request, userId }) => {
   const conditions = [eq(t.userId, userId), gte(t.date, start), lte(t.date, end)];
   if (accountId) conditions.push(eq(t.accountId, accountId));
   if (categoryId) conditions.push(eq(t.categoryId, categoryId));
+  // Optional business scope (default all), so the totals match the list below.
+  const businessCond = businessFilterCondition(parseBusinessParam(params.get(BUSINESS_PARAM)), t.isBusiness);
+  if (businessCond) conditions.push(businessCond);
 
   const rows = await db
     .select({

@@ -28,7 +28,8 @@ import {
   REPORT_PERIOD_LABELS,
   type ReportPeriod as Period,
 } from "@/lib/reports/period";
-import { serializeBusinessFilter, BUSINESS_PARAM, type BusinessFilter } from "@/lib/reports/business-filter";
+import { serializeBusinessFilter, BUSINESS_PARAM } from "@/lib/reports/business-filter";
+import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { SankeyChart } from "@/components/sankey-chart";
 import {
@@ -214,12 +215,6 @@ export function getPresetRange(preset: string, now: Date = new Date()): { start:
   }
 }
 
-const BUSINESS_FILTER_OPTIONS: { value: BusinessFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "business", label: "Business" },
-  { value: "personal", label: "Personal" },
-];
-
 // ── Component ──
 
 export default function ReportsPage() {
@@ -230,7 +225,10 @@ export default function ReportsPage() {
   const [startDate, setStartDate] = useState(`${currentYear}-01-01`);
   const [endDate, setEndDate] = useState(todayISO());
   // All / Business / Personal — "all" sends no param (see lib/reports/business-filter.ts).
-  const [businessFilter, setBusinessFilter] = useState<BusinessFilter>("all");
+  // The global view scope is the source of truth; the page may override it
+  // locally (components/page-scope.tsx). Personal usage mode → always "all".
+  const pageScope = usePageScope();
+  const businessFilter = pageScope.scope;
   const [period, setPeriod] = useState<Period>("monthly");
   const [groupBy, setGroupBy] = useState<GroupByOption>("category");
   const [datePreset, setDatePreset] = useState<string>("ytd");
@@ -282,6 +280,7 @@ export default function ReportsPage() {
 
   // Fetch trends data
   useEffect(() => {
+    if (pageScope.isLoading) return; // wait for the global scope
     let cancelled = false;
     fetch(`/api/reports/trends?startDate=${startDate}&endDate=${endDate}&period=${period}&groupBy=${groupBy}${bizParam}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
       .then((r) => (r.ok ? r.json() : null))
@@ -297,7 +296,7 @@ export default function ReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, [startDate, endDate, period, groupBy, bizParam, displayCurrency, acctParam]);
+  }, [startDate, endDate, period, groupBy, bizParam, displayCurrency, acctParam, pageScope.isLoading]);
 
   // Fetch balance sheet
   useEffect(() => {
@@ -318,11 +317,12 @@ export default function ReportsPage() {
   // Fetch unrealized P&L (computed inside the income-statement endpoint).
   // Same period as the rest of the income tab.
   useEffect(() => {
+    if (pageScope.isLoading) return;
     fetch(`/api/reports?type=income-statement&startDate=${startDate}&endDate=${endDate}${bizParam}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
       .then((r) => r.json())
       .then((d) => setUnrealizedData(d?.unrealized ?? null))
       .catch(() => setUnrealizedData(null));
-  }, [startDate, endDate, bizParam, displayCurrency, acctParam]);
+  }, [startDate, endDate, bizParam, displayCurrency, acctParam, pageScope.isLoading]);
 
   // Fetch YoY (dev mode only)
   useEffect(() => {
@@ -532,26 +532,15 @@ export default function ReportsPage() {
               <AccountFilter selected={accountIds} onChange={setAccountIds} />
             </div>
 
-            <Separator orientation="vertical" className="h-8 mx-1" />
-
-            {/* Business / personal scoping — trends + income statement. */}
-            <div>
-              <Label className="text-xs text-muted-foreground mb-1 block">Transactions</Label>
-              <div role="group" aria-label="Business or personal transactions" className="inline-flex rounded-md shadow-xs">
-                {BUSINESS_FILTER_OPTIONS.map((opt, i) => (
-                  <Button
-                    key={opt.value}
-                    variant={businessFilter === opt.value ? "default" : "outline"}
-                    size="sm"
-                    aria-pressed={businessFilter === opt.value}
-                    onClick={() => setBusinessFilter(opt.value)}
-                    className={`h-8 ${i > 0 ? "-ml-px rounded-l-none" : ""} ${i < BUSINESS_FILTER_OPTIONS.length - 1 ? "rounded-r-none" : ""}`}
-                  >
-                    {opt.label}
-                  </Button>
-                ))}
-              </div>
-            </div>
+            {/* Business / personal scoping — trends + income statement. Only in
+                "business too" usage mode; follows the global scope unless
+                changed here. */}
+            {pageScope.businessEnabled && (
+              <>
+                <Separator orientation="vertical" className="h-8 mx-1" />
+                <PageScopeControl {...pageScope} />
+              </>
+            )}
           </div>
         </CardContent>
       </Card>

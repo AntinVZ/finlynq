@@ -147,4 +147,10 @@ describe("GET /api/transactions/calendar wiring", () => {
     expect(src).toMatch(/CALENDAR_DATE_RE\.test\(start\)/);
     expect(src).toMatch(/span < 1 \|\| span > MAX_CALENDAR_RANGE_DAYS/);
   });
+
+  it("applies the optional business scope with the reports' parser + condition", () => {
+    expect(src).toMatch(/businessFilterCondition\(parseBusinessParam\(params\.get\(BUSINESS_PARAM\)\), t\.isBusiness\)/);
+    expect(src).toMatch(/if \(businessCond\) conditions\.push\(businessCond\)/);
+  });
 });
+
