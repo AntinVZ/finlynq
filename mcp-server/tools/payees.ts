@@ -7,12 +7,26 @@
  * memory. The server never calls an LLM: the AI client looks at the compact
  * structured answers and proposes; the human approves.
  *
- * Read ops: list, clusters, get.
+ * Read ops: list, clusters, get, batches.
+ * Write ops (directory + payee rewrite, each ONE undoable batch): create,
+ * update, alias_add, alias_remove, identifiers, merge, split, apply, undo.
+ * Every write is TWO-STEP: without `confirmation_token` it runs as a dry run
+ * (rolled-back transaction) and returns exactly what would change plus a
+ * token bound to those rows; the same call with the token commits. The AI
+ * proposes, the human approves.
+ *
+ * Identifiers (IBAN, tax id, card) are masked in every answer.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { type PgToolContext, dataResponse, err } from "./_shared";
 import { registerManageTool } from "./_consolidate";
+import { signPreviewToken, verifyPreviewToken } from "./_confirm";
+import { executePayeeOp, PayeeBatchError, PayeeDirectoryError, type PayeeOp, type PayeeOpResult } from "../../src/lib/payees/ops";
+import { listPayeeBatches } from "../../src/lib/payees/batches";
+import { planPayeeApply } from "../../src/lib/payees/apply";
+import { ALIAS_MODES, IDENTIFIER_KINDS, maskIdentifier, type PayeeEntity } from "../../src/lib/payees/directory";
+import { PAYEE_TYPES } from "../../src/lib/payees/match-key";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
 import { loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
@@ -62,6 +76,42 @@ function clusterOut(c: PayeeCluster) {
   };
 }
 
+function entityOut(e: PayeeEntity) {
+  return {
+    entity_id: e.id,
+    name: e.name,
+    type: e.type,
+    ...(e.note ? { note: e.note } : {}),
+    default_category_id: e.defaultCategoryId,
+    aliases: e.aliases.map((a) => ({ alias_id: a.id, pattern: a.pattern, mode: a.mode, source: a.source })),
+    identifiers: e.identifiers.map((i) => ({ identifier_id: i.id, kind: i.kind, value: maskIdentifier(i.kind, i.value) })),
+  };
+}
+
+/** What a preview / commit tells the AI client: counts, spellings, warnings. */
+function opOut(r: PayeeOpResult) {
+  return {
+    op: r.op,
+    ...(r.batchId != null && !r.dryRun ? { batch_id: r.batchId } : {}),
+    entity: r.entity ? { entity_id: r.entity.id, name: r.entity.name, type: r.entity.type } : null,
+    ...(r.created ? { created: true } : {}),
+    ...(r.aliasesAdded.length ? { aliasesAdded: r.aliasesAdded } : {}),
+    ...(r.aliasesRemoved ? { aliasesRemoved: r.aliasesRemoved } : {}),
+    ...(r.identifiersAdded.length ? { identifiersAdded: r.identifiersAdded } : {}),
+    ...(r.identifiersRemoved ? { identifiersRemoved: r.identifiersRemoved } : {}),
+    ...(r.entitiesRemoved ? { entitiesRemoved: r.entitiesRemoved } : {}),
+    rows: {
+      total: r.rows.total,
+      byTable: r.rows.byTable,
+      changes: r.rows.changes.slice(0, 20).map((c) => ({ from: c.from, to: c.to, count: c.count })),
+      ...(r.rows.conflicts.length ? { conflicts: r.rows.conflicts.slice(0, 20) } : {}),
+    },
+    ...(r.undo ? { undo: r.undo } : {}),
+    ...(r.warnings.length ? { warnings: r.warnings } : {}),
+    ...(r.blocked ? { blocked: r.blocked } : {}),
+  };
+}
+
 export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   const { db, userId, dek } = ctx;
 
@@ -75,8 +125,24 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     return { currency: o.currency, ...(notes.length ? { note: notes.join(" ") } : {}) };
   }
 
-  async function opList(input: { view?: "all" | "unrecognized"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number }) {
+  async function opList(input: { view?: "all" | "unrecognized" | "entities"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number }) {
     const o = await overview();
+    if (input.view === "entities") {
+      let ents = o.entities;
+      if (input.search?.trim()) {
+        const needle = input.search;
+        const ids = new Set(o.directory.filter((e) => e.aliases.some((a) => containsNormalized(a.pattern, needle)) || containsNormalized(e.name, needle)).map((e) => e.id));
+        ents = ents.filter((e) => ids.has(e.id));
+      }
+      if (input.sort === "name") ents = [...ents].sort((a, b) => a.name.localeCompare(b.name));
+      else if (input.sort === "total") ents = [...ents].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
+      const limit = input.limit ?? 100;
+      return dataResponse({
+        entities: ents.slice(0, limit).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, count: e.count, total: e.total, lastDate: e.lastDate, aliases: e.aliasCount, identifiers: e.identifierCount })),
+        total: ents.length,
+        ...scanMeta(o),
+      });
+    }
     let groups = input.view === "unrecognized" ? unrecognizedGroups(o.groups) : o.groups.filter((g) => g.key);
     if (input.search?.trim()) {
       const needle = input.search;
@@ -111,7 +177,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     });
   }
 
-  async function opGet(input: { payee?: string; key?: string; cluster_id?: string }) {
+  async function opGet(input: { payee?: string; key?: string; cluster_id?: string; entity_id?: number }) {
     const o = await overview();
     if (input.cluster_id) {
       const c = o.clusters.find((x) => x.id === input.cluster_id);
@@ -126,14 +192,85 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     return dataResponse({ payee: groupOut(g, true), ...(cluster ? { cluster: clusterOut(cluster) } : {}), ...scanMeta(o) });
   }
 
+  /** Dry run → token; same call + token → commit. */
+  async function writeOp(op: PayeeOp, token: string | undefined) {
+    if (!dek) return err("Unlock required: payee changes need the encryption key. Sign in to Finlynq in the browser, then retry.");
+    try {
+      const preview = await executePayeeOp({ executor: db, userId, dek, op, actor: "mcp", dryRun: true });
+      const payload = { op, fingerprint: preview.fingerprint };
+      const operation = `manage_payees_${op.op}`;
+      if (!token) {
+        if (preview.blocked) return dataResponse({ preview: true, ...opOut(preview), note: "Blocked: no confirmation token issued." });
+        return dataResponse({ preview: true, ...opOut(preview), confirmationToken: signPreviewToken(userId, operation, payload) });
+      }
+      if (preview.blocked) return err(`Refusing to execute: ${preview.blocked}`);
+      const check = verifyPreviewToken(token, userId, operation, payload);
+      if (!check.valid) {
+        return err(
+          check.reason === "no_token"
+            ? "no_token: call without confirmation_token first to preview."
+            : `Confirmation token invalid: ${check.reason}. The data may have changed; re-call without confirmation_token to refresh the preview.`,
+        );
+      }
+      const done = await executePayeeOp({ executor: db, userId, dek, op, actor: "mcp" });
+      return dataResponse({ ...opOut(done), changed: done.rows.total, ...(done.batchId != null && op.op !== "undo" ? { undoWith: `manage_payees op=undo batch_id=${done.batchId} (within 30 days)` } : {}) });
+    } catch (e) {
+      if (e instanceof PayeeDirectoryError || e instanceof PayeeBatchError) return err(e.message);
+      throw e;
+    }
+  }
+
+  async function opEntity(entityId: number) {
+    const o = await overview();
+    const e = o.directory.find((x) => x.id === entityId);
+    if (!e) return err(`No payee entity #${entityId}. Use op=list view=entities.`);
+    const pending = await planPayeeApply({ executor: db, userId, dek, matcher: o.matcher, entityIds: new Set([entityId]) });
+    const history = await listPayeeBatches(db, userId, { entityId, limit: 20 });
+    return dataResponse({
+      entity: entityOut(e),
+      spellings: o.groups.filter((g) => g.entityId === entityId).map((g) => groupOut(g)),
+      pendingApply: { total: pending.total, byTable: pending.byTable, changes: pending.changes.slice(0, 20).map((c) => ({ from: c.from, count: c.count })) },
+      history: history.map((b) => ({ batch_id: b.id, kind: b.kind, actor: b.actor, summary: b.summary, createdAt: b.createdAt, undone: b.undoneAt != null, canUndo: b.canUndo })),
+      ...scanMeta(o),
+    });
+  }
+
+  async function clusterPayees(ids: string[]): Promise<string[] | string> {
+    const o = await overview();
+    const out: string[] = [];
+    for (const id of ids) {
+      const c = o.clusters.find((x) => x.id === id);
+      if (!c) return `No cluster "${id}". Cluster ids change when payees change; re-run op=clusters.`;
+      for (const g of c.groups) for (const sp of g.spellings) out.push(sp.spelling);
+    }
+    return out;
+  }
+
+  const tokenArg = z
+    .string()
+    .optional()
+    .describe("Token from the preview call with the same arguments. Omit to preview; pass verbatim to commit. Single-use; 5-minute TTL.");
+  const typeArg = z.enum(PAYEE_TYPES).optional().describe("retail | service | bank | government | person | sole_proprietor | company | other. Omit to guess from the name.");
+  const aliasArg = z
+    .array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.enum(ALIAS_MODES).optional() })]))
+    .optional()
+    .describe("Spellings that resolve to the payee: a string (exact match — case, apostrophes, Latin/Cyrillic and terminal noise ignored) or {pattern, mode: exact|contains|regex}.");
+  const identifierArg = z
+    .array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string() }))
+    .optional()
+    .describe("Requisites: iban | tax_id | edrpou | card_last4 (a full card number is cut to its last 4 digits) | crypto_wallet.");
+  const applyArg = z.boolean().optional().describe("Also rename stored payees to the canonical name (default true).");
+  const toAliases = (a: Array<string | { pattern: string; mode?: (typeof ALIAS_MODES)[number] }> | undefined) =>
+    (a ?? []).map((x) => (typeof x === "string" ? { pattern: x } : x));
+
   registerManageTool(
     server,
     "manage_payees",
-    "Review payees (merchants, people, services) across all transactions. list: every payee name with counts, totals, dates, spellings and a type guess (view=unrecognized = not yet in the directory). clusters: groups of spellings that look like one counterparty (Epicentr / Епіцентр / EPITCENTR K10 KYIV 360616), each with confidence, reasons, and needsDecision for private persons (never merged automatically). get: one payee (by any spelling or key) or one cluster with full detail. Matching ignores letter case, apostrophes, Latin/Cyrillic transliteration and card-terminal noise.",
+    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings with confidence, reasons, needsDecision for private persons), get (payee, cluster or entity_id), batches. Writes (directory + rename stored payees to the canonical name, one undoable batch each, 30 days): create, update, alias_add (or from a rule), alias_remove, identifiers, merge (entities / payees / cluster_ids into one), split, apply, undo. Every write is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with the token. Never merge people with merchants unless the user says so. Bank-statement rows and import hashes are never changed. Workflow: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
-        view: z.enum(["all", "unrecognized"]).optional().describe("all (default) or unrecognized = payees not linked to a directory entity."),
+        view: z.enum(["all", "unrecognized", "entities"]).optional().describe("all (default), unrecognized = payees not linked to a directory entity, entities = the directory itself."),
         search: z.string().optional().describe("Only payees with a spelling containing this text."),
         sort: z.enum(["count", "total", "name", "last_date"]).optional().describe("Order: count (default), total (by absolute amount), name, last_date."),
         limit: z.number().int().positive().max(5000).optional().describe("Most payees to return (default 100)."),
@@ -149,13 +286,141 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         payee: z.string().optional().describe("Any spelling of the payee, e.g. \"EPITCENTR K10 KYIV 360616\"."),
         key: z.string().optional().describe("A payee `key` from list / clusters."),
         cluster_id: z.string().optional().describe("A `cluster_id` from clusters."),
+        entity_id: z.number().int().positive().optional().describe("A directory entity: aliases, masked identifiers, spellings, pending renames, change history."),
+      }),
+      z.object({
+        op: z.literal("batches"),
+        entity_id: z.number().int().positive().optional().describe("Only batches that touched this entity."),
+        limit: z.number().int().positive().max(200).optional().describe("Most batches (default 20), newest first."),
+      }),
+      z.object({
+        op: z.literal("create"),
+        name: z.string().describe("Canonical name, e.g. \"Епіцентр\"."),
+        type: typeArg,
+        note: z.string().optional(),
+        default_category_id: z.number().int().positive().optional().describe("Category hint for this payee (not applied to transactions)."),
+        aliases: aliasArg,
+        identifiers: identifierArg,
+        apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("update"),
+        entity_id: z.number().int().positive(),
+        name: z.string().optional().describe("New canonical name; the old one stays as an alias."),
+        type: typeArg,
+        note: z.string().nullable().optional(),
+        default_category_id: z.number().int().positive().nullable().optional(),
+        apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("alias_add"),
+        entity_id: z.number().int().positive().optional().describe("The entity. Optional with rule_id when the rule renames the payee (the target is found or created)."),
+        aliases: aliasArg,
+        rule_id: z.number().int().positive().optional().describe("Turn this rule's payee conditions into aliases."),
+        apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("alias_remove"),
+        entity_id: z.number().int().positive(),
+        alias_ids: z.array(z.number().int().positive()).optional(),
+        patterns: z.array(z.string()).optional(),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("identifiers"),
+        entity_id: z.number().int().positive(),
+        add: identifierArg,
+        remove: z.array(z.number().int().positive()).optional().describe("identifier_id values to remove."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("merge"),
+        into_entity_id: z.number().int().positive().optional().describe("Merge into this existing entity…"),
+        into_name: z.string().optional().describe("…or into a new entity with this canonical name."),
+        into_type: typeArg,
+        entity_ids: z.array(z.number().int().positive()).optional().describe("Entities folded into the target (deleted; their aliases and identifiers move)."),
+        payees: z.array(z.string()).optional().describe("Spellings added as exact aliases of the target."),
+        cluster_ids: z.array(z.string()).optional().describe("Every spelling of these clusters becomes an alias of the target."),
+        apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("split"),
+        entity_id: z.number().int().positive(),
+        alias_ids: z.array(z.number().int().positive()).min(1).describe("Aliases moved to the new entity."),
+        name: z.string().describe("Canonical name of the new entity."),
+        type: typeArg,
+        apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("apply"),
+        entity_ids: z.array(z.number().int().positive()).optional().describe("Only these entities (default: the whole directory)."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("undo"),
+        batch_id: z.number().int().positive().describe("A batch_id from a write result or op=batches."),
+        confirmation_token: tokenArg,
       }),
     ]),
     async (input) => {
       try {
-        if (input.op === "list") return await opList(input);
-        if (input.op === "clusters") return await opClusters(input);
-        return await opGet(input);
+        switch (input.op) {
+          case "list":
+            return await opList(input);
+          case "clusters":
+            return await opClusters(input);
+          case "get":
+            return input.entity_id != null ? await opEntity(input.entity_id) : await opGet(input);
+          case "batches": {
+            const b = await listPayeeBatches(db, userId, { entityId: input.entity_id, limit: input.limit ?? 20 });
+            return dataResponse({
+              batches: b.map((x) => ({ batch_id: x.id, kind: x.kind, actor: x.actor, summary: x.summary, entity_ids: x.entityIds, createdAt: x.createdAt, undone: x.undoneAt != null, canUndo: x.canUndo })),
+            });
+          }
+          case "create":
+            return await writeOp(
+              { op: "create", name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, aliases: toAliases(input.aliases), identifiers: input.identifiers, apply: input.apply },
+              input.confirmation_token,
+            );
+          case "update":
+            return await writeOp(
+              { op: "update", entityId: input.entity_id, name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, apply: input.apply },
+              input.confirmation_token,
+            );
+          case "alias_add":
+            if (input.rule_id != null) {
+              return await writeOp({ op: "alias_from_rule", ruleId: input.rule_id, entityId: input.entity_id, apply: input.apply }, input.confirmation_token);
+            }
+            if (input.entity_id == null) return err("Pass entity_id (or rule_id).");
+            return await writeOp({ op: "alias_add", entityId: input.entity_id, aliases: toAliases(input.aliases), apply: input.apply }, input.confirmation_token);
+          case "alias_remove":
+            return await writeOp({ op: "alias_remove", entityId: input.entity_id, aliasIds: input.alias_ids, patterns: input.patterns }, input.confirmation_token);
+          case "identifiers":
+            if (!input.add?.length && !input.remove?.length) return await opEntity(input.entity_id);
+            return await writeOp({ op: "identifiers", entityId: input.entity_id, add: input.add, remove: input.remove }, input.confirmation_token);
+          case "merge": {
+            let payees = input.payees ?? [];
+            if (input.cluster_ids?.length) {
+              const fromClusters = await clusterPayees(input.cluster_ids);
+              if (typeof fromClusters === "string") return err(fromClusters);
+              payees = [...payees, ...fromClusters];
+            }
+            const into = input.into_entity_id != null ? { entityId: input.into_entity_id } : input.into_name ? { name: input.into_name, type: input.into_type } : null;
+            if (!into) return err("Pass into_entity_id or into_name.");
+            return await writeOp({ op: "merge", into, entityIds: input.entity_ids, payees, apply: input.apply }, input.confirmation_token);
+          }
+          case "split":
+            return await writeOp({ op: "split", entityId: input.entity_id, aliasIds: input.alias_ids, name: input.name, type: input.type, apply: input.apply }, input.confirmation_token);
+          case "apply":
+            return await writeOp({ op: "apply", entityIds: input.entity_ids }, input.confirmation_token);
+          case "undo":
+            return await writeOp({ op: "undo", batchId: input.batch_id }, input.confirmation_token);
+        }
       } catch (e) {
         return err(String(e instanceof Error ? e.message : e));
       }

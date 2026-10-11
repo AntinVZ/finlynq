@@ -1641,7 +1641,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
     "finlynq_help",
     "Discover available Finlynq tools, schema, and usage examples. Finlynq is a personal-finance TRACKING app: every write tool records a bookkeeping entry in the user's own database and never connects to a bank or brokerage or moves real money. Full docs: https://finlynq.com/mcp-guide",
     {
-      topic: z.enum(["tools", "schema", "examples", "write", "portfolio", "reconcile", "modes", "safety", "valuation"]).optional().describe("Help topic (default: tools). `modes` documents every multi-mode tool's modes with an example each; `safety` documents the destructive-tool two-step (confirmation tokens) + echo guards; `valuation` documents the uniform `basis` field on every money-bearing response + each tool's default basis."),
+      topic: z.enum(["tools", "schema", "examples", "write", "portfolio", "reconcile", "modes", "safety", "valuation", "payees"]).optional().describe("Help topic (default: tools). `modes` documents every multi-mode tool's modes with an example each; `safety` documents the destructive-tool two-step (confirmation tokens) + echo guards; `valuation` documents the uniform `basis` field on every money-bearing response + each tool's default basis; `payees` documents the Payee Studio workflow (manage_payees)."),
       tool_name: z.string().optional().describe("Get help for a specific tool"),
     },
     async ({ topic, tool_name }) => {
@@ -1692,7 +1692,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       if (t === "tools") {
         return dataResponse({
           read_tools: ["get_account_balances", "search_transactions", "get_budget_summary", "get_spending_trends", "get_income_statement", "get_net_worth", "get_categories", "get_recurring_transactions", "get_financial_health_score", "get_spending_anomalies", "get_spotlight_items", "get_weekly_recap", "get_cash_flow_forecast"],
-          write_tools: ["manage_transactions (op: record | update | delete; record takes one row OR transactions[])", "manage_transfers (op: record | update | delete)", "manage_splits (op: list | add | update | delete | replace)", "manage_budgets (op: set | delete)", "manage_accounts (op: add | update | delete | set_mode)", "manage_goals (op: add | update | delete | list)", "manage_categories (op: create | rename | merge | delete)", "manage_tags (op: list | rename | merge | delete; rename/merge/delete preview → confirmation_token)", "manage_payees (op: list | clusters | get — Payee Studio)", "manage_rules (op: create | update | delete | list | reorder)", "manage_subscriptions (op: add | update | delete | list)", "manage_loans (op: add | update | delete | list)", "manage_fx_overrides (op: set | delete | list)", "add_snapshot", "apply_rules_to_uncategorized"],
+          write_tools: ["manage_transactions (op: record | update | delete; record takes one row OR transactions[])", "manage_transfers (op: record | update | delete)", "manage_splits (op: list | add | update | delete | replace)", "manage_budgets (op: set | delete)", "manage_accounts (op: add | update | delete | set_mode)", "manage_goals (op: add | update | delete | list)", "manage_categories (op: create | rename | merge | delete)", "manage_tags (op: list | rename | merge | delete; rename/merge/delete preview → confirmation_token)", "manage_payees (op: list | clusters | get | batches | create | update | alias_add | alias_remove | identifiers | merge | split | apply | undo; writes preview → confirmation_token; topic=payees)", "manage_rules (op: create | update | delete | list | reorder)", "manage_subscriptions (op: add | update | delete | list)", "manage_loans (op: add | update | delete | list)", "manage_fx_overrides (op: set | delete | list)", "add_snapshot", "apply_rules_to_uncategorized"],
           portfolio_tools: ["get_portfolio_analysis", "get_portfolio_performance", "analyze_holding", "trace_holding_quantity", "get_investment_insights"],
           portfolio_write_tools: ["portfolio_record_entry (entry_type: buy | sell | swap | transfer | income_expense | fx_conversion | deposit | withdrawal)", "manage_holdings (op: add | update | delete)"],
           reconcile_tools: ["get_reconciliation_summary", "reconcile (op: suggest | accept | unlink | materialize | apply_rules)", "manage_statement_import (op: upload | list | get | list_rows | update_row | link_transfer_pair | approve | send_to_bank_ledger | apply_rules | reject)", "manage_bank_ledger (op: list_anchors | upsert_anchor | find_duplicates | delete_row)"],
@@ -1823,6 +1823,21 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         });
       }
 
+      if (t === "payees") {
+        return dataResponse({
+          tool: "manage_payees",
+          principle: "The server never calls an AI model. You (the AI client) read compact payee data, propose, and the human approves every change. Never merge a private person or sole proprietor (ФОП) with a merchant unless the user says so: clusters flag them needsDecision.",
+          workflow: [
+            "1. Look: op=clusters (look-alike spellings with confidence + reasons) and op=list view=unrecognized (payees not in the directory yet).",
+            "2. Change, two-step: op=merge into_name=\"Епіцентр\" cluster_ids=[…] (or create / alias_add / update) WITHOUT confirmation_token → preview: rows per table, spellings that change, warnings. Show it to the user.",
+            "3. After the user agrees, repeat the identical call with confirmationToken from the preview → commits as one batch.",
+            "4. Every write answers with batch_id; op=undo batch_id=N (two-step too) rolls it back for 30 days. op=batches lists them.",
+          ],
+          matching: "Alias mode exact = same matching key: letter case, apostrophes, Latin/Cyrillic transliteration and card-terminal noise (store codes, city, long numbers) are ignored. contains / regex are for families of spellings.",
+          never_changed: "bank_transactions (the bank statement journal), import_hash, staged rows' encryption tier.",
+          privacy: "Identifiers (IBAN, tax id, card last 4) are masked in answers; full card numbers are never stored.",
+        });
+      }
       if (t === "safety") {
         // FINLYNQ-264 — destructive-tool safety contract (v3.4).
         return dataResponse({

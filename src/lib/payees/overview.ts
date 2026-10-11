@@ -270,6 +270,8 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[
     const spellingCount = members.reduce((n, g) => n + g.spellings.length, 0);
     if (members.length < 2 && spellingCount < 2) continue;
     if (members.every((g) => !g.key)) continue;
+    // Already settled: every member resolves to the same directory entity.
+    if (members[0].entityId != null && members.every((g) => g.entityId === members[0].entityId)) continue;
     const reasons = new Set<string>();
     let confidence = 0.95;
     for (const g of members) {

@@ -104,4 +104,10 @@ export const USER_ENCRYPTED_COLUMNS: ReadonlyArray<UserEncryptedColumn> = [
   // never read back and may not exist on every deployment.)
   { table: "accounts", column: "note", kind: "envelope" },
   { table: "categories", column: "note", kind: "envelope" },
+  // Payee Studio directory (P2): every write encrypts; swept as a backstop.
+  { table: "payee_entities", column: "name", kind: "envelope" },
+  { table: "payee_entities", column: "note", kind: "envelope" },
+  { table: "payee_aliases", column: "pattern", kind: "envelope" },
+  { table: "payee_identifiers", column: "value", kind: "envelope" },
+  { table: "payee_batches", column: "undo_data", kind: "envelope" },
 ];

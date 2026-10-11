@@ -987,6 +987,12 @@ async function deleteAllUserDataTx(tx: TxClient, userId: string) {
   await tx.delete(s.mcpIdempotencyKeys).where(eq(s.mcpIdempotencyKeys.userId, userId));
   // MCP activity journal (labels only, no FK) — same reasoning.
   await tx.delete(s.mcpActivityLog).where(eq(s.mcpActivityLog.userId, userId));
+  // Payee Studio directory + journal. Aliases / identifiers cascade from
+  // entities, but are deleted explicitly too (user_id-scoped, order-safe).
+  await tx.delete(s.payeeAliases).where(eq(s.payeeAliases.userId, userId));
+  await tx.delete(s.payeeIdentifiers).where(eq(s.payeeIdentifiers.userId, userId));
+  await tx.delete(s.payeeEntities).where(eq(s.payeeEntities.userId, userId));
+  await tx.delete(s.payeeBatches).where(eq(s.payeeBatches.userId, userId));
 
   // settings last — it holds the api_key/api_key_dek/email_webhook_* rows and
   // we also just read the import_email from here above.

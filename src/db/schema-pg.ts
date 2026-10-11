@@ -2041,6 +2041,77 @@ export const mcpActivityLog = pgTable("mcp_activity_log", {
   index("mcp_activity_log_created_idx").on(t.createdAt),
 ]);
 
+// ─── Payee Studio directory (P2) ────────────────────────────────────────────
+//
+// The payee directory and its change journal. Encrypted at rest with the user
+// DEK (v1: envelope): payee_entities.name / note, payee_aliases.pattern,
+// payee_identifiers.value, payee_batches.undo_data — searched in memory after
+// decryption, never with SQL LIKE. payee_aliases.key_hash is an HMAC of the
+// matching key (src/lib/payees/match-key.ts), never plaintext. Card numbers
+// are stored as the last 4 digits only. Writers: src/lib/payees/directory.ts
+// and batches.ts (every change is a payee_batches row, undoable for 30 days).
+// Migration: scripts/migrations/20261011b_payee_studio.sql.
+export const payeeEntities = pgTable("payee_entities", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  name: text("name").notNull(),
+  type: text("type").notNull().default("other"),
+  note: text("note"),
+  // A category HINT for the AI client / suggestions — never applied by itself.
+  defaultCategoryId: integer("default_category_id").references(() => categories.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("payee_entities_user_idx").on(t.userId),
+  check("payee_entities_type_check", sql`${t.type} IN ('retail','service','bank','government','person','sole_proprietor','company','other')`),
+]);
+
+export const payeeAliases = pgTable("payee_aliases", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  entityId: integer("entity_id").notNull().references(() => payeeEntities.id, { onDelete: "cascade" }),
+  pattern: text("pattern").notNull(),
+  mode: text("mode").notNull().default("exact"),
+  keyHash: text("key_hash"),
+  // canonical | manual | merge | split | rule | proposal | import
+  source: text("source").notNull().default("manual"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("payee_aliases_entity_idx").on(t.entityId),
+  index("payee_aliases_user_key_idx").on(t.userId, t.keyHash),
+  check("payee_aliases_mode_check", sql`${t.mode} IN ('exact','contains','regex')`),
+]);
+
+export const payeeIdentifiers = pgTable("payee_identifiers", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  entityId: integer("entity_id").notNull().references(() => payeeEntities.id, { onDelete: "cascade" }),
+  kind: text("kind").notNull(),
+  value: text("value").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("payee_identifiers_entity_idx").on(t.entityId),
+  index("payee_identifiers_user_idx").on(t.userId),
+  check("payee_identifiers_kind_check", sql`${t.kind} IN ('iban','tax_id','edrpou','card_last4','crypto_wallet')`),
+]);
+
+export const payeeBatches = pgTable("payee_batches", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  kind: text("kind").notNull(),
+  actor: text("actor").notNull().default("web"),
+  // Counts only — never names or payees.
+  summary: jsonb("summary").notNull().default({}),
+  entityIds: integer("entity_ids").array().notNull().default(sql`'{}'`),
+  undoData: text("undo_data"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  undoneAt: timestamp("undone_at", { withTimezone: true }),
+}, (t) => [
+  index("payee_batches_user_created_idx").on(t.userId, t.createdAt.desc()),
+  check("payee_batches_actor_check", sql`${t.actor} IN ('web','mcp','autopilot','import')`),
+]);
+
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────
 //
 // Append-only record of every admin mutation. Never UPDATE/DELETE via app code;

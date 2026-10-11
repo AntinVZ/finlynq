@@ -6,6 +6,8 @@ import { getDisplayCurrency, getRateMap } from "@/lib/fx-service";
 import { convertReportingSlice } from "@/lib/fx/reporting-amount";
 import { buildPayeeClusters, buildPayeeGroups, type EntityResolver, type PayeeCluster, type PayeeGroup } from "./overview";
 import { loadPayeeNameMaps, scanPayees, type AmountSlice, type PayeeExecutor, type PayeeScan, type PayeeSource } from "./scan";
+import { buildPayeeMatcher, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
+import type { PayeeType } from "./match-key";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
 export async function makeSliceConverter(
@@ -20,36 +22,86 @@ export async function makeSliceConverter(
   };
 }
 
+export type EntitySummary = {
+  id: number;
+  name: string;
+  type: PayeeType;
+  aliasCount: number;
+  identifierCount: number;
+  defaultCategoryId: number | null;
+  /** Transactions resolving to the entity, and their display-currency total. */
+  count: number;
+  total: number;
+  lastDate: string | null;
+};
+
 export type PayeeOverview = {
   groups: PayeeGroup[];
   clusters: PayeeCluster[];
+  entities: EntitySummary[];
+  directory: PayeeEntity[];
+  matcher: PayeeMatcher;
   currency: string;
   scanned: PayeeScan["scanned"];
   truncated: PayeeSource[];
   undecryptable: number;
 };
 
-/** Scan, group and cluster every payee of a user. */
+/** Scan, group and cluster every payee of a user, resolved against the directory. */
 export async function loadPayeeOverview(opts: {
   executor: PayeeExecutor;
   userId: string;
   dek: Buffer | null;
   currency?: string;
+  /** Override the directory lookup (tests). Default: the user's directory. */
   resolveEntity?: EntityResolver;
 }): Promise<PayeeOverview> {
   const { executor, userId, dek } = opts;
   const scan = await scanPayees({ executor, userId, dek });
   const names = await loadPayeeNameMaps(executor, userId, dek);
   const { currency, convert } = await makeSliceConverter(userId, opts.currency);
+  const directory = dek ? await loadDirectory(executor, userId, dek) : [];
+  const matcher = buildPayeeMatcher(directory);
+  const resolveEntity: EntityResolver =
+    opts.resolveEntity ??
+    ((spelling) => {
+      const m = matcher.match(spelling);
+      return m.kind === "match" ? { id: m.entityId, name: m.name } : null;
+    });
   const groups = buildPayeeGroups(scan, {
     accountNames: names.accounts,
     categoryNames: names.categories,
     convert,
-    resolveEntity: opts.resolveEntity,
+    resolveEntity,
   });
+  const totals = new Map<number, { count: number; total: number; lastDate: string | null }>();
+  for (const g of groups) {
+    if (g.entityId == null) continue;
+    const t = totals.get(g.entityId) ?? { count: 0, total: 0, lastDate: null };
+    t.count += g.count;
+    t.total += g.total;
+    if (g.lastDate && (t.lastDate == null || g.lastDate > t.lastDate)) t.lastDate = g.lastDate;
+    totals.set(g.entityId, t);
+  }
+  const entities: EntitySummary[] = directory
+    .map((e) => ({
+      id: e.id,
+      name: e.name,
+      type: e.type,
+      aliasCount: e.aliases.length,
+      identifierCount: e.identifiers.length,
+      defaultCategoryId: e.defaultCategoryId,
+      count: totals.get(e.id)?.count ?? 0,
+      total: Math.round((totals.get(e.id)?.total ?? 0) * 100) / 100,
+      lastDate: totals.get(e.id)?.lastDate ?? null,
+    }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   return {
     groups,
     clusters: buildPayeeClusters(groups),
+    entities,
+    directory,
+    matcher,
     currency,
     scanned: scan.scanned,
     truncated: scan.truncated,

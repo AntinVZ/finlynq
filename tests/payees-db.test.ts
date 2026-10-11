@@ -112,3 +112,61 @@ describeDb("Payee Studio P1 (seeded DB)", () => {
     expect(isWriteCall("manage_payees", "get")).toBe(false);
   });
 });
+
+describeDb("Payee Studio P2 MCP writes (seeded DB)", () => {
+  beforeAll(async () => {
+    await bootstrapTestDb();
+  }, 60_000);
+  afterAll(async () => {
+    await shutdownTestDb();
+  });
+
+  it("merge is two-step, binds the token to the rows, masks identifiers and undoes", async () => {
+    await resetTestDb();
+    const { db } = await import("@/db");
+    const { sql } = await import("drizzle-orm");
+    await db.execute(sql`TRUNCATE payee_entities, payee_aliases, payee_identifiers, payee_batches RESTART IDENTITY CASCADE`);
+    const { userId } = await seedPayeeLedger();
+    const call = await mcpTools(userId, TEST_DEK);
+
+    const clusters = await call({ op: "clusters", include_needs_decision: false });
+    const epi = clusters.clusters.find((c: { members: Array<{ key: string }> }) => c.members.some((m) => m.key === payeeMatchKey("Епіцентр К")));
+    const args = { op: "merge", into_name: "Епіцентр", into_type: "retail", cluster_ids: [epi.cluster_id] };
+    const preview = await call(args);
+    expect(preview.preview).toBe(true);
+    expect(preview.rows.byTable).toEqual({ transactions: 10, recurring: 1, staged: 1 });
+    expect(typeof preview.confirmationToken).toBe("string");
+    // Nothing written by the preview.
+    expect((await call({ op: "list", view: "entities" })).total).toBe(0);
+
+    // A token for different arguments is refused.
+    const wrong = await call({ ...args, into_name: "Epicentr", confirmation_token: preview.confirmationToken });
+    expect(wrong.error).toMatch(/token invalid/i);
+
+    const done = await call({ ...args, confirmation_token: (await call(args)).confirmationToken });
+    expect(done.error ?? null).toBeNull();
+    expect(done.changed).toBe(12);
+    expect(done.batch_id).toBeGreaterThan(0);
+    const ents = await call({ op: "list", view: "entities" });
+    expect(ents.entities[0]).toMatchObject({ name: "Епіцентр", count: 30 });
+
+    const idArgs = { op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "4149439312345678" }, { kind: "iban", value: "UA213223130000026007233566001" }] };
+    const idDone = await call({ ...idArgs, confirmation_token: (await call(idArgs)).confirmationToken });
+    expect(JSON.stringify(idDone)).not.toContain("4149439312345678");
+    const got = await call({ op: "get", entity_id: done.entity.entity_id });
+    expect(got.entity.identifiers.map((i: { value: string }) => i.value)).toEqual(["•••• 5678", "UA21…6001"]);
+    expect(got.history.length).toBe(2);
+
+    // Undo the identifiers first (newest), then the merge.
+    const u1 = { op: "undo", batch_id: idDone.batch_id };
+    await call({ ...u1, confirmation_token: (await call(u1)).confirmationToken });
+    const u2 = { op: "undo", batch_id: done.batch_id };
+    const undone = await call({ ...u2, confirmation_token: (await call(u2)).confirmationToken });
+    expect(undone.undo.restoredRows).toBe(12);
+    expect((await call({ op: "list", view: "entities" })).total).toBe(0);
+
+    // Without a DEK every write is refused before any work.
+    const locked = await mcpTools(userId, null);
+    expect((await locked({ op: "create", name: "X" })).error).toMatch(/Unlock required/);
+  });
+});

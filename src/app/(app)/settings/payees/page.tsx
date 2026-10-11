@@ -1,16 +1,21 @@
 "use client";
 
 /**
- * /settings/payees — Payee Studio overview.
+ * /settings/payees — Payee Studio.
  *
  * Every payee across transactions, recurring, staged imports, SimpleFIN
  * pending and the bank ledger (GET /api/payees). Spellings that are the same
  * name once letter case, apostrophes, Latin/Cyrillic transliteration and
  * card-terminal noise are ignored form one row; "Clusters" lists names that
  * only look alike, with a confidence and the reasons; "Unrecognized" lists
- * payees not yet linked to the directory. Private persons and sole
- * proprietors are flagged "needs decision" and never merged automatically.
- * On small screens the table becomes a list of cards.
+ * payees not yet in the directory. Private persons and sole proprietors are
+ * flagged "needs decision" and never merged automatically.
+ *
+ * P2: the directory. Add a payee (its spellings become aliases), merge a
+ * cluster or selected payees into one, open an entry to edit it. Every
+ * change is previewed first ("renames N rows in transactions, …") and
+ * becomes a batch that "Changes" can undo for 30 days. On small screens the
+ * table becomes a list of cards.
  */
 
 import { useMemo, useState } from "react";
@@ -25,19 +30,40 @@ import { ArrowDown, ArrowUp, Search } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
 import { containsNormalized } from "@/lib/text-normalize";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
-import { confidenceBadge, needsDecisionBadge, typeLabel, type PayeeGroupRow, type PayeesResponse } from "./_components/payee-ui";
+import {
+  batchLabel,
+  confidenceBadge,
+  needsDecisionBadge,
+  typeLabel,
+  type BatchRow,
+  type PayeeClusterRow,
+  type PayeeGroupRow,
+  type PayeesResponse,
+} from "./_components/payee-ui";
+import { MergeDialog } from "./_components/merge-dialog";
+import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 
-type Tab = "all" | "clusters" | "unrecognized";
+type Tab = "all" | "clusters" | "unrecognized" | "directory" | "changes";
 type SortKey = "count" | "name" | "total" | "lastDate";
+
+type Action =
+  | { kind: "merge"; title: string; payees: string[]; entityIds: number[]; suggestedName: string; suggestedType: string; warning: string | null }
+  | { kind: "undo"; batch: BatchRow }
+  | { kind: "applyAll" };
 
 export default function PayeesSettingsPage() {
   const [tab, setTab] = useState<Tab>("all");
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "count", dir: "desc" });
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [action, setAction] = useState<Action | null>(null);
+  const [status, setStatus] = useState("");
 
-  const { data, error: loadErr } = useSWR<PayeesResponse>("/api/payees", jsonFetcher, { revalidateOnFocus: false });
+  const { data, error: loadErr, mutate } = useSWR<PayeesResponse>("/api/payees", jsonFetcher, { revalidateOnFocus: false });
   const loadError = loadErr ? "Couldn't load payees." : "";
   const currency = data?.currency ?? "USD";
+  const entities = useMemo(() => data?.entities ?? [], [data]);
+  const entityOptions = useMemo(() => entities.map((e) => ({ id: e.id, name: e.name, type: e.type })), [entities]);
 
   const groupsByKey = useMemo(() => new Map((data?.groups ?? []).map((g) => [g.key, g])), [data]);
 
@@ -60,14 +86,58 @@ export default function PayeesSettingsPage() {
     return list.filter((c) => c.keys.some((k) => groupsByKey.get(k)?.spellings.some((s) => containsNormalized(s.spelling, query))));
   }, [data, query, groupsByKey]);
 
+  const entityRows = useMemo(
+    () => (query.trim() ? entities.filter((e) => containsNormalized(e.name, query)) : entities),
+    [entities, query],
+  );
+
   const unrecognizedCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key && g.entityId == null).length, [data]);
   const blank = data?.groups.find((g) => !g.key);
+  const selectedGroups = useMemo(() => (data?.groups ?? []).filter((g) => selected.has(g.key)), [data, selected]);
 
   function toggleSort(key: SortKey) {
     setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: key === "name" ? "asc" : "desc" }));
   }
   const sortIcon = (key: SortKey) =>
     sort.key === key ? (sort.dir === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />) : null;
+  function toggle(key: string) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  /** Merge dialog for a set of groups (a cluster, a selection, or one row). */
+  function mergeGroups(title: string, groups: PayeeGroupRow[], cluster?: PayeeClusterRow) {
+    const lead = [...groups].sort((a, b) => b.count - a.count)[0];
+    const people = groups.filter((g) => g.type.isPerson);
+    setAction({
+      kind: "merge",
+      title,
+      payees: groups.filter((g) => g.entityId == null).flatMap((g) => g.spellings.map((s) => s.spelling)),
+      entityIds: [...new Set(groups.map((g) => g.entityId).filter((id): id is number => id != null))],
+      suggestedName: cluster?.suggestedName ?? lead?.entityName ?? lead?.suggestedName ?? "",
+      suggestedType: cluster?.suggestedType.type ?? lead?.type.type ?? "other",
+      warning:
+        people.length && people.length < groups.length
+          ? "This mixes a private person or sole proprietor with other payees. People are never merged automatically — only continue if they really are the same counterparty."
+          : cluster?.decisionReason ?? null,
+    });
+  }
+
+  async function done(r: OpPreview, message?: string) {
+    setAction(null);
+    setSelected(new Set());
+    setStatus(message ?? (r.undo ? `Undone: restored ${r.undo.restoredRows} row(s).` : `Saved. ${describeRows(r)}`));
+    await mutate();
+  }
+
+  async function setAdvanced(on: boolean) {
+    await fetch("/api/payees/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advancedMode: on }) }).catch(() => null);
+    await mutate();
+  }
 
   const spellingsBadge = (g: PayeeGroupRow) =>
     g.spellings.length > 1 ? (
@@ -79,11 +149,16 @@ export default function PayeesSettingsPage() {
         {g.spellings.length} spellings
       </Badge>
     ) : null;
-  const payeeLink = (g: PayeeGroupRow) => (
-    <Link href={buildTxDrillUrl({ search: g.name })} className="font-medium hover:underline break-all">
-      {g.entityName ?? g.name}
-    </Link>
-  );
+  const payeeLink = (g: PayeeGroupRow) =>
+    g.entityId != null ? (
+      <Link href={`/settings/payees/${g.entityId}`} className="font-medium hover:underline break-all">
+        {g.entityName ?? g.name}
+      </Link>
+    ) : (
+      <Link href={buildTxDrillUrl({ search: g.name })} className="font-medium hover:underline break-all">
+        {g.name}
+      </Link>
+    );
   const typeCell = (g: PayeeGroupRow) => (
     <span className="inline-flex flex-wrap items-center gap-1">
       <span className={g.type.confidence < 0.5 ? "text-muted-foreground" : undefined} title={g.type.reason}>
@@ -92,11 +167,22 @@ export default function PayeesSettingsPage() {
       {g.type.isPerson && g.entityId == null && needsDecisionBadge(g.type.reason)}
     </span>
   );
+  const rowAction = (g: PayeeGroupRow) =>
+    g.entityId == null ? (
+      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => mergeGroups(`Add “${g.name}” to the directory`, [g])}>
+        Add to directory
+      </Button>
+    ) : null;
+  const checkbox = (g: PayeeGroupRow) => (
+    <input type="checkbox" aria-label={`Select ${g.name}`} checked={selected.has(g.key)} onChange={() => toggle(g.key)} />
+  );
 
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "all", label: `All${data ? ` (${data.groups.filter((g) => g.key).length})` : ""}` },
     { id: "clusters", label: `Clusters${data ? ` (${data.clusters.length})` : ""}` },
     { id: "unrecognized", label: `Unrecognized${data ? ` (${unrecognizedCount})` : ""}` },
+    { id: "directory", label: `Directory${data ? ` (${entities.length})` : ""}` },
+    { id: "changes", label: "Changes" },
   ];
 
   return (
@@ -110,16 +196,18 @@ export default function PayeesSettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Payee overview</CardTitle>
+          <CardTitle className="text-base">Payee Studio</CardTitle>
           <CardDescription>
             Names that differ only in letter case, apostrophes, Latin/Cyrillic spelling or card-terminal noise
             (store codes, city, long numbers) are shown as one payee. Clusters are names that only look alike —
-            check the reasons before merging. People are never merged automatically.
+            check the reasons before merging. People are never merged automatically. Merging renames the stored
+            payees to one canonical name (the old spellings are kept as aliases); bank statement rows are never
+            changed, and every change can be undone for 30 days.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex rounded-md border p-0.5" role="tablist" aria-label="Payee views">
+            <div className="inline-flex flex-wrap rounded-md border p-0.5" role="tablist" aria-label="Payee views">
               {tabs.map((t) => (
                 <Button
                   key={t.id}
@@ -138,8 +226,24 @@ export default function PayeesSettingsPage() {
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
               <Input className="pl-8" placeholder="Search payees…" value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
+            {(tab === "all" || tab === "unrecognized") && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={selectedGroups.length < 2}
+                onClick={() => mergeGroups(`Merge ${selectedGroups.length} payees`, selectedGroups)}
+              >
+                Merge selected{selectedGroups.length >= 2 ? ` (${selectedGroups.length})` : ""}
+              </Button>
+            )}
+            {tab === "directory" && entities.length > 0 && (
+              <Button variant="outline" size="sm" onClick={() => setAction({ kind: "applyAll" })}>
+                Apply directory to payees
+              </Button>
+            )}
           </div>
 
+          {status && <p className="text-sm text-emerald-600 dark:text-emerald-400">{status}</p>}
           {loadError && <p className="text-sm text-destructive">{loadError}</p>}
           {data && data.truncated.length > 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
@@ -151,7 +255,7 @@ export default function PayeesSettingsPage() {
               {data.undecryptable} payee value(s) couldn&apos;t be decrypted and are not shown.
             </p>
           )}
-          {blank && blank.count > 0 && tab !== "clusters" && (
+          {blank && blank.count > 0 && (tab === "all" || tab === "unrecognized") && (
             <p className="text-xs text-muted-foreground">{blank.count} transaction(s) have no payee.</p>
           )}
 
@@ -188,6 +292,72 @@ export default function PayeesSettingsPage() {
                         )),
                       )}
                     </div>
+                    <div className="flex justify-end">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() =>
+                          mergeGroups(
+                            `Merge into one payee`,
+                            c.keys.map((k) => groupsByKey.get(k)).filter((g): g is PayeeGroupRow => !!g),
+                            c,
+                          )
+                        }
+                      >
+                        Merge…
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : tab === "directory" ? (
+            entityRows.length === 0 ? (
+              <p className="text-sm text-muted-foreground">
+                {query ? "No directory entries match." : "The directory is empty. Add payees from All, Unrecognized or Clusters."}
+              </p>
+            ) : (
+              <ul className="divide-y rounded-lg border">
+                {entityRows.map((e) => (
+                  <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
+                    <Link href={`/settings/payees/${e.id}`} className="font-medium hover:underline break-all">
+                      {e.name}
+                    </Link>
+                    <span className="text-xs text-muted-foreground">{typeLabel(e.type)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {e.aliasCount} alias{e.aliasCount === 1 ? "" : "es"}
+                      {data?.settings.advancedMode && e.identifierCount ? ` · ${e.identifierCount} requisite(s)` : ""}
+                    </span>
+                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      {e.count} tx · {formatCurrency(e.total, currency)}
+                      {e.lastDate ? ` · last ${e.lastDate}` : ""}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : tab === "changes" ? (
+            (data?.batches ?? []).length === 0 ? (
+              <p className="text-sm text-muted-foreground">No changes yet.</p>
+            ) : (
+              <ul className="divide-y rounded-lg border">
+                {(data?.batches ?? []).map((b) => (
+                  <li key={b.id} className="flex flex-wrap items-center gap-2 p-3 text-sm">
+                    <span className="font-medium">#{b.id}</span>
+                    <span>{batchLabel(b)}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{b.createdAt.slice(0, 16).replace("T", " ")}</span>
+                    <span className="ml-auto">
+                      {b.undoneAt ? (
+                        <span className="text-xs text-muted-foreground">Undone</span>
+                      ) : b.canUndo ? (
+                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setAction({ kind: "undo", batch: b })}>
+                          Undo
+                        </Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">Older than 30 days</span>
+                      )}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -200,17 +370,23 @@ export default function PayeesSettingsPage() {
               <ul className="space-y-2 sm:hidden">
                 {rows.map((g) => (
                   <li key={g.key} className="rounded-lg border p-3 text-sm">
-                    <div className="flex flex-wrap items-center">
-                      {payeeLink(g)}
-                      {spellingsBadge(g)}
+                    <div className="flex items-start gap-2">
+                      <span className="mt-1">{checkbox(g)}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center">
+                          {payeeLink(g)}
+                          {spellingsBadge(g)}
+                        </div>
+                        <p className="text-xs text-muted-foreground mt-1">{typeCell(g)}</p>
+                        <p className="text-xs text-muted-foreground mt-1 tabular-nums">
+                          {g.count} tx · {formatCurrency(g.total, currency)} · {g.firstDate ?? "—"} → {g.lastDate ?? "—"}
+                        </p>
+                        {g.categories.length > 0 && (
+                          <p className="text-xs text-muted-foreground truncate">{g.categories.map((c) => c.name).join(", ")}</p>
+                        )}
+                      </div>
                     </div>
-                    <p className="text-xs text-muted-foreground mt-1">{typeCell(g)}</p>
-                    <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-                      {g.count} tx · {formatCurrency(g.total, currency)} · {g.firstDate ?? "—"} → {g.lastDate ?? "—"}
-                    </p>
-                    {g.categories.length > 0 && (
-                      <p className="text-xs text-muted-foreground truncate">{g.categories.map((c) => c.name).join(", ")}</p>
-                    )}
+                    <div className="flex justify-end">{rowAction(g)}</div>
                   </li>
                 ))}
               </ul>
@@ -218,6 +394,7 @@ export default function PayeesSettingsPage() {
                 <table className="w-full text-sm">
                   <thead className="text-left text-xs text-muted-foreground">
                     <tr className="border-b">
+                      <th className="w-8 py-2" />
                       <th className="py-2 pr-2">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("name")}>
                           Payee {sortIcon("name")}
@@ -242,11 +419,13 @@ export default function PayeesSettingsPage() {
                       </th>
                       <th className="py-2 pr-2">Accounts</th>
                       <th className="py-2 pr-2">Categories</th>
+                      <th className="py-2" />
                     </tr>
                   </thead>
                   <tbody>
                     {rows.map((g) => (
                       <tr key={g.key} className="border-b last:border-0 align-top">
+                        <td className="py-2">{checkbox(g)}</td>
                         <td className="py-2 pr-2">
                           <div className="flex flex-wrap items-center">
                             {payeeLink(g)}
@@ -270,6 +449,7 @@ export default function PayeesSettingsPage() {
                         <td className="py-2 pr-2 text-xs tabular-nums">{g.lastDate ?? "—"}</td>
                         <td className="py-2 pr-2 text-xs text-muted-foreground max-w-40 truncate">{g.accounts.map((a) => a.name).join(", ") || "—"}</td>
                         <td className="py-2 pr-2 text-xs text-muted-foreground max-w-48 truncate">{g.categories.map((c) => c.name).join(", ") || "—"}</td>
+                        <td className="py-2 text-right whitespace-nowrap">{rowAction(g)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -282,6 +462,62 @@ export default function PayeesSettingsPage() {
           )}
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Studio settings</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={data?.settings.advancedMode ?? false}
+              disabled={!data}
+              onChange={(e) => setAdvanced(e.target.checked)}
+            />
+            <span>
+              Advanced mode
+              <span className="block text-xs text-muted-foreground">
+                Show requisites on payee pages: IBAN, tax id, EDRPOU, card last 4 digits, crypto wallet. Stored encrypted;
+                full card numbers are never kept.
+              </span>
+            </span>
+          </label>
+        </CardContent>
+      </Card>
+
+      {action?.kind === "merge" && (
+        <MergeDialog
+          title={action.title}
+          payees={action.payees}
+          entityIds={action.entityIds}
+          suggestedName={action.suggestedName}
+          suggestedType={action.suggestedType}
+          entities={entityOptions}
+          warning={action.warning}
+          onClose={() => setAction(null)}
+          onDone={(r) => done(r)}
+        />
+      )}
+      {action?.kind === "undo" && (
+        <OpDialog
+          title={`Undo change #${action.batch.id}`}
+          body={{ op: "undo", batchId: action.batch.id }}
+          onClose={() => setAction(null)}
+          onDone={(r) => done(r)}
+          confirmLabel="Undo"
+        >
+          <p className="text-xs text-muted-foreground">{batchLabel(action.batch)}</p>
+        </OpDialog>
+      )}
+      {action?.kind === "applyAll" && (
+        <OpDialog title="Apply the directory to stored payees" body={{ op: "apply" }} onClose={() => setAction(null)} onDone={(r) => done(r)} confirmLabel="Rename">
+          <p className="text-xs text-muted-foreground">
+            Every payee that matches a directory entry is renamed to its canonical name.
+          </p>
+        </OpDialog>
+      )}
     </div>
   );
 }

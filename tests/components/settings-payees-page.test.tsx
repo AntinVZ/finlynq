@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import React from "react";
-import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
 
 vi.mock("next/link", () => ({
@@ -46,10 +46,30 @@ const clusters = [
   },
 ];
 
+const preview = {
+  op: "merge", batchId: null, entity: { id: 1, name: "Епіцентр", type: "retail" }, created: true,
+  aliasesAdded: [{ pattern: "Епіцентр К", mode: "exact" }], aliasesRemoved: 0, identifiersAdded: [], identifiersRemoved: 0, entitiesRemoved: 0,
+  rows: { total: 12, byTable: { transactions: 10, recurring: 1, staged: 1 }, changes: [{ from: "Epicentr", to: "Епіцентр", count: 6 }], conflicts: [], truncated: false },
+  warnings: [], blocked: null,
+};
+const batches = [
+  { id: 7, kind: "merge", actor: "mcp", summary: { rows: 12 }, entityIds: [1], createdAt: "2026-10-11T10:00:00Z", expiresAt: "2026-11-10T10:00:00Z", undoneAt: null, canUndo: true },
+];
+
 function setup() {
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+  const calls: Array<{ url: string; body: Record<string, unknown> | null }> = [];
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string }) => {
+    const body = init?.body ? JSON.parse(init.body) : null;
+    calls.push({ url, body });
+    if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
     if (url.startsWith("/api/payees")) {
-      return { ok: true, json: async () => ({ groups, totalGroups: 3, clusters, currency: "UAH", truncated: [], undecryptable: 0 }) };
+      return {
+        ok: true,
+        json: async () => ({
+          groups, totalGroups: 3, clusters, currency: "UAH", truncated: [], undecryptable: 0,
+          entities: [], batches, settings: { advancedMode: false, identifierKinds: [] },
+        }),
+      };
     }
     return { ok: true, json: async () => ({}) };
   }));
@@ -58,6 +78,7 @@ function setup() {
       <PayeesSettingsPage />
     </SWRConfig>,
   );
+  return calls;
 }
 
 afterEach(() => {
@@ -88,5 +109,26 @@ describe("Settings → Payees", () => {
     fireEvent.change(screen.getByPlaceholderText("Search payees…"), { target: { value: "derkach" } });
     expect(screen.queryAllByText("Епіцентр К")).toHaveLength(0);
     expect(screen.getAllByText("Деркач Олександр Петрович").length).toBeGreaterThan(0);
+  });
+
+  it("merges a cluster after a preview of the rows it renames", async () => {
+    const calls = setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Clusters/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Merge…" })[0]);
+    expect(await screen.findByText(/Renames 12 rows: 10 in transactions, 1 in recurring transactions, 1 in staged imports/)).toBeTruthy();
+    const dry = calls.find((c) => c.body?.dryRun === true)!;
+    expect(dry.body).toMatchObject({ op: "merge", into: { name: "Епіцентр", type: "retail" } });
+    expect((dry.body!.payees as string[]).sort()).toEqual(["EPITCENTR K10 KYIV 360616", "Epicentr", "Епіцентр", "Епіцентр К"].sort());
+    fireEvent.click(screen.getByRole("button", { name: "Merge" }));
+    await waitFor(() => expect(calls.some((c) => c.body && c.body.op === "merge" && c.body.dryRun === undefined)).toBe(true));
+  });
+
+  it("lists change batches with Undo", async () => {
+    setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Changes/ }));
+    expect(screen.getByText(/Merged · 12 rows · by AI \(MCP\)/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 });
