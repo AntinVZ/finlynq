@@ -46,6 +46,8 @@
 import { sql } from "drizzle-orm";
 import { calculateAgeOfMoney } from "./age-of-money";
 import { getRate } from "./fx-service";
+import type { BusinessFilter } from "./reports/business-filter";
+import { businessFilterCondition } from "./reports/business-filter-sql";
 import { tagAmount, type TaggedAmount } from "../../mcp-server/currency-tagging";
 import { isCashGroup } from "./accounts/groups";
 import { applyInvestmentMarketOverlay } from "./accounts/investment-balance-overlay";
@@ -158,6 +160,12 @@ export type HealthPayload = {
    *     rather than present it as authoritative.
    */
   savingsRatePct: number | null;
+  /**
+   * The business / personal scope `savingsRatePct` was computed with. Only the
+   * headline figure follows `savingsScope`; the composite score (and its
+   * Savings Rate component) always covers every transaction.
+   */
+  savingsRateScope: BusinessFilter;
   dti: { pct: number | null; reliable: boolean };
   /**
    * How the money totals were valued — `"market"` when investment accounts were
@@ -183,6 +191,12 @@ export type CalculateFinancialHealthArgs = {
    */
   dek: Buffer | null;
   reportingCurrency: string;
+  /**
+   * Optional business / personal scope for the headline `savingsRatePct` only
+   * (the dashboard's Savings Rate tile). Default "all". Does not touch the
+   * composite score, which is a whole-picture figure built on balances.
+   */
+  savingsScope?: BusinessFilter;
 };
 
 function gradeFor(score: number): HealthPayload["grade"] {
@@ -203,6 +217,7 @@ export async function calculateFinancialHealth(
   args: CalculateFinancialHealthArgs,
 ): Promise<HealthPayload> {
   const { db, userId, dek, reportingCurrency } = args;
+  const savingsScope: BusinessFilter = args.savingsScope ?? "all";
   const reporting = reportingCurrency.toUpperCase();
 
   const now = new Date();
@@ -226,25 +241,32 @@ export async function calculateFinancialHealth(
   };
 
   // ── 1. Savings Rate (3-month window) ───────────────────────────────────
-  const incomeExpenses = asRows(await db.execute(sql`
-    SELECT TO_CHAR(t.date::date, 'YYYY-MM') AS month, c.type AS cat_type,
-           COALESCE(t.currency, a.currency) AS currency,
-           SUM(t.amount) AS total
-    FROM transactions t
-    LEFT JOIN categories c ON t.category_id = c.id
-    LEFT JOIN accounts a ON a.id = t.account_id
-    WHERE t.user_id = ${userId} AND t.date >= ${threeStart} AND c.type IN ('E','I')
-    GROUP BY TO_CHAR(t.date::date, 'YYYY-MM'), c.type, COALESCE(t.currency, a.currency)
-  `)) as Array<{ month: string; cat_type: string; currency: string | null; total: number | string }>;
+  // `scope` narrows to business / personal transactions; "all" adds nothing.
+  const incomeExpenses3m = async (scope: BusinessFilter) => {
+    const scopeCond = businessFilterCondition(scope, sql`t.is_business`);
+    const rows = asRows(await db.execute(sql`
+      SELECT TO_CHAR(t.date::date, 'YYYY-MM') AS month, c.type AS cat_type,
+             COALESCE(t.currency, a.currency) AS currency,
+             SUM(t.amount) AS total
+      FROM transactions t
+      LEFT JOIN categories c ON t.category_id = c.id
+      LEFT JOIN accounts a ON a.id = t.account_id
+      WHERE t.user_id = ${userId} AND t.date >= ${threeStart} AND c.type IN ('E','I')
+        ${scopeCond ? sql`AND ${scopeCond}` : sql``}
+      GROUP BY TO_CHAR(t.date::date, 'YYYY-MM'), c.type, COALESCE(t.currency, a.currency)
+    `)) as Array<{ month: string; cat_type: string; currency: string | null; total: number | string }>;
+    let income = 0;
+    let expenses = 0;
+    for (const r of rows) {
+      const fx = await fxFor(String(r.currency ?? reporting));
+      const converted = Number(r.total) * fx;
+      if (r.cat_type === "I") income += converted;
+      if (r.cat_type === "E") expenses += Math.abs(converted);
+    }
+    return { income, expenses };
+  };
 
-  let totalIncome = 0;
-  let totalExpenses = 0;
-  for (const r of incomeExpenses) {
-    const fx = await fxFor(String(r.currency ?? reporting));
-    const converted = Number(r.total) * fx;
-    if (r.cat_type === "I") totalIncome += converted;
-    if (r.cat_type === "E") totalExpenses += Math.abs(converted);
-  }
+  const { income: totalIncome, expenses: totalExpenses } = await incomeExpenses3m("all");
   const savingsRateScore =
     totalIncome > 0
       ? Math.min(100, Math.max(0, ((totalIncome - totalExpenses) / totalIncome) * 500))
@@ -756,9 +778,15 @@ export async function calculateFinancialHealth(
   // Savings Rate component); DTI reuses the trailing-12m ratio. `dti.reliable`
   // is the negation of the anomaly backstop so the UI can present a caveated
   // figure instead of a suspect number when payments exceed outstanding debt.
+  // A scoped headline (dashboard Business / Personal view) re-runs only the
+  // 3-month income/expense query with the scope applied.
+  const savingsBasis =
+    savingsScope === "all"
+      ? { income: totalIncome, expenses: totalExpenses }
+      : await incomeExpenses3m(savingsScope);
   const savingsRatePct =
-    totalIncome > 0
-      ? Math.round(((totalIncome - totalExpenses) / totalIncome) * 100)
+    savingsBasis.income > 0
+      ? Math.round(((savingsBasis.income - savingsBasis.expenses) / savingsBasis.income) * 100)
       : null;
   const dtiPct = dtiRatio !== null ? Math.round(dtiRatio * 100) : null;
 
@@ -769,6 +797,7 @@ export async function calculateFinancialHealth(
     excludedComponents,
     reportingCurrency: reporting,
     savingsRatePct,
+    savingsRateScope: savingsScope,
     dti: { pct: dtiPct, reliable: dtiReliable },
     netWorthBasis,
     netWorthNote: marked.note,

@@ -6,6 +6,7 @@ import { motion } from "framer-motion";
 import { Info } from "lucide-react";
 import type { HealthData } from "./types";
 import { HealthInfoDialog } from "./health-info-dialog";
+import { AllAccountsBadge } from "@/components/scope-badge";
 
 const itemVariants = {
   hidden: { opacity: 0, y: 16 },
@@ -126,8 +127,10 @@ export function HealthScoreCard({ health: healthProp }: { health?: HealthData | 
         <div className="absolute -top-12 -right-12 w-32 h-32 rounded-full bg-emerald-500/5 blur-2xl pointer-events-none" />
         <CardContent className="relative pt-5 pb-5 h-full">
           <div className="flex items-center justify-between mb-4">
-            <p className="text-xs font-medium text-muted-foreground tracking-wide uppercase">
+            <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground tracking-wide uppercase">
               Financial Health
+              {/* Whole-picture score (balances, emergency fund…): never scoped. */}
+              <AllAccountsBadge className="normal-case tracking-normal" />
             </p>
             {health ? (
               <button

@@ -115,4 +115,19 @@ describe("API /api/insights", () => {
     expect(passed[0].month).toBe("2024-01");
     expect(passed[0].total).toBeCloseTo(1417.5, 2);
   });
+
+  it("business=true scopes monthly spending and the merchant window", async () => {
+    const res = await GET(createMockRequest("http://localhost:3000/api/insights?business=true"));
+    const { data } = await parseResponse(res);
+    expect(mockGetMonthlySpending).toHaveBeenCalledWith("default", expect.any(String), expect.any(String), "business");
+    expect(mockGetTransactions.mock.calls[0][1]).toEqual(expect.objectContaining({ business: "business" }));
+    expect((data as { business: string }).business).toBe("business");
+  });
+
+  it("no param → all, and no business filter on the transaction window", async () => {
+    await GET(createMockRequest("http://localhost:3000/api/insights"));
+    expect(mockGetMonthlySpending).toHaveBeenCalledWith("default", expect.any(String), expect.any(String), "all");
+    expect(mockGetTransactions.mock.calls[0][1].business).toBeUndefined();
+  });
 });
+

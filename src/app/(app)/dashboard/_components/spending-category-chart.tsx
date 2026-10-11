@@ -5,6 +5,7 @@ import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import { PieTooltip } from "./chart-tooltip";
 import { formatCurrency } from "@/lib/currency";
 import { motion } from "framer-motion";
+import { ScopeBadge } from "@/components/scope-badge";
 
 const CHART_COLORS = [
   "#6366f1", "#8b5cf6", "#06b6d4", "#10b981", "#f59e0b",
@@ -25,7 +26,7 @@ export function SpendingCategoryChart({ data, currency = "CAD" }: { data: Spendi
     <motion.div variants={itemVariants}>
       <Card className="card-hover">
         <CardHeader className="pb-1 px-5 pt-5">
-          <CardTitle className="text-sm font-semibold">Spending by Category</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-sm font-semibold">Spending by Category<ScopeBadge /></CardTitle>
           {/* /api/dashboard defaults to a trailing 12-month window (plus the current
               month), not the current month alone. */}
           <p className="text-[11px] text-muted-foreground">Last 12 months breakdown</p>

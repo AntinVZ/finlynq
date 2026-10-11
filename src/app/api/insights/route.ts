@@ -7,6 +7,7 @@ import { convertReportingSlice } from "@/lib/fx/reporting-amount";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { tryDecryptField } from "@/lib/crypto/envelope";
 import { requireDevMode } from "@/lib/require-dev-mode";
+import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth(request);
@@ -18,6 +19,9 @@ export async function GET(request: NextRequest) {
   const startDate = `${now.getFullYear() - 1}-01-01`;
   const endDate = `${now.getFullYear()}-12-31`;
   const currentMonth = getCurrentMonth();
+  // Optional business=true|false|all (default all): every insight here is
+  // built from transactions, so all of it follows the scope.
+  const business = parseBusinessParam(request.nextUrl.searchParams.get(BUSINESS_PARAM));
 
   // Stream D Phase 4 â€” getMonthlySpending now returns categoryNameCt; decrypt
   // before feeding the analyzers (they need plaintext labels).
@@ -28,7 +32,7 @@ export async function GET(request: NextRequest) {
   const { decryptName } = await import("@/lib/crypto/encrypted-columns");
   const displayCurrency = await getDisplayCurrency(userId);
   const rateMap = await getRateMap(displayCurrency, userId);
-  const monthlySpending = await getMonthlySpending(userId, startDate, endDate);
+  const monthlySpending = await getMonthlySpending(userId, startDate, endDate, business);
   const normMap = new Map<string, { month: string; categoryName: string; categoryGroup: string; total: number }>();
   for (const r of monthlySpending) {
     const categoryName = decryptName(r.categoryNameCt, dek, null) ?? "";
@@ -54,6 +58,7 @@ export async function GET(request: NextRequest) {
     startDate: sixMonthsAgo.toISOString().split("T")[0],
     endDate: endDate,
     limit: 5000,
+    business: business === "all" ? undefined : business,
   });
 
   // Decrypt payee in memory so merchant grouping works (ciphertext has a
@@ -71,5 +76,6 @@ export async function GET(request: NextRequest) {
     trends: trends.slice(0, 15),
     topMerchants: merchants.slice(0, 20),
     spendingByDay: dayOfWeek,
+    business,
   });
 }

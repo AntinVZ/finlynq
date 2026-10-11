@@ -6,6 +6,9 @@ import { formatCurrency } from "@/lib/currency";
 import { AlertTriangle, RefreshCw, Store, TrendingUp, ArrowUpRight, ArrowDownRight } from "lucide-react";
 import { motion } from "framer-motion";
 import type { InsightsData, RecurringData } from "./types";
+import { ScopeBadge } from "@/components/scope-badge";
+import type { ViewScope } from "@/lib/view-scope";
+import { serializeBusinessFilter, BUSINESS_PARAM } from "@/lib/reports/business-filter";
 
 const containerVariants = {
   hidden: { opacity: 0 },
@@ -25,12 +28,14 @@ function InsightCard({
   iconBg,
   title,
   subtitle,
+  badge,
   children,
 }: {
   icon: typeof AlertTriangle;
   iconBg: string;
   title: string;
   subtitle: string;
+  badge?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -42,7 +47,7 @@ function InsightCard({
               <Icon className="h-4 w-4" />
             </div>
             <div>
-              <CardTitle className="text-sm font-semibold">{title}</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">{title}{badge}</CardTitle>
               <p className="text-[11px] text-muted-foreground">{subtitle}</p>
             </div>
           </div>
@@ -53,13 +58,14 @@ function InsightCard({
   );
 }
 
-export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
+export function InsightsSection({ currency = "CAD", scope = "all" }: { currency?: string; scope?: ViewScope }) {
   const [insights, setInsights] = useState<InsightsData | null>(null);
   const [recurring, setRecurring] = useState<RecurringData | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/insights")
+    const biz = serializeBusinessFilter(scope);
+    fetch(`/api/insights${biz ? `?${BUSINESS_PARAM}=${biz}` : ""}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled && d && typeof d === "object") setInsights(d as InsightsData);
@@ -78,7 +84,7 @@ export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [scope]);
 
   return (
     <motion.div
@@ -93,6 +99,7 @@ export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
           icon={AlertTriangle}
           iconBg="bg-amber-100 text-amber-600 dark:bg-amber-950/60 dark:text-amber-400"
           title="Spending Alerts"
+          badge={<ScopeBadge scope={insights?.business ?? scope} />}
           subtitle="Categories above average"
         >
           <div className="space-y-1.5">
@@ -125,6 +132,7 @@ export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
           icon={RefreshCw}
           iconBg="bg-cyan-100 text-cyan-600 dark:bg-cyan-950/60 dark:text-cyan-400"
           title={`Recurring (${recurring.count})`}
+          badge={<ScopeBadge scope="all" />}
           subtitle={`${formatCurrency(recurring.monthlyRecurringTotal, recurring.displayCurrency || currency)}/month`}
         >
           <div className="divide-y divide-border/40">
@@ -149,6 +157,7 @@ export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
           icon={Store}
           iconBg="bg-violet-100 text-violet-600 dark:bg-violet-950/60 dark:text-violet-400"
           title="Top Merchants"
+          badge={<ScopeBadge scope={insights?.business ?? scope} />}
           subtitle="Last 6 months spending"
         >
           <div className="divide-y divide-border/40">
@@ -173,6 +182,7 @@ export function InsightsSection({ currency = "CAD" }: { currency?: string }) {
           icon={TrendingUp}
           iconBg="bg-primary/10 text-primary"
           title="Category Trends"
+          badge={<ScopeBadge scope={insights?.business ?? scope} />}
           subtitle="Spending direction by category"
         >
           <div className="divide-y divide-border/40">

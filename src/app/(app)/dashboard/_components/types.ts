@@ -1,3 +1,5 @@
+import type { ViewScope } from "@/lib/view-scope";
+
 export type Balance = {
   accountId: number;
   accountName: string;
@@ -34,6 +36,8 @@ export type IncomeExpenseBreakdown = Record<
 >;
 
 export type DashboardData = {
+  /** Scope the flow series were computed with (echo of the `business` param). */
+  business?: ViewScope;
   balances: Balance[];
   incomeVsExpenses: IncomeExpense[];
   incomeExpenseBreakdown?: IncomeExpenseBreakdown;
@@ -68,6 +72,8 @@ export type HealthData = {
   // FINLYNQ-291 — standalone headline percentages (see HealthPayload in
   // src/lib/financial-health.ts). Optional here since older payloads omit them.
   savingsRatePct?: number | null;
+  /** Scope the savings rate was computed with (`business` param of /api/health-score). */
+  savingsRateScope?: ViewScope;
   dti?: { pct: number | null; reliable: boolean };
   /**
    * How the money totals above were valued (2026-08-27). `"market"` means
@@ -99,6 +105,8 @@ export type SpotlightItem = {
 };
 
 export type WeeklyRecapData = {
+  /** Scope of the flow figures; netWorthChange / upcomingBills are unscoped. */
+  business?: ViewScope;
   weekStart: string;
   weekEnd: string;
   spending: {
@@ -125,6 +133,7 @@ export type MonthlyData = {
 };
 
 export type InsightsData = {
+  business?: ViewScope;
   anomalies: { category: string; currentMonth: number; average: number; percentAbove: number; severity: string }[];
   trends: { category: string; trend: string; changePercent: number }[];
   topMerchants: { payee: string; totalSpent: number; count: number }[];

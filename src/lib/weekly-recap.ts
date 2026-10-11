@@ -6,10 +6,19 @@ import { tryDecryptField } from "@/lib/crypto/envelope";
 import { getDisplayCurrency, getRateMap, convertWithRateMap } from "@/lib/fx-service";
 import { convertReportingSlice } from "@/lib/fx/reporting-amount";
 import { advanceStaleSubscriptionDatesSafe } from "@/lib/subscriptions/advance-next-dates";
+import type { BusinessFilter } from "@/lib/reports/business-filter";
+import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 
 const { categories, transactions, budgets } = schema;
 
 type RateCtx = { displayCurrency: string; rateMap: Map<string, number> };
+
+// Business / personal scope (lib/reports/business-filter.ts). Applies to the
+// flow figures (spending, income, net cash flow, budget spent, notable
+// transactions); `netWorthChange` and `upcomingBills` are not transaction
+// slices and always cover everything.
+const bizCond = (business: BusinessFilter) =>
+  businessFilterCondition(business, transactions.isBusiness) ?? undefined;
 
 export type WeeklyRecap = {
   weekStart: string;
@@ -63,7 +72,7 @@ export function getWeekBounds(endDate?: string): { weekStart: string; weekEnd: s
   };
 }
 
-async function getSpendingForPeriod(userId: string, start: string, end: string, dek: Buffer | null, fx: RateCtx) {
+async function getSpendingForPeriod(userId: string, start: string, end: string, dek: Buffer | null, fx: RateCtx, business: BusinessFilter) {
   // Stream D Phase 4 — plaintext name dropped; ciphertext only.
   // FINLYNQ-123 — spending is a FLOW figure, so aggregate per
   // (category, currency, reporting_currency) slice and convert each to the
@@ -85,7 +94,8 @@ async function getSpendingForPeriod(userId: string, start: string, end: string, 
         eq(transactions.userId, userId),
         gte(transactions.date, start),
         lte(transactions.date, end),
-        eq(categories.type, "E")
+        eq(categories.type, "E"),
+        bizCond(business),
       )
     )
     .groupBy(categories.id, categories.nameCt, transactions.currency, transactions.reportingCurrency)
@@ -111,7 +121,7 @@ async function getSpendingForPeriod(userId: string, start: string, end: string, 
   return { total: Math.round(total * 100) / 100, topCategories };
 }
 
-async function getIncomeForPeriod(userId: string, start: string, end: string, fx: RateCtx): Promise<number> {
+async function getIncomeForPeriod(userId: string, start: string, end: string, fx: RateCtx, business: BusinessFilter): Promise<number> {
   // FINLYNQ-123 — income is a FLOW figure: convert each
   // (currency, reporting_currency) slice via stored reporting_amount.
   const rows = await db
@@ -128,7 +138,8 @@ async function getIncomeForPeriod(userId: string, start: string, end: string, fx
         eq(transactions.userId, userId),
         gte(transactions.date, start),
         lte(transactions.date, end),
-        eq(categories.type, "I")
+        eq(categories.type, "I"),
+        bizCond(business),
       )
     )
     .groupBy(transactions.currency, transactions.reportingCurrency)
@@ -137,7 +148,12 @@ async function getIncomeForPeriod(userId: string, start: string, end: string, fx
   return Math.round(total * 100) / 100;
 }
 
-export async function generateWeeklyRecap(userId: string, endDate?: string, dek?: Buffer | null): Promise<WeeklyRecap> {
+export async function generateWeeklyRecap(
+  userId: string,
+  endDate?: string,
+  dek?: Buffer | null,
+  business: BusinessFilter = "all",
+): Promise<WeeklyRecap> {
   const { weekStart, weekEnd, prevWeekStart, prevWeekEnd } = getWeekBounds(endDate);
 
   // FINLYNQ-123 — resolve the display currency + current-rate map once. Flow
@@ -149,15 +165,15 @@ export async function generateWeeklyRecap(userId: string, endDate?: string, dek?
   const fx: RateCtx = { displayCurrency, rateMap };
 
   // Spending
-  const currentSpending = await getSpendingForPeriod(userId, weekStart, weekEnd, dek ?? null, fx);
-  const prevSpending = await getSpendingForPeriod(userId, prevWeekStart, prevWeekEnd, dek ?? null, fx);
+  const currentSpending = await getSpendingForPeriod(userId, weekStart, weekEnd, dek ?? null, fx, business);
+  const prevSpending = await getSpendingForPeriod(userId, prevWeekStart, prevWeekEnd, dek ?? null, fx, business);
   const spendingChange = prevSpending.total > 0
     ? Math.round(((currentSpending.total - prevSpending.total) / prevSpending.total) * 100)
     : 0;
 
   // Income
-  const currentIncome = await getIncomeForPeriod(userId, weekStart, weekEnd, fx);
-  const prevIncome = await getIncomeForPeriod(userId, prevWeekStart, prevWeekEnd, fx);
+  const currentIncome = await getIncomeForPeriod(userId, weekStart, weekEnd, fx, business);
+  const prevIncome = await getIncomeForPeriod(userId, prevWeekStart, prevWeekEnd, fx, business);
 
   // Net cash flow
   const netCashFlow = Math.round((currentIncome - currentSpending.total) * 100) / 100;
@@ -187,7 +203,9 @@ export async function generateWeeklyRecap(userId: string, endDate?: string, dek?
     })
     .from(budgets)
     .leftJoin(categories, eq(budgets.categoryId, categories.id))
-    .leftJoin(transactions, eq(transactions.categoryId, budgets.categoryId))
+    // The scope goes in the JOIN, not the WHERE, so a budget with no matching
+    // transactions still shows up (spent 0).
+    .leftJoin(transactions, and(eq(transactions.categoryId, budgets.categoryId), bizCond(business)))
     .where(and(eq(budgets.month, month), eq(budgets.userId, userId)))
     .groupBy(budgets.id, categories.id, categories.nameCt, budgets.amount, transactions.currency, transactions.reportingCurrency)
     .all();
@@ -238,7 +256,8 @@ export async function generateWeeklyRecap(userId: string, endDate?: string, dek?
         eq(transactions.userId, userId),
         gte(transactions.date, weekStart),
         lte(transactions.date, weekEnd),
-        eq(categories.type, "E")
+        eq(categories.type, "E"),
+        bizCond(business),
       )
     )
     .orderBy(sql`${transactions.amount} ASC`)

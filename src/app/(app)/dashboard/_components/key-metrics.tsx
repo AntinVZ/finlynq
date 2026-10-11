@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { motion } from "framer-motion";
 import { PiggyBank, Scale } from "lucide-react";
 import type { HealthData } from "./types";
+import { AllAccountsBadge, ScopeBadge } from "@/components/scope-badge";
 
 const itemVariants = {
   hidden: { opacity: 0, y: 16 },
@@ -48,6 +49,9 @@ export function KeyMetrics({ health }: { health: HealthData | null }) {
       value: savings != null ? `${savings}%` : "—",
       tone: savings != null ? toneForSavings(savings) : NEUTRAL,
       sub: savings != null ? "of income saved · last 3 months" : "No income data yet",
+      // Income minus spending: follows the view scope (the server scopes only
+      // this headline, see savingsScope in lib/financial-health.ts).
+      badge: <ScopeBadge scope={health?.savingsRateScope} />,
     },
     {
       key: "dti",
@@ -70,6 +74,8 @@ export function KeyMetrics({ health }: { health: HealthData | null }) {
             // the pay-in-full case. Say that, rather than the old "go check
             // your data", which pointed the user at nothing actionable.
             : "cards paid in full excluded · last 12 months",
+      // Loan payments vs income across all accounts: never scoped.
+      badge: <AllAccountsBadge />,
     },
   ];
 
@@ -86,6 +92,7 @@ export function KeyMetrics({ health }: { health: HealthData | null }) {
                   <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
                     {c.label}
                   </span>
+                  <span className="ml-auto">{c.badge}</span>
                 </div>
                 {loading ? (
                   <span className="inline-block h-7 w-16 animate-shimmer rounded-md align-middle" />

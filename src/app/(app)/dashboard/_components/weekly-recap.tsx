@@ -9,13 +9,16 @@ import { Calendar, ChevronDown, ChevronUp, ArrowUpRight, ArrowDownRight } from "
 import { motion, AnimatePresence } from "framer-motion";
 import type { WeeklyRecapData } from "./types";
 import { CspSafeBar } from "@/components/csp-safe-bar";
+import { AllAccountsBadge, ScopeBadge } from "@/components/scope-badge";
+import type { ViewScope } from "@/lib/view-scope";
+import { serializeBusinessFilter, BUSINESS_PARAM } from "@/lib/reports/business-filter";
 
 const itemVariants = {
   hidden: { opacity: 0, y: 16 },
   visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: "easeOut" as const } },
 };
 
-export function WeeklyRecap() {
+export function WeeklyRecap({ scope = "all" }: { scope?: ViewScope } = {}) {
   // [lib/weekly-recap.ts](../../../../lib/weekly-recap.ts) already converts every
   // figure to the user's display currency (FINLYNQ-123) — this card was just
   // LABELLING them "CAD" unconditionally, so a EUR/USD user read correct numbers
@@ -26,7 +29,8 @@ export function WeeklyRecap() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/recap")
+    const biz = serializeBusinessFilter(scope);
+    fetch(`/api/recap${biz ? `?${BUSINESS_PARAM}=${biz}` : ""}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (cancelled) return;
@@ -38,7 +42,7 @@ export function WeeklyRecap() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [scope]);
 
   if (!recap) return null;
 
@@ -61,7 +65,10 @@ export function WeeklyRecap() {
                 <Calendar className="h-4 w-4" />
               </div>
               <div>
-                <CardTitle className="text-sm font-semibold">Weekly Recap</CardTitle>
+                <CardTitle className="flex items-center gap-2 text-sm font-semibold">
+                  Weekly Recap
+                  <ScopeBadge scope={recap.business ?? scope} />
+                </CardTitle>
                 <p className="text-[11px] text-muted-foreground">
                   {recap.weekStart} — {recap.weekEnd}
                 </p>
@@ -223,7 +230,10 @@ export function WeeklyRecap() {
 
                   {/* Net worth change */}
                   <div className="flex items-center justify-between text-[12px] border-t pt-2.5">
-                    <span className="text-muted-foreground">Net worth change this week</span>
+                    <span className="flex items-center gap-2 text-muted-foreground">
+                      Net worth change this week
+                      <AllAccountsBadge />
+                    </span>
                     <span className={`font-semibold tabular-nums ${recap.netWorthChange >= 0 ? "text-emerald-500" : "text-rose-500"}`}>
                       {recap.netWorthChange >= 0 ? "+" : ""}{formatCurrency(recap.netWorthChange, displayCurrency)}
                     </span>

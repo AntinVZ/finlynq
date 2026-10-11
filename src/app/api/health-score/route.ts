@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { calculateFinancialHealth } from "@/lib/financial-health";
 import { getDisplayCurrency } from "@/lib/fx-service";
+import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 
 /**
  * Financial health score for the dashboard's Financial Health card.
@@ -24,6 +25,9 @@ export async function GET(request: NextRequest) {
     userId,
     dek: dek ?? null,
     reportingCurrency,
+    // Optional business=true|false|all (default all). Scopes ONLY the headline
+    // savingsRatePct (Savings Rate tile); the score itself is whole-picture.
+    savingsScope: parseBusinessParam(url.searchParams.get(BUSINESS_PARAM)),
   });
 
   return NextResponse.json(payload);

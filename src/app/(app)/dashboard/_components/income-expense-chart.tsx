@@ -14,6 +14,7 @@ import { buildStackedSeries, type StackPoint } from "@/lib/chart-stack";
 import { StackedChartLegend } from "@/components/chart-stack-legend";
 import { motion } from "framer-motion";
 import type { MonthlyData } from "./types";
+import { ScopeBadge } from "@/components/scope-badge";
 
 const itemVariants = {
   hidden: { opacity: 0, y: 16 },
@@ -124,7 +125,7 @@ export function IncomeExpenseChart({
         <CardHeader className="pb-1 px-5 pt-5">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <CardTitle className="text-sm font-semibold">Income vs Expenses</CardTitle>
+              <CardTitle className="flex items-center gap-2 text-sm font-semibold">Income vs Expenses<ScopeBadge /></CardTitle>
               <p className="text-[11px] text-muted-foreground">Last 12 months</p>
             </div>
             {stackable && (
