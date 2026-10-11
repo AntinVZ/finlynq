@@ -14,7 +14,6 @@ import path from "path";
 // with no live database.
 const QUARANTINE = [
   // API route suites (mock/handler drift → 404/500/shape mismatches)
-  "tests/api/categories.test.ts",
   "tests/api/chat.test.ts",
   "tests/api/dashboard.test.ts",
   "tests/api/data.test.ts",

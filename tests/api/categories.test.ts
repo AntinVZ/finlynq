@@ -8,7 +8,9 @@ const mockGetCategories = vi.fn();
 const mockCreateCategory = vi.fn();
 const mockUpdateCategory = vi.fn();
 const mockDeleteCategory = vi.fn();
+const mockGetCounts = vi.fn();
 vi.mock("@/lib/queries", () => ({
+  getTransactionCountsByCategory: (...args: unknown[]) => mockGetCounts(...args),
   getCategories: (...args: unknown[]) => mockGetCategories(...args),
   createCategory: (...args: unknown[]) => mockCreateCategory(...args),
   updateCategory: (...args: unknown[]) => mockUpdateCategory(...args),
@@ -16,6 +18,12 @@ vi.mock("@/lib/queries", () => ({
 }));
 
 vi.mock("@/db", () => ({ db: {}, schema: {} }));
+
+const mockTypeBlock = vi.fn();
+vi.mock("@/lib/transactions/sign-category-invariant", () => ({
+  getCategoryTypeChangeBlock: (...args: unknown[]) => mockTypeBlock(...args),
+}));
+vi.mock("@/lib/mcp/user-tx-cache", () => ({ invalidateUser: vi.fn() }));
 
 // Only the DB-touching count is stubbed; the refusal-message builder stays real
 // so the assertions below exercise the wording users actually see.
@@ -58,16 +66,22 @@ describe("API /api/categories", () => {
     });
 
     it("returns all categories", async () => {
-      const cats = [
-        { id: 1, type: "E", group: "Food", name: "Groceries" },
-        { id: 2, type: "I", group: "Income", name: "Salary" },
-      ];
-      mockGetCategories.mockReturnValue(cats);
+      // Names live only in name_ct (Stream D Phase 4); the route decrypts
+      // them and drops the ciphertext.
+      const { encryptName } = await import("@/lib/crypto/encrypted-columns");
+      const dek = Buffer.alloc(32, 0xaa);
+      mockGetCategories.mockReturnValue([
+        { id: 1, type: "E", group: "Food", nameCt: encryptName(dek, "Groceries").ct },
+        { id: 2, type: "I", group: "Income", nameCt: encryptName(dek, "Salary").ct },
+      ]);
       const req = createMockRequest("http://localhost:3000/api/categories");
       const res = await GET(req);
       const { status, data } = await parseResponse(res);
       expect(status).toBe(200);
-      expect(data).toEqual(cats);
+      expect((data as Array<{ id: number; name: string }>).map((c) => [c.id, c.name])).toEqual([
+        [1, "Groceries"],
+        [2, "Salary"],
+      ]);
     });
   });
 
@@ -208,6 +222,70 @@ describe("API /api/categories", () => {
       const req = createMockRequest("http://localhost:3000/api/categories", { method: "DELETE" });
       const res = await DELETE(req);
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe("Settings → Categorization additions", () => {
+    const dek = Buffer.alloc(32, 0xaa);
+
+    it("GET ?withCounts=1 adds txCount per category (0 when absent)", async () => {
+      mockGetCategories.mockReturnValue([
+        { id: 1, type: "E", group: "Food", note: "" },
+        { id: 2, type: "I", group: "Income", note: "" },
+      ]);
+      mockGetCounts.mockResolvedValue(new Map([[1, 7]]));
+      const res = await GET(createMockRequest("http://localhost:3000/api/categories?withCounts=1"));
+      const { status, data } = await parseResponse(res);
+      expect(status).toBe(200);
+      expect((data as Array<{ id: number; txCount: number }>).map((c) => [c.id, c.txCount])).toEqual([[1, 7], [2, 0]]);
+    });
+
+    it("GET without withCounts does not query counts", async () => {
+      mockGetCategories.mockReturnValue([{ id: 1, type: "E", group: "Food" }]);
+      const { data } = await parseResponse(await GET(createMockRequest("http://localhost:3000/api/categories")));
+      expect(mockGetCounts).not.toHaveBeenCalled();
+      expect((data as Array<Record<string, unknown>>)[0].txCount).toBeUndefined();
+    });
+
+    it("GET decrypts an encrypted note", async () => {
+      const { encryptField } = await import("@/lib/crypto/envelope");
+      mockGetCategories.mockReturnValue([{ id: 1, type: "E", group: "Food", note: encryptField(dek, "weekly shop") }]);
+      const { data } = await parseResponse(await GET(createMockRequest("http://localhost:3000/api/categories")));
+      expect((data as Array<{ note: string }>)[0].note).toBe("weekly shop");
+    });
+
+    it("PUT encrypts note and keeps group/type", async () => {
+      mockTypeBlock.mockResolvedValue(null);
+      mockUpdateCategory.mockReturnValue({ id: 1 });
+      const res = await PUT(createMockRequest("http://localhost:3000/api/categories", {
+        method: "PUT",
+        body: { id: 1, group: " Home ", type: "income", note: "rent" },
+      }));
+      expect(res.status).toBe(200);
+      const [, , data] = mockUpdateCategory.mock.calls[0] as [number, string, Record<string, unknown>];
+      expect(data.group).toBe("Home");
+      expect(data.type).toBe("I");
+      expect(typeof data.note).toBe("string");
+      expect(data.note).not.toBe("rent");
+      expect(mockTypeBlock).toHaveBeenCalledWith("default", 1, "I");
+    });
+
+    it("PUT refuses a type change while transactions use the category", async () => {
+      mockTypeBlock.mockResolvedValue({ currentType: "E", transactions: 3, splits: 0, message: "in use" });
+      const res = await PUT(createMockRequest("http://localhost:3000/api/categories", {
+        method: "PUT",
+        body: { id: 1, type: "I" },
+      }));
+      const { status, data } = await parseResponse(res);
+      expect(status).toBe(409);
+      expect(data).toMatchObject({ error: "in use", code: "category_in_use" });
+      expect(mockUpdateCategory).not.toHaveBeenCalled();
+    });
+
+    it("PUT without type never checks the type guard", async () => {
+      mockUpdateCategory.mockReturnValue({ id: 1 });
+      await PUT(createMockRequest("http://localhost:3000/api/categories", { method: "PUT", body: { id: 1, group: "X" } }));
+      expect(mockTypeBlock).not.toHaveBeenCalled();
     });
   });
 });
