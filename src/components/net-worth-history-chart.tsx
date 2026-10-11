@@ -134,12 +134,15 @@ export interface NetWorthHistoryChartProps {
    * currencies and has no native basis.
    */
   accountCurrency?: string | null;
+  /** Optional label next to the title (the dashboard's AllAccountsBadge). */
+  titleBadge?: React.ReactNode;
 }
 
 export function NetWorthHistoryChart({
   accountId,
   title = "Net Worth Over Time",
   accountCurrency,
+  titleBadge,
 }: NetWorthHistoryChartProps) {
   const [period, setPeriod] = useState<Period>("6m");
   // FINLYNQ-303 — session-only (resets on reload), mirroring the period +
@@ -230,7 +233,7 @@ export function NetWorthHistoryChart({
       <CardHeader className="pb-1 px-5 pt-5">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <CardTitle className="text-sm font-semibold">{title}</CardTitle>
+            <CardTitle className="flex items-center gap-2 text-sm font-semibold">{title}{titleBadge}</CardTitle>
             <p className="text-[11px] text-muted-foreground">{currency}</p>
           </div>
           <div className="flex items-center gap-1">

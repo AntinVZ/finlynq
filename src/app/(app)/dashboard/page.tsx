@@ -27,6 +27,10 @@ import { useDevMode } from "@/hooks/use-dev-mode";
 import { useDisplayCurrency } from "@/components/currency-provider";
 import { CurrencyAuditBanner } from "@/components/currency-audit-banner";
 import type { DashboardData, HealthData } from "./_components/types";
+import { useViewScope } from "@/components/view-scope-provider";
+import { AllAccountsBadge, ScopeBadge, ALL_ACCOUNTS_HINT } from "@/components/scope-badge";
+import { serializeBusinessFilter, BUSINESS_PARAM } from "@/lib/reports/business-filter";
+import { VIEW_SCOPE_LABELS } from "@/lib/view-scope";
 
 // --- Quick Import Widget ---
 function QuickImportWidget() {
@@ -116,23 +120,33 @@ function DashboardSkeleton() {
 export default function DashboardPage() {
   const devMode = useDevMode();
   const { displayCurrency, isLoading: currencyLoading } = useDisplayCurrency();
+  // Global All / Business / Personal scope. Flow widgets (income, spending,
+  // categories, recap, savings rate) follow it; balance widgets (net worth,
+  // balances, health score, DTI) never do and carry an "All accounts" badge.
+  const { scope, isLoading: scopeLoading } = useViewScope();
   const [data, setData] = useState<DashboardData | null>(null);
   const [health, setHealth] = useState<HealthData | null>(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [userInfo, setUserInfo] = useState<{ email: string; displayName?: string } | null>(null);
 
   useEffect(() => {
-    if (currencyLoading) return; // wait until provider has read settings
-    fetch(`/api/dashboard?currency=${encodeURIComponent(displayCurrency)}`)
+    if (currencyLoading || scopeLoading) return; // wait until providers have read settings
+    const biz = serializeBusinessFilter(scope);
+    const bizParam = biz ? `&${BUSINESS_PARAM}=${biz}` : "";
+    fetch(`/api/dashboard?currency=${encodeURIComponent(displayCurrency)}${bizParam}`)
       .then((r) => { if (r.ok) return r.json(); })
       .then((d) => { if (d) setData(d); });
 
     // Financial-health payload feeds both the Health Score card and the
     // KeyMetrics strip (savings rate + DTI) — fetched once here and passed down
     // so the two consumers don't each hit the (query-heavy) endpoint.
-    fetch(`/api/health-score?currency=${encodeURIComponent(displayCurrency)}`)
+    // `business` scopes only the payload's savingsRatePct; the score is whole-picture.
+    fetch(`/api/health-score?currency=${encodeURIComponent(displayCurrency)}${bizParam}`)
       .then((r) => { if (r.ok) return r.json(); })
       .then((d) => { if (d) setHealth(d); });
+  }, [displayCurrency, currencyLoading, scope, scopeLoading]);
+
+  useEffect(() => {
 
     // Check if onboarding is needed (managed mode only). Username-only users
     // (no email on file) also see the wizard — fall back to username for the
@@ -149,7 +163,7 @@ export default function DashboardPage() {
         }
       })
       .catch(() => {});
-  }, [displayCurrency, currencyLoading]);
+  }, []);
 
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -160,6 +174,8 @@ export default function DashboardPage() {
   if (!data) return <DashboardSkeleton />;
 
   // --- Compute derived data ---
+  // The scope the server actually applied (falls back to the context's).
+  const flowScope = data.business ?? scope;
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 17 ? "Good afternoon" : "Good evening";
 
@@ -288,6 +304,7 @@ export default function DashboardPage() {
       sparkData: nwSparkline,
       sparkLabels: nwSparkLabels,
       href: "/accounts",
+      badge: <AllAccountsBadge />,
     },
     {
       label: "Monthly Income",
@@ -301,6 +318,7 @@ export default function DashboardPage() {
       sparkData: incomeSparkline,
       sparkLabels: incExpSparkLabels,
       href: buildTxDrillUrl({ startDate: monthDrill.startDate, endDate: monthDrill.endDate }),
+      badge: <ScopeBadge scope={flowScope} />,
     },
     {
       label: "Monthly Expenses",
@@ -312,6 +330,7 @@ export default function DashboardPage() {
       sparkData: expenseSparkline,
       sparkLabels: incExpSparkLabels,
       href: buildTxDrillUrl({ startDate: monthDrill.startDate, endDate: monthDrill.endDate }),
+      badge: <ScopeBadge scope={flowScope} />,
     },
     {
       label: "Budgets",
@@ -323,6 +342,8 @@ export default function DashboardPage() {
       sparkData: budgetSparkline,
       sparkLabels: incExpSparkLabels,
       href: "/budgets",
+      // Income minus spending for the month, so it follows the scope.
+      badge: <ScopeBadge scope={flowScope} />,
     },
   ];
 
@@ -358,6 +379,13 @@ export default function DashboardPage() {
         </Link>
       </motion.div>
 
+      {/* Scope hint — badges carry it as a tooltip, which touch screens can't show. */}
+      {scope !== "all" && (
+        <motion.p variants={itemVariants} className="text-xs text-muted-foreground" data-testid="scope-hint">
+          Showing {VIEW_SCOPE_LABELS[scope].toLowerCase()} income and spending. {ALL_ACCOUNTS_HINT}
+        </motion.p>
+      )}
+
       {/* Currency audit banner — shown only when there are unresolved cross-currency rows */}
       <motion.div variants={itemVariants}>
         <CurrencyAuditBanner />
@@ -387,8 +415,9 @@ export default function DashboardPage() {
                 <div className="flex items-start justify-between">
                   <div className="space-y-3">
                     {/* Label */}
-                    <p className="text-xs font-medium text-muted-foreground tracking-wide uppercase">
+                    <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground tracking-wide uppercase">
                       Total Net Worth
+                      <AllAccountsBadge className="normal-case tracking-normal" />
                     </p>
 
                     {/* Big number */}
@@ -453,7 +482,7 @@ export default function DashboardPage() {
           plan/net-worth-over-time.md Part A.
           ============================================ */}
       <motion.div variants={itemVariants}>
-        <NetWorthHistoryChart />
+        <NetWorthHistoryChart titleBadge={<AllAccountsBadge />} />
       </motion.div>
 
       {/* ============================================
@@ -461,7 +490,7 @@ export default function DashboardPage() {
           ============================================ */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <ActionCenter />
-        <WeeklyRecap />
+        <WeeklyRecap scope={scope} />
         <QuickImport />
       </div>
 
@@ -477,7 +506,7 @@ export default function DashboardPage() {
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
             <AvailableToSpend income={lastMonthIncome} expenses={lastMonthExpenses} currency={apiDisplayCurrency} monthLabel={lastMonthKey ? getMonthLabel(lastMonthKey) : undefined} />
           </div>
-          <InsightsSection currency={apiDisplayCurrency} />
+          <InsightsSection currency={apiDisplayCurrency} scope={scope} />
         </>
       )}
 

@@ -44,13 +44,13 @@ describe("API /api/recap", () => {
     // The route forwards `auth.context.dek` as the 3rd arg for payee decryption.
     // It must be the DEK requireAuth resolved — NOT a re-derivation from
     // sessionId, which yields null for API-key callers (GH #343).
-    expect(mockGenerateWeeklyRecap).toHaveBeenCalledWith("default", "2024-01-15", MOCK_DEK);
+    expect(mockGenerateWeeklyRecap).toHaveBeenCalledWith("default", "2024-01-15", MOCK_DEK, "all");
   });
 
   it("uses undefined for missing date", async () => {
     const req = createMockRequest("http://localhost:3000/api/recap");
     await GET(req);
-    expect(mockGenerateWeeklyRecap).toHaveBeenCalledWith("default", undefined, MOCK_DEK);
+    expect(mockGenerateWeeklyRecap).toHaveBeenCalledWith("default", undefined, MOCK_DEK, "all");
   });
 });
 
@@ -139,5 +139,16 @@ describe("getWeekBounds", () => {
 
     expect(weekStart).toBe("2026-06-14");
     expect(weekEnd).toBe("2026-06-20");
+  });
+
+  it.each([
+    ["?business=true", "business"],
+    ["?business=false", "personal"],
+    ["?business=all", "all"],
+  ])("%s scopes the recap and echoes it", async (qs, expected) => {
+    const res = await GET(createMockRequest(`http://localhost:3000/api/recap${qs}`));
+    const { data } = await parseResponse(res);
+    expect(mockGenerateWeeklyRecap).toHaveBeenCalledWith("default", undefined, MOCK_DEK, expected);
+    expect((data as { business: string }).business).toBe(expected);
   });
 });

@@ -857,7 +857,7 @@ export async function getAccountBalances(userId: string, opts?: { includeArchive
     .all();
 }
 
-export async function getMonthlySpending(userId: string, startDate: string, endDate: string) {
+export async function getMonthlySpending(userId: string, startDate: string, endDate: string, business: BusinessFilter = "all") {
   // Stream D Phase 4 — plaintext `categories.name` dropped. GROUP BY drops
   // the name leg; rows carry `categoryNameCt` for caller-side decryption.
   //
@@ -881,7 +881,7 @@ export async function getMonthlySpending(userId: string, startDate: string, endD
     })
     .from(transactions)
     .leftJoin(categories, eq(transactions.categoryId, categories.id))
-    .where(and(eq(transactions.userId, userId), gte(transactions.date, startDate), lte(transactions.date, endDate)))
+    .where(and(eq(transactions.userId, userId), gte(transactions.date, startDate), lte(transactions.date, endDate), businessFilterCondition(business, transactions.isBusiness) ?? undefined))
     .groupBy(monthExpr(transactions.date), categories.nameCt, categories.group, categories.type, transactions.currency, transactions.reportingCurrency)
     .orderBy(monthExpr(transactions.date))
     .all();
@@ -942,7 +942,7 @@ export async function getSpendingByCategoryAndCurrency(userId: string, startDate
 // slices so the dashboard route can convert each slice to the display currency
 // (stored reporting_amount when it matches, else an on-the-fly fallback) before
 // aggregating. Dashboard-only caller. See src/app/api/dashboard/route.ts.
-export async function getIncomeVsExpenses(userId: string, startDate: string, endDate: string) {
+export async function getIncomeVsExpenses(userId: string, startDate: string, endDate: string, business: BusinessFilter = "all") {
   return db
     .select({
       month: monthExpr(transactions.date),
@@ -959,7 +959,8 @@ export async function getIncomeVsExpenses(userId: string, startDate: string, end
         eq(transactions.userId, userId),
         gte(transactions.date, startDate),
         lte(transactions.date, endDate),
-        sql`${categories.type} IN ('E', 'I')`
+        sql`${categories.type} IN ('E', 'I')`,
+        businessFilterCondition(business, transactions.isBusiness) ?? undefined,
       )
     )
     .groupBy(monthExpr(transactions.date), categories.type, transactions.currency, transactions.reportingCurrency)
@@ -974,7 +975,7 @@ export async function getIncomeVsExpenses(userId: string, startDate: string, end
  * grain (categoryId + nameCt for decryption). The route converts each slice to
  * the display currency and ranks per (month, type) via rankBreakdown.
  */
-export async function getIncomeExpenseByCategory(userId: string, startDate: string, endDate: string) {
+export async function getIncomeExpenseByCategory(userId: string, startDate: string, endDate: string, business: BusinessFilter = "all") {
   return db
     .select({
       month: monthExpr(transactions.date),
@@ -993,7 +994,8 @@ export async function getIncomeExpenseByCategory(userId: string, startDate: stri
         eq(transactions.userId, userId),
         gte(transactions.date, startDate),
         lte(transactions.date, endDate),
-        sql`${categories.type} IN ('E', 'I')`
+        sql`${categories.type} IN ('E', 'I')`,
+        businessFilterCondition(business, transactions.isBusiness) ?? undefined,
       )
     )
     .groupBy(
@@ -1011,7 +1013,7 @@ export async function getIncomeExpenseByCategory(userId: string, startDate: stri
 // Currency rework Phase 3 — dashboard spending-by-category with per-currency +
 // reporting slices so the route can convert to the display currency. Distinct
 // from getSpendingByCategory (left raw for the budget-rollover internal caller).
-export async function getSpendingByCategoryWithReporting(userId: string, startDate: string, endDate: string) {
+export async function getSpendingByCategoryWithReporting(userId: string, startDate: string, endDate: string, business: BusinessFilter = "all") {
   return db
     .select({
       categoryId: categories.id,
@@ -1030,7 +1032,8 @@ export async function getSpendingByCategoryWithReporting(userId: string, startDa
         eq(transactions.userId, userId),
         gte(transactions.date, startDate),
         lte(transactions.date, endDate),
-        eq(categories.type, "E")
+        eq(categories.type, "E"),
+        businessFilterCondition(business, transactions.isBusiness) ?? undefined,
       )
     )
     .groupBy(categories.id, categories.nameCt, categories.group, categories.type, transactions.currency, transactions.reportingCurrency)

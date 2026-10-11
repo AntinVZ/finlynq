@@ -129,4 +129,16 @@ describe("API /api/health-score", () => {
     expect(d.score).toBeGreaterThanOrEqual(0);
     expect(d.score).toBeLessThanOrEqual(100);
   });
+
+  it.each([
+    ["?business=true", "business"],
+    ["?business=false", "personal"],
+    ["", "all"],
+  ])("%j → savingsScope %s (headline savings rate only)", async (qs, expected) => {
+    mockCalculate.mockResolvedValue(SAMPLE_PAYLOAD);
+    await GET(createMockRequest(`http://localhost:3000/api/health-score${qs}`));
+    const call = mockCalculate.mock.calls.at(-1)?.[0] as { savingsScope: string };
+    expect(call.savingsScope).toBe(expected);
+  });
 });
+

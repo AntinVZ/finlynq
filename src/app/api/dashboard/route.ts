@@ -17,6 +17,7 @@ import { safeName } from "@/lib/safe-name";
 import { rankBreakdown, type BreakdownMember } from "@/lib/chart-breakdown";
 import { buildSpendingByCategory } from "@/lib/dashboard/spending-by-category";
 import { withOp } from "@/lib/diagnostics/op-context";
+import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 
 export function GET(request: NextRequest) {
   return withOp("GET /api/dashboard", () => handleGet(request));
@@ -31,6 +32,11 @@ async function handleGet(request: NextRequest) {
   const { userId, dek } = auth.context;
   const params = request.nextUrl.searchParams;
   const displayCurrency = await getDisplayCurrency(userId, params.get("currency"));
+  // business=true|false|all (default all), same parser as the reports. Scopes
+  // the FLOW series only (income/expense, its breakdown, spending by
+  // category). Balances and net worth are per account and never scoped: an
+  // account isn't business or personal, single transactions are.
+  const business = parseBusinessParam(params.get(BUSINESS_PARAM));
   // `includeArchived` is accepted for backward compatibility but no longer
   // gates anything: archived accounts ALWAYS come back now. `archived` is a
   // list/picker visibility flag, not a claim the money stopped existing, and
@@ -134,7 +140,7 @@ async function handleGet(request: NextRequest) {
       totalReporting: number | null;
     }): number => convertReportingSlice(row, displayCurrency, rateMap);
 
-    const iveSlices = await getIncomeVsExpenses(userId, startDate, endDate);
+    const iveSlices = await getIncomeVsExpenses(userId, startDate, endDate, business);
     const iveMap = new Map<string, { month: string; type: string | null; total: number }>();
     for (const r of iveSlices) {
       const key = `${r.month}|${r.type}`;
@@ -152,7 +158,7 @@ async function handleGet(request: NextRequest) {
     // a top-10 + "Other" residual via the shared rankBreakdown helper. Expenses
     // are normalized to magnitude (abs) so the breakdown ties to the chart's
     // positive expense area.
-    const ieCatSlices = await getIncomeExpenseByCategory(userId, startDate, endDate);
+    const ieCatSlices = await getIncomeExpenseByCategory(userId, startDate, endDate, business);
     type CatAccum = { categoryId: number | null; nameCt: string | null; total: number };
     const ieCatMap = new Map<string, CatAccum>(); // key = `${month}|${type}|${categoryId}`
     for (const r of ieCatSlices) {
@@ -192,7 +198,7 @@ async function handleGet(request: NextRequest) {
       ]),
     );
 
-    const spendSlices = await getSpendingByCategoryWithReporting(userId, startDate, endDate);
+    const spendSlices = await getSpendingByCategoryWithReporting(userId, startDate, endDate, business);
     // Convert each slice to display currency, then group + decrypt the category
     // NAME (the card reads a plaintext `categoryName`; shipping only the
     // encrypted `categoryNameCt` made every slice fall back to "Uncategorized").
@@ -224,6 +230,8 @@ async function handleGet(request: NextRequest) {
 
     return NextResponse.json({
       displayCurrency,
+      // The scope the flow series were computed with (echo of `business`).
+      business,
       balances: convertedBalances,
       incomeVsExpenses,
       incomeExpenseBreakdown,

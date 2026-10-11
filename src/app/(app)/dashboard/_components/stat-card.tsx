@@ -24,9 +24,11 @@ type StatCardProps = {
   sparkLabels?: string[];
   href: string;
   currency?: string;
+  /** Optional scope label (ScopeBadge / AllAccountsBadge) next to the title. */
+  badge?: React.ReactNode;
 };
 
-export function StatCard({ label, value, sub, icon: Icon, iconBg, sparkColor, sparkData, sparkLabels, href, currency = "CAD" }: StatCardProps) {
+export function StatCard({ label, value, sub, icon: Icon, iconBg, sparkColor, sparkData, sparkLabels, href, currency = "CAD", badge }: StatCardProps) {
   return (
     <motion.div variants={itemVariants}>
       <Link href={href}>
@@ -38,6 +40,7 @@ export function StatCard({ label, value, sub, icon: Icon, iconBg, sparkColor, sp
                 <Icon className="h-4 w-4" />
               </div>
               <span className="text-xs font-medium text-muted-foreground tracking-wide uppercase">{label}</span>
+              {badge && <span className="ml-auto">{badge}</span>}
             </div>
 
             {/* Big number */}

@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { formatCurrency } from "@/lib/currency";
 import { Wallet } from "lucide-react";
 import { motion } from "framer-motion";
+import { ScopeBadge } from "@/components/scope-badge";
 
 const itemVariants = {
   hidden: { opacity: 0, y: 16 },
@@ -33,7 +34,8 @@ export function AvailableToSpend({ income, expenses, currency = "CAD", monthLabe
               <Wallet className="h-4 w-4" />
             </div>
             <div>
-              <p className="text-xs font-medium text-muted-foreground tracking-wide uppercase">Available to Spend</p>
+              {/* Last month's income minus spending (not a balance), so it follows the scope. */}
+              <p className="flex items-center gap-2 text-xs font-medium text-muted-foreground tracking-wide uppercase">Available to Spend<ScopeBadge className="normal-case tracking-normal" /></p>
               <p className="text-[11px] text-muted-foreground">{monthLabel ? `${monthLabel} remaining` : "This month remaining"}</p>
             </div>
           </div>
