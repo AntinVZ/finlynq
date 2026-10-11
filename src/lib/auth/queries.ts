@@ -985,6 +985,8 @@ async function deleteAllUserDataTx(tx: TxClient, userId: string) {
   // so a wipe left the keys behind. Belongs in the shared body like everything
   // else — see the header note about the two paths never drifting.
   await tx.delete(s.mcpIdempotencyKeys).where(eq(s.mcpIdempotencyKeys.userId, userId));
+  // MCP activity journal (labels only, no FK) — same reasoning.
+  await tx.delete(s.mcpActivityLog).where(eq(s.mcpActivityLog.userId, userId));
 
   // settings last — it holds the api_key/api_key_dek/email_webhook_* rows and
   // we also just read the import_email from here above.

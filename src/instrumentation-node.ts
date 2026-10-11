@@ -93,6 +93,20 @@ export async function registerNodeJobs(): Promise<void> {
       console.error("[instrumentation] Failed to start sweep-mcp-idempotency cron:", err);
     }
 
+    // MCP activity journal retention (Settings → Integrations). Daily sweep —
+    // delete `mcp_activity_log` rows older than 90 days.
+    try {
+      const { startMcpActivityLogSweepTimer, sweepMcpActivityLog } = await import(
+        "./lib/cron/sweep-mcp-activity-log"
+      );
+      sweepMcpActivityLog().catch((err) => {
+        console.error("[instrumentation] initial sweep-mcp-activity-log failed:", err);
+      });
+      startMcpActivityLogSweepTimer();
+    } catch (err) {
+      console.error("[instrumentation] Failed to start sweep-mcp-activity-log cron:", err);
+    }
+
     // Revoked JWT jtis cleanup (B7, 2026-05-07). Daily sweep — delete rows
     // whose `expires_at` is past. Past exp the JWT signature validation
     // would already reject the token, so keeping the row in the denylist

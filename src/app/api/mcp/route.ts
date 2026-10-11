@@ -27,6 +27,7 @@ import { withAutoAnnotations } from "../../../../mcp-server/auto-annotations";
 import { buildFilteredToolsList } from "../../../../mcp-server/tools/_consolidate";
 import { MCP_TOOL_COUNTS, MCP_SERVER_VERSION, MCP_SERVER_INSTRUCTIONS } from "@/lib/mcp/tool-counts";
 import { isToolInEnabledToolsets } from "@/lib/mcp/toolsets";
+import { instrumentCallTool, type McpClientRef } from "@/lib/mcp/activity-log";
 
 // Origin allowlist - defense-in-depth against DNS rebinding and cross-site
 // cookie attacks against the session-cookie auth path. Bearer-token requests
@@ -93,7 +94,7 @@ async function authenticateMcp(request: NextRequest) {
     if (result) {
       return {
         authenticated: true as const,
-        context: { userId: result.userId, method: "oauth" as const, mfaVerified: false, dek: result.dek, sessionId: null as string | null, scope: result.scope },
+        context: { userId: result.userId, method: "oauth" as const, mfaVerified: false, dek: result.dek, sessionId: null as string | null, scope: result.scope, clientId: result.clientId ?? null },
       };
     }
     return {
@@ -241,6 +242,20 @@ export async function POST(request: NextRequest) {
         },
       );
     }
+  }
+
+  // MCP activity journal (Settings → Integrations): ONE instrumentation point
+  // for every tools/call. Fire-and-forget — see src/lib/mcp/activity-log.ts.
+  {
+    const client: McpClientRef =
+      auth.context.method === "oauth"
+        ? { kind: "oauth", clientId: "clientId" in auth.context ? (auth.context.clientId as string | null) : null }
+        : auth.context.method === "api_key"
+          ? { kind: "api_key" }
+          : { kind: "session" };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const inner = server.server as any;
+    instrumentCallTool(inner._requestHandlers, { db, userId: auth.context.userId, client });
   }
 
   const transport = new WebStandardStreamableHTTPServerTransport({

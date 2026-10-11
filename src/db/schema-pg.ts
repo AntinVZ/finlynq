@@ -2017,6 +2017,30 @@ export const mcpIdempotencyKeys = pgTable("mcp_idempotency_keys", {
   createdAtIdx: index("mcp_idempotency_keys_created_at_idx").on(t.createdAt),
 }));
 
+// ─── MCP activity log (Settings → Integrations, S3) ─────────────────────────
+//
+// Short per-user journal of MCP tools/call: client label, tool, op, write
+// flag, outcome, optional error code + affected count. NEVER arguments or
+// decrypted data. Writer: src/lib/mcp/activity-log.ts (fire-and-forget).
+// 90-day retention: src/lib/cron/sweep-mcp-activity-log.ts.
+// Migration: scripts/migrations/20261011_mcp_activity_log.sql.
+export const mcpActivityLog = pgTable("mcp_activity_log", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  // OAuth client name, "API key" or "Browser session".
+  client: text("client").notNull(),
+  tool: text("tool").notNull(),
+  op: text("op"),
+  isWrite: boolean("is_write").notNull().default(false),
+  ok: boolean("ok").notNull().default(true),
+  errorCode: text("error_code"),
+  affectedCount: integer("affected_count"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("mcp_activity_log_user_created_idx").on(t.userId, t.createdAt.desc()),
+  index("mcp_activity_log_created_idx").on(t.createdAt),
+]);
+
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────
 //
 // Append-only record of every admin mutation. Never UPDATE/DELETE via app code;
