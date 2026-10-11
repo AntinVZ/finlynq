@@ -7,7 +7,16 @@
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 
-export type LedgerRow = { id: number; userId: string; tags: string | null; updatedAt?: string };
+export type LedgerRow = {
+  id: number;
+  userId: string;
+  tags: string | null;
+  updatedAt?: string;
+  date?: string;
+  amount?: number;
+  currency?: string;
+  isBusiness?: number | null;
+};
 
 const dialect = new PgDialect();
 
@@ -17,6 +26,7 @@ export function renderSql(query: SQL): { sql: string; params: unknown[] } {
 }
 
 export const isTagBatchSelect = (s: string) => /^\s*SELECT id, tags FROM transactions\s+WHERE user_id = \$1 AND id = ANY/.test(s);
+export const isTagScan = (s: string) => /SELECT id, date, tags, amount, currency, reporting_amount, reporting_currency/.test(s);
 export const isTagCaseUpdate = (s: string) => /UPDATE transactions\s+SET tags = CASE id/.test(s);
 
 /**
@@ -33,6 +43,26 @@ export function serveTagSql(
     const rows = ledger
       .filter((r) => r.userId === userId && ids.includes(r.id))
       .map((r) => ({ id: r.id, tags: r.tags }));
+    return { rows, rowCount: rows.length };
+  }
+  if (isTagScan(sql)) {
+    // tag-ops scan: params = [userId, afterId, size]; `tags <> ''`, id order.
+    const [userId, afterId, size] = params as [string, number, number];
+    const biz = /is_business = 1/.test(sql) ? "business" : /COALESCE\(is_business, 0\) = 0/.test(sql) ? "personal" : "all";
+    const rows = ledger
+      .filter((r) => r.userId === userId && r.tags != null && r.tags !== "" && r.id > afterId)
+      .filter((r) => biz === "all" || (biz === "business" ? r.isBusiness === 1 : (r.isBusiness ?? 0) === 0))
+      .sort((a, b) => a.id - b.id)
+      .slice(0, size)
+      .map((r) => ({
+        id: r.id,
+        date: r.date ?? "2026-01-01",
+        tags: r.tags,
+        amount: r.amount ?? -10,
+        currency: r.currency ?? "CAD",
+        reporting_amount: null,
+        reporting_currency: null,
+      }));
     return { rows, rowCount: rows.length };
   }
   if (isTagCaseUpdate(sql)) {

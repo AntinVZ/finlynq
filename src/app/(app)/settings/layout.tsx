@@ -29,6 +29,7 @@ import {
   Upload,
   Landmark,
   Users,
+  Tags,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -42,6 +43,8 @@ const NAV_ITEMS: NavItem[] = [
   { href: "/settings/account", label: "Account & Security", icon: Shield },
   { href: "/settings/data", label: "Data", icon: Database },
   { href: "/settings/categorization", label: "Categorization", icon: Tag },
+  // Transaction tags: list, rename, merge, delete.
+  { href: "/settings/tags", label: "Tags", icon: Tags },
   // FINLYNQ-84 — rules moved out of /settings/categorization into their own
   // sub-page with a multi-condition + multi-action editor.
   { href: "/settings/rules", label: "Rules", icon: Zap },
