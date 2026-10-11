@@ -7,6 +7,8 @@ import { getRateMap, convertWithRateMap, getDisplayCurrency } from "@/lib/fx-ser
 import { selfHealReportingAmounts } from "@/lib/fx/reporting-amount";
 import { todayISO } from "@/lib/utils/date";
 import { parseAccountIdsParam, ACCOUNT_IDS_PARAM } from "@/lib/reports/account-filter";
+import { parseBusinessParam, BUSINESS_PARAM } from "@/lib/reports/business-filter";
+import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 import { round2 } from "@/lib/utils/number";
 import {
   computeAllAccountsUnrealizedPnL,
@@ -23,7 +25,9 @@ export async function GET(request: NextRequest) {
   const type = params.get("type") ?? "income-statement";
   const startDate = params.get("startDate") ?? `${new Date().getFullYear()}-01-01`;
   const endDate = params.get("endDate") ?? todayISO();
-  const isBusiness = params.get("business") === "true";
+  // true = business only, false = personal only, absent/all = every row
+  // (see business-filter.ts — `business=true` reads exactly as before).
+  const businessFilter = parseBusinessParam(params.get(BUSINESS_PARAM));
   const displayCurrency = await getDisplayCurrency(userId, params.get("currency"));
   // Reports-page account scoping. `null` = every account (see account-filter.ts).
   const accountIds = parseAccountIdsParam(params.get(ACCOUNT_IDS_PARAM));
@@ -59,7 +63,8 @@ export async function GET(request: NextRequest) {
       gte(schema.transactions.date, startDate),
       lte(schema.transactions.date, endDate),
     ];
-    if (isBusiness) conditions.push(eq(schema.transactions.isBusiness, 1));
+    const businessCond = businessFilterCondition(businessFilter, schema.transactions.isBusiness);
+    if (businessCond) conditions.push(businessCond);
     if (accountIds) conditions.push(inArray(schema.transactions.accountId, accountIds));
 
     // Stream D Phase 4 â€” plaintext name dropped. Group on stable id +
