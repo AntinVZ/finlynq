@@ -6,6 +6,8 @@ import { CurrencyProvider } from "@/components/currency-provider";
 import { DropdownOrderProvider } from "@/components/dropdown-order-provider";
 import { FontProvider } from "@/components/font-provider";
 import { ReportingRecomputeIndicator } from "@/components/reporting-recompute-indicator";
+import { ViewScopeProvider } from "@/components/view-scope-provider";
+import { ViewScopeBar } from "@/components/view-scope-switcher";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -13,6 +15,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <CurrencyProvider>
         <DropdownOrderProvider>
         <FontProvider>
+        <ViewScopeProvider>
         <div className="relative flex min-h-screen flex-col">
           <AnnouncementBanner />
           <PromptGate />
@@ -25,11 +28,15 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
                   may still impose their own readability cap (e.g. settings,
                   api-docs); the shell does not. */}
               <div className="relative z-10 px-4 py-6 sm:px-6 sm:py-8 lg:px-8">
+                {/* Global All / Business / Personal switcher — only in
+                    "business too" usage mode (lib/view-scope.ts). */}
+                <ViewScopeBar />
                 {children}
               </div>
             </main>
           </div>
         </div>
+        </ViewScopeProvider>
         </FontProvider>
         </DropdownOrderProvider>
       </CurrencyProvider>
