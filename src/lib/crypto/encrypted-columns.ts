@@ -48,6 +48,7 @@
 
 import { createHmac } from "crypto";
 import { encryptField, decryptField, tryDecryptField } from "./envelope";
+import { APOSTROPHE_VARIANTS, containsNormalizedNeedle, normalizeForMatch } from "../text-normalize";
 
 // ─── Optional free-text envelope columns (2026-06-01) ───────────────────────
 //
@@ -173,17 +174,18 @@ export function decryptTxRows<T extends Partial<Record<TxEncryptedKey, string | 
  * substring search down into SQL on encrypted columns; for small row counts
  * (< ~10k per user) the decrypted scan is a few ms.
  *
- * Returns rows whose payee, note, or tags contain `query` (case-insensitive).
+ * Returns rows whose payee, note, or tags contain `query`, compared via
+ * `normalizeForMatch` (case, apostrophes, Unicode NFC, dashes, whitespace).
  */
 export function filterDecryptedBySearch<
   T extends { payee?: string | null; note?: string | null; tags?: string | null }
 >(rows: T[], query: string): T[] {
-  const q = query.toLowerCase();
+  const q = normalizeForMatch(query);
   return rows.filter((r) => {
     return (
-      (r.payee?.toLowerCase().includes(q) ?? false) ||
-      (r.note?.toLowerCase().includes(q) ?? false) ||
-      (r.tags?.toLowerCase().includes(q) ?? false)
+      containsNormalizedNeedle(r.payee, q) ||
+      containsNormalizedNeedle(r.note, q) ||
+      containsNormalizedNeedle(r.tags, q)
     );
   });
 }
@@ -258,6 +260,35 @@ function normalizeForLookup(name: string): string {
 export function nameLookup(dek: Buffer, name: string): string {
   const h = createHmac("sha256", dek).update(normalizeForLookup(name), "utf8").digest();
   return h.toString("base64url");
+}
+
+const ANY_APOSTROPHE_RE = new RegExp(`[${APOSTROPHE_VARIANTS.join("")}]`, "g");
+
+/**
+ * Every `name_lookup` hash a READ should accept for `name`: the canonical
+ * {@link nameLookup} hash first, then the hashes of the same name spelled
+ * with each other apostrophe variant (’ ʼ ‘ ` ´ ') and in NFC / NFD form.
+ *
+ * Stored lookups were computed over whatever bytes the user typed, so
+ * "Краса і здоров’я" (U+2019) and "Краса і здоров'я" (ASCII) hash
+ * differently. `normalizeForLookup` and the stored hashes are NOT changed
+ * (they back the per-user unique index); read paths use
+ * `name_lookup IN (candidates)` instead of `= nameLookup(...)`.
+ * Writes keep using {@link nameLookup} / {@link encryptName}.
+ */
+export function nameLookupCandidates(dek: Buffer, name: string): string[] {
+  const forms = new Set<string>();
+  const hasApostrophe = name.search(ANY_APOSTROPHE_RE) !== -1;
+  for (const form of [name, name.normalize("NFC"), name.normalize("NFD")]) {
+    forms.add(form);
+    if (!hasApostrophe) continue;
+    for (const ap of APOSTROPHE_VARIANTS) forms.add(form.replace(ANY_APOSTROPHE_RE, ap));
+  }
+  const out = new Set<string>();
+  // Canonical hash first so callers that need "the" lookup can take [0].
+  out.add(nameLookup(dek, name));
+  for (const f of forms) out.add(nameLookup(dek, f));
+  return [...out];
 }
 
 /**

@@ -39,6 +39,7 @@ import {
   type Action as ActionType,
 } from "../../src/lib/rules/schema";
 import { verifyOwnership, OwnershipError } from "../../src/lib/verify-ownership";
+import { normalizeForMatch } from "../../src/lib/text-normalize";
 import {
   invalidateUser as invalidateUserTxCache,
 } from "../../src/lib/mcp/user-tx-cache";
@@ -198,8 +199,8 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
           const op = c.op ?? "";
           if (field === "payee" || field === "tags") {
             const v = String(c.value ?? "");
-            const haystack = (field === "tags" ? probe.tags : probe.payee).toLowerCase();
-            const needle = v.toLowerCase();
+            const haystack = normalizeForMatch(field === "tags" ? probe.tags : probe.payee);
+            const needle = normalizeForMatch(v);
             if (op === "contains") return haystack.includes(needle);
             if (op === "exact") return haystack === needle;
             if (op === "regex") { try { return new RegExp(v, "i").test(field === "tags" ? probe.tags : probe.payee); } catch { return false; } }
@@ -598,7 +599,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
 
       // Decrypt payee/tags in memory (identical pattern to apply_rules_to_uncategorized).
       const matched: Record<string, unknown>[] = [];
-      const valueLower = value.toLowerCase();
+      const valueLower = normalizeForMatch(value);
       let regex: RegExp | null = null;
       if (type === "regex") {
         try { regex = new RegExp(value, "i"); }
@@ -617,7 +618,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
           else if (type === "less_than") hit = amt < ruleAmount;
           else if (type === "exact") hit = Math.abs(amt - ruleAmount) < 0.01;
         } else {
-          const fieldVal = (field === "payee" ? plainPayee : plainTags).toLowerCase();
+          const fieldVal = normalizeForMatch(field === "payee" ? plainPayee : plainTags);
           if (type === "contains") hit = fieldVal.includes(valueLower);
           else if (type === "exact") hit = fieldVal === valueLower;
           else if (type === "regex" && regex) hit = regex.test(field === "payee" ? plainPayee : plainTags);
@@ -759,7 +760,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
         WHERE user_id = ${userId} AND is_active = true
         ORDER BY priority DESC, id
       `);
-      const payeeLower = payee.toLowerCase();
+      const payeeLower = normalizeForMatch(payee);
       const matchedRules: Array<{ id: number; name: string; assignCategoryId: number | null; assignTags: string | null; renameTo: string | null }> = [];
       for (const r of rules) {
         // 2026-06-01 — decrypt rule sensitive free-text before matching against
@@ -781,7 +782,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
           const op = String(c.op ?? "");
           if (field === "payee") {
             const v = String(c.value ?? "");
-            const valLower = v.toLowerCase();
+            const valLower = normalizeForMatch(v);
             if (op === "contains") return payeeLower.includes(valLower) || valLower.includes(payeeLower);
             if (op === "exact") return payeeLower === valLower;
             if (op === "regex") {
@@ -832,7 +833,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
       const tagCounts = new Map<string, number>();
       for (const r of raw) {
         const p = dek ? (decryptField(dek, String(r.payee ?? "")) ?? "") : String(r.payee ?? "");
-        if (p.toLowerCase().trim() !== payeeLower.trim()) continue;
+        if (normalizeForMatch(p) !== payeeLower) continue;
         const cid = Number(r.category_id);
         if (cid) catCounts.set(cid, (catCounts.get(cid) ?? 0) + 1);
         const t = dek ? (decryptField(dek, String(r.tags ?? "")) ?? "") : String(r.tags ?? "");

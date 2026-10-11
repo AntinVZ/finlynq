@@ -2,7 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { getTransactions, getTransactionCount, createTransaction, updateTransaction, getAccountById, type TxSortFilter } from "@/lib/queries";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { requireEncryption } from "@/lib/auth/require-encryption";
-import { encryptTxWrite, decryptTxRows, filterDecryptedBySearch, nameLookup, decryptName } from "@/lib/crypto/encrypted-columns";
+import { encryptTxWrite, decryptTxRows, filterDecryptedBySearch, nameLookupCandidates, decryptName } from "@/lib/crypto/encrypted-columns";
+import { containsNormalizedNeedle, normalizeForMatch } from "@/lib/text-normalize";
+import { exactTagMatcher } from "@/lib/reports/tag-filter";
 import { decryptField } from "@/lib/crypto/envelope";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
 import { buildHoldingResolver } from "@/lib/external-import/portfolio-holding-resolver";
@@ -20,7 +22,7 @@ import {
 import { canEditPortfolioRow } from "@/lib/portfolio/operations";
 import type { TxRowForLots } from "@/lib/portfolio/lots/types";
 import { db, schema } from "@/db";
-import { and, eq, ne, or } from "drizzle-orm";
+import { and, eq, inArray, ne, or } from "drizzle-orm";
 import { markSnapshotsDirty } from "@/lib/portfolio/snapshots/dirty";
 import { markCashSnapshotsDirty } from "@/lib/portfolio/snapshots/cash-dirty";
 import { z } from "zod";
@@ -129,15 +131,16 @@ export async function GET(request: NextRequest) {
     (portfolioHoldingId == null || !Number.isFinite(portfolioHoldingId))
   ) {
     if (dek) {
-      const lookup = nameLookup(dek, portfolioHoldingNameParam);
+      // Apostrophe / NFC-NFD spellings of the name hash differently; accept all.
+      const lookups = nameLookupCandidates(dek, portfolioHoldingNameParam);
       const matched = await db
         .select({ id: schema.portfolioHoldings.id })
         .from(schema.portfolioHoldings)
         .where(and(
           eq(schema.portfolioHoldings.userId, userId),
           or(
-            eq(schema.portfolioHoldings.nameLookup, lookup),
-            eq(schema.portfolioHoldings.symbolLookup, lookup),
+            inArray(schema.portfolioHoldings.nameLookup, lookups),
+            inArray(schema.portfolioHoldings.symbolLookup, lookups),
           ),
         ));
       portfolioHoldingNameIds = matched.map((m) => m.id);
@@ -148,7 +151,9 @@ export async function GET(request: NextRequest) {
   // Tag is an in-memory exact-match filter on the comma-split list. The
   // column is ciphertext-at-rest so SQL LIKE won't work, and substring
   // match on decrypted text would false-match (e.g. `source:X` in one tag
-  // shouldn't match `source:XY` in another). Split then exact-compare each.
+  // shouldn't match `source:XY` in another). Whole-tag compare via
+  // `hasExactTag` semantics (normalized: case, apostrophes, Unicode, dashes),
+  // the same identity the MCP `tag_exact` filter uses.
   const tag = params.get("tag") ?? undefined;
 
   // Issue #59 — parse the new sort + per-column filter query params. SQL-
@@ -213,7 +218,7 @@ export async function GET(request: NextRequest) {
   let portfolioTickerHoldingIds: number[] | undefined;
   if (filterPortfolioTicker) {
     if (dek) {
-      const needle = filterPortfolioTicker.toLowerCase();
+      const needle = normalizeForMatch(filterPortfolioTicker);
       const holdingRows = await db
         .select({
           id: schema.portfolioHoldings.id,
@@ -228,8 +233,8 @@ export async function GET(request: NextRequest) {
         const sym = decryptName(h.symbolCt, dek, null);
         const secSym = decryptName(h.securitySymbolCt, dek, null);
         if (
-          (sym && sym.toLowerCase().includes(needle)) ||
-          (secSym && secSym.toLowerCase().includes(needle))
+          containsNormalizedNeedle(sym, needle) ||
+          containsNormalizedNeedle(secSym, needle)
         ) {
           ids.push(h.id);
         }
@@ -387,45 +392,44 @@ export async function GET(request: NextRequest) {
   }
 
   if (tag) {
-    decrypted = decrypted.filter((r) => {
-      if (!r.tags) return false;
-      return r.tags.split(",").map((t) => t.trim()).includes(tag);
-    });
+    const hasTag = exactTagMatcher(tag);
+    decrypted = decrypted.filter((r) => hasTag(r.tags));
   }
 
   // Issue #59 — per-column substring filters on encrypted fields.
-  // Case-insensitive substring match against the post-decrypt value.
-  // Each filter narrows independently (AND across columns).
-  const matchSubstring = (value: string | null | undefined, needle: string) => {
-    if (!value) return false;
-    return value.toLowerCase().includes(needle.toLowerCase());
+  // Normalized substring match (`normalizeForMatch`) against the post-decrypt
+  // value. Each filter narrows independently (AND across columns).
+  // The needle is normalized once per filter, not per row.
+  const substringFilter = (needle: string) => {
+    const n = normalizeForMatch(needle);
+    return (value: string | null | undefined) => !!value && containsNormalizedNeedle(value, n);
   };
   if (filterPayee) {
-    decrypted = decrypted.filter((r) => matchSubstring(r.payee, filterPayee));
+    const m = substringFilter(filterPayee);
+    decrypted = decrypted.filter((r) => m(r.payee));
   }
   if (filterNote) {
-    decrypted = decrypted.filter((r) => matchSubstring(r.note, filterNote));
+    const m = substringFilter(filterNote);
+    decrypted = decrypted.filter((r) => m(r.note));
   }
   if (filterAccountName) {
-    decrypted = decrypted.filter((r) =>
-      matchSubstring((r as { accountName?: string | null }).accountName, filterAccountName),
-    );
+    const m = substringFilter(filterAccountName);
+    decrypted = decrypted.filter((r) => m((r as { accountName?: string | null }).accountName));
   }
   if (filterAccountAlias) {
-    decrypted = decrypted.filter((r) =>
-      matchSubstring((r as { accountAlias?: string | null }).accountAlias, filterAccountAlias),
-    );
+    const m = substringFilter(filterAccountAlias);
+    decrypted = decrypted.filter((r) => m((r as { accountAlias?: string | null }).accountAlias));
   }
   if (filterPortfolio) {
-    decrypted = decrypted.filter((r) =>
-      matchSubstring((r as { portfolioHolding?: string | null }).portfolioHolding, filterPortfolio),
-    );
+    const m = substringFilter(filterPortfolio);
+    decrypted = decrypted.filter((r) => m((r as { portfolioHolding?: string | null }).portfolioHolding));
   }
   // NOTE: the ticker filter (`filterPortfolioTicker`) is applied SQL-side via
   // `portfolioHoldingIds` (resolved above), not here — so it scales past the
   // 1000-row post-decrypt window. No in-memory ticker pass needed.
   if (filterTags) {
-    decrypted = decrypted.filter((r) => matchSubstring(r.tags, filterTags));
+    const m = substringFilter(filterTags);
+    decrypted = decrypted.filter((r) => m(r.tags));
   }
 
   // Re-apply client-requested pagination after in-memory filters so the

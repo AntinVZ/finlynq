@@ -42,6 +42,7 @@ import { z } from "zod";
 import { requireEncryption } from "@/lib/auth/require-encryption";
 import { encryptStaged } from "@/lib/crypto/staging-envelope";
 import { tryDecryptField, encryptField } from "@/lib/crypto/envelope";
+import { normalizeForMatch } from "@/lib/text-normalize";
 
 export const dynamic = "force-dynamic";
 
@@ -156,13 +157,13 @@ export async function PATCH(
       .from(schema.accounts)
       .where(eq(schema.accounts.userId, userId))
       .all();
-    const targetKey = tmpl.defaultAccount.toLowerCase().trim();
+    const targetKey = normalizeForMatch(tmpl.defaultAccount);
     for (const a of acctRows) {
       const plainName = a.nameCt ? tryDecryptField(dek, a.nameCt, "accounts.name_ct") : null;
       const plainAlias = a.aliasCt ? tryDecryptField(dek, a.aliasCt, "accounts.alias_ct") : null;
       if (
-        (plainName && plainName.toLowerCase().trim() === targetKey) ||
-        (plainAlias && plainAlias.toLowerCase().trim() === targetKey)
+        (plainName && normalizeForMatch(plainName) === targetKey) ||
+        (plainAlias && normalizeForMatch(plainAlias) === targetKey)
       ) {
         resolvedAccountId = a.id;
         resolvedAccountName = plainName ?? tmpl.defaultAccount;

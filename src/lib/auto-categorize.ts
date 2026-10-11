@@ -15,6 +15,7 @@
  *   tags ahead of time and hands a populated TransactionInput.
  */
 import type { Condition, ConditionGroup, Action, Rule as RuleSchema } from "./rules/schema";
+import { normalizeForMatch } from "./text-normalize";
 
 export interface TransactionInput {
   payee?: string | null;
@@ -62,8 +63,8 @@ function evalStringOp(haystack: string, op: "contains" | "exact" | "regex", need
       return false;
     }
   }
-  const a = haystack.toLowerCase();
-  const b = needle.toLowerCase();
+  const a = normalizeForMatch(haystack);
+  const b = normalizeForMatch(needle);
   if (op === "contains") return a.includes(b);
   if (op === "exact") return a === b;
   return false;
@@ -211,9 +212,9 @@ export function suggestCategory(
 ): number | null {
   if (!payee.trim()) return null;
 
-  const payeeLower = payee.toLowerCase().trim();
+  const payeeLower = normalizeForMatch(payee);
   const matches = existingTransactions.filter(
-    (t) => t.payee && t.payee.toLowerCase().trim() === payeeLower && t.categoryId,
+    (t) => t.payee && normalizeForMatch(t.payee) === payeeLower && t.categoryId,
   );
 
   if (matches.length === 0) return null;

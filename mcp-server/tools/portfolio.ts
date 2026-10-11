@@ -37,6 +37,7 @@ import {
 import {
   decryptField,
 } from "../../src/lib/crypto/envelope";
+import { normalizeForMatch } from "../../src/lib/text-normalize";
 import {
   encryptName,
   nameLookup,
@@ -1381,7 +1382,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       }));
       const phMap = new Map<number, Row>(ph.map(p => [Number(p.id), p]));
 
-      const symbolFilters = symbols?.length ? symbols.map(s => s.toLowerCase()) : null;
+      const symbolFilters = symbols?.length ? symbols.map(s => normalizeForMatch(s)) : null;
       // Track which filter entries matched at least one holding; unmatched
       // ones surface in the response as warnings.
       const matchedFilters = new Set<string>();
@@ -1442,9 +1443,9 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         // handling below).
         if (scopeAccountId != null && !info) continue;
         if (symbolTokens) {
-          const name = String(m.name ?? "").toLowerCase();
-          const sym = String(info?.symbol ?? "").toLowerCase();
-          const acct = String(info?.account_name ?? "").toLowerCase();
+          const name = normalizeForMatch(String(m.name ?? ""));
+          const sym = normalizeForMatch(String(info?.symbol ?? ""));
+          const acct = normalizeForMatch(String(info?.account_name ?? ""));
           // Issue #124: AND-within-entry semantic. Build a single haystack
           // covering name + symbol + account, and require every token in a
           // filter entry to appear in it. Across entries the semantic is OR.
@@ -1916,7 +1917,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       }
       const reporting = await resolveReportingCurrency(db, userId, reportingCurrency);
       const todayStr = new Date().toISOString().split("T")[0];
-      const lo = (symbol ?? "").toLowerCase();
+      const lo = normalizeForMatch(symbol ?? "");
       // Fetch every FK-bound transaction for the user, JOINing
       // holding_accounts (Section G) on (holding_id, account_id) so the
       // (holding, account) pair is the join grain, plus portfolio_holdings
@@ -1999,9 +2000,9 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       const txns = holdingId != null
         ? decryptedAll.filter((t) => Number(t.portfolio_holding_id) === holdingId)
         : decryptedAll.filter((t) => {
-            const ph = String(t.portfolio_holding ?? "").toLowerCase();
-            const sym = String(t.ph_symbol ?? "").toLowerCase();
-            const pay = String(t.payee ?? "").toLowerCase();
+            const ph = normalizeForMatch(String(t.portfolio_holding ?? ""));
+            const sym = normalizeForMatch(String(t.ph_symbol ?? ""));
+            const pay = normalizeForMatch(String(t.payee ?? ""));
             // Symbol gets exact-equality preference (tickers are short and prone
             // to spurious substring hits — "GE" inside "ORANGE" etc.). Name and
             // payee retain substring matching for the long-string ergonomics.
@@ -2314,7 +2315,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       if (!symbol && holdingId == null) {
         return err("trace_holding_quantity requires either `symbol` or `holdingId`");
       }
-      const lo = (symbol ?? "").toLowerCase();
+      const lo = normalizeForMatch(symbol ?? "");
       // Resolve the holding id when only `symbol` was supplied.
       // Issue #99: same ambiguity handling as analyze_holding — when the
       // substring spans multiple distinct holding ids, return the candidate
@@ -2335,8 +2336,8 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
           return { ...c, symbol_decrypted: sym };
         });
         const matches: Row[] = candidates.filter((c: Row) => {
-          const n = String(c.name ?? "").toLowerCase();
-          const s = String(c.symbol_decrypted ?? "").toLowerCase();
+          const n = normalizeForMatch(String(c.name ?? ""));
+          const s = normalizeForMatch(String(c.symbol_decrypted ?? ""));
           // Symbol gets exact-equality preference; name keeps substring.
           return n.includes(lo) || s === lo;
         });

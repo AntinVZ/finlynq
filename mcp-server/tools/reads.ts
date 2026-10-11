@@ -28,7 +28,7 @@ import {
   decryptField,
 } from "../../src/lib/crypto/envelope";
 import {
-  nameLookup,
+  nameLookupCandidates,
 } from "../../src/lib/crypto/encrypted-columns";
 import {
   getRate,
@@ -44,7 +44,7 @@ import {
   businessFilterCondition,
 } from "../../src/lib/reports/business-filter-sql";
 import {
-  hasExactTag,
+  exactTagMatcher,
 } from "../../src/lib/reports/tag-filter";
 import {
   isCashGroup,
@@ -82,7 +82,7 @@ import {
 } from "../lib/scan-in-batches";
 import {
   hasTextFilter,
-  matchesTextFilters,
+  compileTextFilters,
 } from "../lib/text-match";
 import {
   analyzeRecurringGroup,
@@ -145,6 +145,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         ${bizSql}
     `);
     const ids: number[] = [];
+    const hasTag = exactTagMatcher(tag);
     for (const r of candidates) {
       let tags = r.tags as string | null;
       if (dek) {
@@ -154,7 +155,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           continue; // undecryptable row can't be proven to carry the tag
         }
       }
-      if (hasExactTag(tags, tag)) ids.push(Number(r.id));
+      if (hasTag(tags)) ids.push(Number(r.id));
     }
     const tagNote = dek
       ? undefined
@@ -325,7 +326,9 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
       // the filter is dropped (no false matches better than 500).
-      const categoryLookup = category && dek ? nameLookup(dek, category) : null;
+      // Accept every apostrophe / NFC-NFD spelling of the name (stored hashes
+      // were computed over the bytes the user typed) — see nameLookupCandidates.
+      const categoryLookups = category && dek ? nameLookupCandidates(dek, category) : null;
       // NOTE: account_id and portfolio_holding_id are independent filters —
       // both are valid alone or combined (e.g. "all VCN.TO dividends in IBKR
       // TFSA"). Do not add an XOR or payee-required guard here; the stdio
@@ -348,7 +351,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           ${end_date ? sql`AND t.date <= ${end_date}` : sql``}
           ${account_id !== undefined ? sql`AND t.account_id = ${account_id}` : sql``}
           ${portfolio_holding_id !== undefined ? sql`AND t.portfolio_holding_id = ${portfolio_holding_id}` : sql``}
-          ${category && categoryLookup ? sql`AND c.name_lookup = ${categoryLookup}` : sql``}
+          ${category && categoryLookups ? sql`AND c.name_lookup IN (${sql.join(categoryLookups.map((l) => sql`${l}`), sql`, `)})` : sql``}
           ${bizCond ? sql`AND ${bizCond}` : sql``}
         ORDER BY t.date DESC, t.id DESC
         LIMIT ${size} OFFSET ${offset}
@@ -368,7 +371,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       if (inMemory) {
         const scan = await scanInBatches({
           fetchPage: async (offset, size) => (await fetchPage(offset, size)).map(toRow),
-          match: (r) => matchesTextFilters(r, textFilters),
+          match: compileTextFilters(textFilters),
           limit: lim,
           batchSize: Math.max(lim * 10, SEARCH_BATCH_SIZE),
           maxScan: SEARCH_MAX_SCAN,

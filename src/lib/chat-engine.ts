@@ -13,6 +13,7 @@ import { applyInvestmentMarketOverlay } from "@/lib/accounts/investment-balance-
 import { decryptField } from "@/lib/crypto/envelope";
 import { decryptName, nameLookup } from "@/lib/crypto/encrypted-columns";
 import { todayISO } from "@/lib/utils/date";
+import { containsNormalizedNeedle, equalsNormalized, normalizeForMatch } from "@/lib/text-normalize";
 
 export type ChatResponse = {
   text: string;
@@ -90,10 +91,10 @@ async function findCategoryName(msg: string, userId: string, dek: Buffer | null)
   const decrypted = cats
     .map((c) => decryptName(c.nameCt, dek, null))
     .filter((n): n is string => Boolean(n));
-  const lower = msg.toLowerCase();
+  const lower = normalizeForMatch(msg);
   const sorted = decrypted.sort((a, b) => b.length - a.length);
   for (const name of sorted) {
-    if (lower.includes(name.toLowerCase())) return name;
+    if (lower.includes(normalizeForMatch(name))) return name;
   }
   return null;
 }
@@ -107,10 +108,10 @@ async function findAccountName(msg: string, userId: string, dek: Buffer | null):
   const decrypted = accs
     .map((a) => decryptName(a.nameCt, dek, null))
     .filter((n): n is string => Boolean(n));
-  const lower = msg.toLowerCase();
+  const lower = normalizeForMatch(msg);
   const sorted = decrypted.sort((a, b) => b.length - a.length);
   for (const name of sorted) {
-    if (lower.includes(name.toLowerCase())) return name;
+    if (lower.includes(normalizeForMatch(name))) return name;
   }
   return null;
 }
@@ -399,7 +400,7 @@ const handleBudget: IntentHandler = async (msg, ctx) => {
   }));
 
   if (categoryName) {
-    const match = results.find((r) => r.name.toLowerCase() === categoryName.toLowerCase());
+    const match = results.find((r) => equalsNormalized(r.name, categoryName));
     if (match) {
       const statusText = match.status === "OVER"
         ? `You're over budget by ${formatCurrency(match.spent - match.budgeted, "CAD")}!`
@@ -533,9 +534,9 @@ const handleTransactions: IntentHandler = async (msg, ctx) => {
   }));
 
   if (searchTerm) {
-    const q = searchTerm.toLowerCase();
+    const q = normalizeForMatch(searchTerm);
     decrypted = decrypted.filter(
-      (t) => t.payee.toLowerCase().includes(q) || t.note.toLowerCase().includes(q)
+      (t) => containsNormalizedNeedle(t.payee, q) || containsNormalizedNeedle(t.note, q)
     );
   }
   decrypted = decrypted.slice(0, 10);

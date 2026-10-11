@@ -41,6 +41,7 @@ import {
   encryptField,
   tryDecryptField,
 } from "../../src/lib/crypto/envelope";
+import { normalizeForMatch } from "../../src/lib/text-normalize";
 import {
   getRate,
 } from "../../src/lib/fx-service";
@@ -1228,17 +1229,17 @@ export function registerImportsTools(server: McpServer, ctx: PgToolContext) {
       const liveAccounts = accountRows.map((a) => ({
         id: Number(a.id),
         nameKey: a.name_ct
-          ? (tryDecryptField(dek, String(a.name_ct), "accounts.name_ct") ?? "").toLowerCase().trim()
+          ? normalizeForMatch(tryDecryptField(dek, String(a.name_ct), "accounts.name_ct") ?? "")
           : "",
         aliasKey: a.alias_ct
-          ? (tryDecryptField(dek, String(a.alias_ct), "accounts.alias_ct") ?? "").toLowerCase().trim()
+          ? normalizeForMatch(tryDecryptField(dek, String(a.alias_ct), "accounts.alias_ct") ?? "")
           : "",
         currency: String(a.currency),
         isInvestment: Boolean(a.is_investment),
       }));
       const lookupAccountId = (decodedName: string | null): number | null => {
         if (!decodedName) return null;
-        const key = decodedName.toLowerCase().trim();
+        const key = normalizeForMatch(decodedName);
         if (!key) return null;
         return (
           liveAccounts.find((a) => a.nameKey === key)?.id ??

@@ -32,6 +32,7 @@ import {
   type ConfirmationVerifyResult,
 } from "../../src/lib/mcp/confirmation-token";
 import { dataResponse, err } from "./_shared";
+import { normalizeForMatch } from "../../src/lib/text-normalize";
 
 /** MCP text-content tool result shape (what every handler returns). */
 export type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -116,8 +117,8 @@ export function checkExpectedEcho(
 ): string | null {
   if (!expected) return null;
   if (expected.payee != null) {
-    const want = expected.payee.trim().toLowerCase();
-    const got = String(actual.payee ?? "").trim().toLowerCase();
+    const want = normalizeForMatch(expected.payee);
+    const got = normalizeForMatch(String(actual.payee ?? ""));
     if (want !== got) {
       return `Refusing to delete ${label}: you said payee "${expected.payee}", but it is "${actual.payee ?? ""}". Re-check the id.`;
     }
