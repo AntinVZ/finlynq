@@ -43,6 +43,10 @@ export function useTransactions(
     search: string;
     portfolioHolding: string;
     tag: string;
+    tags_all?: string;
+    tags_any?: string;
+    tags_none?: string;
+    untagged?: string;
     // Business / personal scope; absent or "all" sends nothing.
     business?: BusinessFilter;
   },

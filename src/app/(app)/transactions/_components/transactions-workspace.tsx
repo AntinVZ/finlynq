@@ -110,6 +110,10 @@ export function TransactionsWorkspace({
     search: "",
     portfolioHolding: "",
     tag: "",
+    tags_all: "",
+    tags_any: "",
+    tags_none: "",
+    untagged: "",
   });
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -202,6 +206,10 @@ export function TransactionsWorkspace({
       search: urlParams.get("search") ?? "",
       portfolioHolding: urlParams.get("portfolioHolding") ?? "",
       tag: urlParams.get("tag") ?? "",
+      tags_all: urlParams.get("tags_all") ?? "",
+      tags_any: urlParams.get("tags_any") ?? "",
+      tags_none: urlParams.get("tags_none") ?? "",
+      untagged: urlParams.get("untagged") === "true" ? "true" : "",
     });
     setSearchInput(urlParams.get("search") ?? "");
     setPage(0);
@@ -322,7 +330,7 @@ export function TransactionsWorkspace({
   function clearFilters() {
     setSearchInput("");
     // When locked, keep the account scope — only the OTHER filters clear.
-    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", portfolioHolding: "", tag: "" });
+    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", portfolioHolding: "", tag: "", tags_all: "", tags_any: "", tags_none: "", untagged: "" });
     // Issue #59 — also wipe the per-column filters + sort. The chip row
     // below the top-bar shows both, so "Clear all" should drop both.
     setColFilters([]);
@@ -339,9 +347,21 @@ export function TransactionsWorkspace({
   const [exporting, setExporting] = useState(false);
   // Mirrors the server's `postDecryptFilter`: text search, tag, or any
   // text-type per-column filter forces the in-memory 1000-row pass.
+  // Multi-tag filter from the URL (whole tags, matched server-side after
+  // decryption like `tag`). One chip per set key.
+  const multiTagChips = (
+    [
+      { key: "tags_all", label: "All tags", value: filters.tags_all },
+      { key: "tags_any", label: "Any tag", value: filters.tags_any },
+      { key: "tags_none", label: "Without tags", value: filters.tags_none },
+      { key: "untagged", label: "Untagged", value: filters.untagged === "true" ? "yes" : "" },
+    ] as const
+  ).filter((c) => c.value);
+  const hasMultiTagFilter = multiTagChips.length > 0;
   const hasTextSearchFilter =
     !!filters.search ||
     !!filters.tag ||
+    hasMultiTagFilter ||
     colFilters.some((f) => f.type === "text");
   const exportColumns: CsvColumn<Transaction>[] = [
     { header: "Date", accessor: (t) => t.date },
@@ -925,7 +945,7 @@ export function TransactionsWorkspace({
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.portfolioHolding || filters.tag || colFilters.length > 0 || sortPref.columnId) && (
+            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.portfolioHolding || filters.tag || hasMultiTagFilter || colFilters.length > 0 || sortPref.columnId) && (
               <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors ml-1">
                 <X className="h-3 w-3" /> Clear all
               </button>
@@ -1036,6 +1056,22 @@ export function TransactionsWorkspace({
               </Badge>
             </div>
           )}
+          {/* Multi-tag filter chips (deep links like ?tags_any=a,b&tags_none=c). */}
+          {multiTagChips.map((chip) => (
+            <div key={chip.key} className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">{chip.label}:</span>
+              <Badge variant="outline" className="h-7 gap-1.5 pr-1 border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300">
+                <span className="font-medium font-mono">{chip.value}</span>
+                <button
+                  onClick={() => { setFilters({ ...filters, [chip.key]: "" }); setPage(0); }}
+                  className="p-0.5 rounded hover:bg-sky-100 dark:hover:bg-sky-900 transition-colors"
+                  aria-label={`Clear ${chip.label.toLowerCase()} filter`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            </div>
+          ))}
           {/* FINLYNQ-177 — single-transaction id deep link chip. Clearing it
               drops the filter so the user can step back to the full list. */}
           {filters.id && (
