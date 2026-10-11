@@ -31,6 +31,7 @@ import { isTransactionSource, type TransactionSource } from "@/lib/tx-source";
 import { verifyOwnership, OwnershipError } from "@/lib/verify-ownership";
 import { securitiesReadEnabledForUser } from "@/lib/securities/flag";
 import { transferLegChanges } from "@/lib/transactions/transfer-leg-guard";
+import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 
 const postSchema = z.object({
   date: z.string(),
@@ -291,6 +292,13 @@ export async function GET(request: NextRequest) {
     quantityMax: parseNum("quantityMax"),
     quantityEq: parseNum("quantityEq"),
     sources: parseSourcesList(),
+    // business=true|false|all, as on the reports (default all; anything
+    // unrecognised = all). SQL-side, so it scopes the list, the post-decrypt
+    // window and the count alike, and ANDs with every other filter.
+    business: (() => {
+      const b = parseBusinessParam(params.get(BUSINESS_PARAM));
+      return b === "all" ? undefined : b;
+    })(),
     sortColumnId,
     sortDirection,
     // Search is applied after decryption, so don't push it into the SQL filter.
