@@ -344,16 +344,16 @@ async function bumpTokenLastUsed(tokenHash: string): Promise<void> {
  * Validate an OAuth access token. Returns {userId, dek} if valid, null otherwise.
  * Revoked tokens (rotated or killed by reuse-detection) are rejected.
  */
-export async function validateOauthToken(token: string): Promise<{ userId: string; dek: Buffer | null; scope: string } | null> {
+export async function validateOauthToken(token: string): Promise<{ userId: string; dek: Buffer | null; scope: string; clientId?: string | null } | null> {
   const tokenHash = authLookupHash(token);
   const result = await pgDb.execute(sql`
-    SELECT user_id, expires_at, dek_wrapped, scope
+    SELECT user_id, expires_at, dek_wrapped, scope, client_id
       FROM oauth_access_tokens
      WHERE token = ${tokenHash}
        AND revoked_at IS NULL
      LIMIT 1
   `);
-  const rows = normalizeDbRows<Pick<TokenRow, "user_id" | "expires_at" | "dek_wrapped" | "scope">>(result);
+  const rows = normalizeDbRows<Pick<TokenRow, "user_id" | "expires_at" | "dek_wrapped" | "scope"> & { client_id?: string | null }>(result);
   if (!rows.length) return null;
   if (new Date(rows[0].expires_at) < new Date()) return null;
 
@@ -375,7 +375,8 @@ export async function validateOauthToken(token: string): Promise<{ userId: strin
   // fire-and-forget) so the admin OAuth-grants panel can show per-grant
   // last-used + an active/dormant flag.
   void bumpTokenLastUsed(tokenHash);
-  return { userId: rows[0].user_id, dek, scope };
+  // clientId: for the MCP activity journal's client label (S3).
+  return { userId: rows[0].user_id, dek, scope, clientId: rows[0].client_id ?? null };
 }
 
 /**

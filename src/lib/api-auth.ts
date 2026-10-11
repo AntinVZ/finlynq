@@ -13,11 +13,14 @@
 
 import { NextRequest } from "next/server";
 import { db, schema, DEFAULT_USER_ID } from "@/db";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import crypto from "crypto";
 
 const API_KEY_SETTING = "api_key";
 const API_KEY_DEK_SETTING = "api_key_dek";
+// ISO timestamp of the current key's creation (S3). Keys minted before this
+// row existed have none — their creation date is unknown.
+const API_KEY_CREATED_SETTING = "api_key_created_at";
 
 // Prefix for hashed keys stored in settings.value. Keeps storage format
 // trivially identifiable for future migrations.
@@ -145,6 +148,7 @@ export async function getOrCreateApiKey(
   if (dek) {
     await storeApiKeyDEK(userId, wrapDEKForApiKey(dek, key));
   }
+  await recordApiKeyCreatedAt(userId);
 
   return key;
 }
@@ -168,15 +172,55 @@ export async function regenerateApiKey(userId: string, dek: Buffer): Promise<str
   `);
 
   await storeApiKeyDEK(userId, wrapDEKForApiKey(dek, key));
+  await recordApiKeyCreatedAt(userId);
 
   return key;
+}
+
+/** Remember when the current key was minted (best-effort; never blocks key creation). */
+async function recordApiKeyCreatedAt(userId: string): Promise<void> {
+  const { sql } = await import("drizzle-orm");
+  try {
+    await db.execute(sql`
+      INSERT INTO settings (key, user_id, value)
+      VALUES (${API_KEY_CREATED_SETTING}, ${userId}, ${new Date().toISOString()})
+      ON CONFLICT (key, user_id) DO UPDATE SET value = EXCLUDED.value
+    `);
+  } catch {
+    // The date is informational only.
+  }
+}
+
+/**
+ * Whether the user has an API key, without creating one (GET
+ * /api/settings/api-key mints a key on first call). `createdAt` is null for
+ * keys created before the date was recorded.
+ */
+export async function getApiKeyStatus(userId: string): Promise<{ exists: boolean; createdAt: string | null; hasDekWrap: boolean }> {
+  const rows = await db
+    .select({ key: schema.settings.key, value: schema.settings.value })
+    .from(schema.settings)
+    .where(
+      and(
+        eq(schema.settings.userId, userId),
+        inArray(schema.settings.key, [API_KEY_SETTING, API_KEY_DEK_SETTING, API_KEY_CREATED_SETTING]),
+      ),
+    )
+    .all();
+  const has = (k: string) => rows.some((r) => r.key === k);
+  const exists = has(API_KEY_SETTING);
+  return {
+    exists,
+    createdAt: exists ? rows.find((r) => r.key === API_KEY_CREATED_SETTING)?.value ?? null : null,
+    hasDekWrap: exists && has(API_KEY_DEK_SETTING),
+  };
 }
 
 /** Remove all API-key artifacts for a user (used by wipe flow). */
 export async function deleteApiKey(userId: string): Promise<void> {
   const { sql } = await import("drizzle-orm");
   await db.execute(sql`
-    DELETE FROM settings WHERE key IN (${API_KEY_SETTING}, ${API_KEY_DEK_SETTING}) AND user_id = ${userId}
+    DELETE FROM settings WHERE key IN (${API_KEY_SETTING}, ${API_KEY_DEK_SETTING}, ${API_KEY_CREATED_SETTING}) AND user_id = ${userId}
   `);
   void clearApiKeyDEK;
 }
