@@ -78,6 +78,9 @@ import {
   ymPeriod,
 } from "../lib/date-validators";
 import {
+  scanInBatches,
+} from "../lib/scan-in-batches";
+import {
   analyzeRecurringGroup,
   isStale,
   STALENESS_THRESHOLD_MULTIPLIER,
@@ -85,6 +88,14 @@ import {
 } from "../../src/lib/recurring-detection";
 import {
 } from "../../src/lib/loan-calculator";
+
+/**
+ * search_transactions in-memory (payee / tags / tag_exact) scan: rows read
+ * per page, and the most rows one call will decrypt before answering with
+ * `truncated: true`.
+ */
+const SEARCH_BATCH_SIZE = 500;
+const SEARCH_MAX_SCAN = 20_000;
 
 export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   const { db, userId, dek } = ctx;
@@ -275,26 +286,33 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   // ── search_transactions ────────────────────────────────────────────────────
   server.tool(
     "search_transactions",
-    "Flexible transaction search with partial payee match, amount range, date range, category, and tags. Each row carries both entered (user-typed) and account (settlement) amounts; pass reportingCurrency to also include a converted reporting amount per row. For dedup workflows on blank-payee imports, pass `account_id` (FK fast-path) — a year of activity in one account easily exceeds the default 50-row limit, so raise `limit` accordingly. Each row includes `quantity` (nullable; positive for buys, negative for sells; null for cash-proxy and non-investment transactions).",
+    "Flexible transaction search with partial payee match, amount range, date range, category, and tags. Each row carries both entered (user-typed) and account (settlement) amounts; pass reportingCurrency to also include a converted reporting amount per row. For dedup workflows on blank-payee imports, pass `account_id` (FK fast-path) — a year of activity in one account easily exceeds the default 50-row limit, so raise `limit` accordingly. Each row includes `quantity` (nullable; positive for buys, negative for sells; null for cash-proxy and non-investment transactions) and `is_business` (boolean). `min_amount` / `max_amount` compare the SIGNED account amount: expenses are negative, so 'spent between 500 and 1500' is min_amount -1500, max_amount -500. Optional `business` (true | false | all) scopes to business / personal rows; `tag_exact` matches one whole tag (case-insensitive), while `tags` stays a substring match. `payee` / `tags` / `tag_exact` are matched after decryption, newest rows first, scanning up to " + SEARCH_MAX_SCAN + " rows; if that bound is hit before `limit` matches are found the response says `truncated: true` (older matches may exist — narrow start_date/end_date or account_id).",
     {
       payee: z.string().optional().describe("Partial payee/merchant name match"),
-      min_amount: z.number().optional().describe("Minimum amount"),
-      max_amount: z.number().optional().describe("Maximum amount"),
+      min_amount: z.number().optional().describe("Minimum amount (signed account amount: expenses are negative)"),
+      max_amount: z.number().optional().describe("Maximum amount (signed account amount: expenses are negative)"),
       start_date: ymdDate.optional().describe("Start date (YYYY-MM-DD)"),
       end_date: ymdDate.optional().describe("End date (YYYY-MM-DD)"),
       category: z.string().optional().describe("Category name (exact)"),
       tags: z.string().optional().describe("Tag to search for (partial match)"),
+      tag_exact: z.string().optional().describe("Only transactions carrying exactly this tag (whole tag, case-insensitive; `work` does not match `homework`)."),
+      business: businessArg,
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
-      // Push amount/date/category to SQL; payee/tags filter must happen in memory
-      // after decryption when the data is encrypted. Fetch a larger window then
-      // trim to lim after filtering.
-      const fetchCap = payee || tags ? Math.max(lim * 10, 500) : lim;
+      const businessFilter = parseBusinessParam(business);
+      const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
+      const exactTag = tag_exact?.trim() || undefined;
+      // Push amount/date/category/business to SQL; payee/tags filters must
+      // happen in memory after decryption (the columns are encrypted per row).
+      // With an in-memory filter the SQL rows are walked in pages until `lim`
+      // matches are found (bounded by SEARCH_MAX_SCAN → `truncated`), so older
+      // matches are no longer dropped by a fixed newest-N window.
+      const inMemory = Boolean(payee || tags || exactTag);
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
@@ -304,12 +322,13 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       // both are valid alone or combined (e.g. "all VCN.TO dividends in IBKR
       // TFSA"). Do not add an XOR or payee-required guard here; the stdio
       // counterpart in tools-v2.ts mirrors this exactly (issue #80).
-      const rawRows = await q(db, sql`
+      // `t.id DESC` breaks same-day ties so OFFSET paging is stable.
+      const fetchPage = (offset: number, size: number) => q(db, sql`
         SELECT t.id, t.date,
                a.name_ct AS account_ct,
                c.name_ct AS category_ct, c.type AS category_type,
                t.currency, t.amount, t.entered_currency, t.entered_amount, t.entered_fx_rate,
-               t.payee, t.note, t.tags, t.portfolio_holding_id, t.quantity,
+               t.payee, t.note, t.tags, t.portfolio_holding_id, t.quantity, t.is_business,
                t.created_at, t.updated_at, t.source
         FROM transactions t
         LEFT JOIN accounts a ON t.account_id = a.id
@@ -322,31 +341,42 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           ${account_id !== undefined ? sql`AND t.account_id = ${account_id}` : sql``}
           ${portfolio_holding_id !== undefined ? sql`AND t.portfolio_holding_id = ${portfolio_holding_id}` : sql``}
           ${category && categoryLookup ? sql`AND c.name_lookup = ${categoryLookup}` : sql``}
-        ORDER BY t.date DESC
-        LIMIT ${fetchCap}
+          ${bizCond ? sql`AND ${bizCond}` : sql``}
+        ORDER BY t.date DESC, t.id DESC
+        LIMIT ${size} OFFSET ${offset}
       `);
-      const rows = rawRows.map((r) => {
-        const { account_ct, category_ct, ...rest } = r;
-        return {
+      const toRow = (r: Row) => {
+        const { account_ct, category_ct, is_business, ...rest } = r;
+        return decryptTxRowFields(dek, {
           ...rest,
+          // NULL is personal, matching the `business` filter.
+          is_business: Number(is_business ?? 0) === 1,
           account: account_ct && dek ? decryptField(dek, account_ct) : null,
           category: category_ct && dek ? decryptField(dek, category_ct) : null,
-        };
-      });
-      let decrypted = rows.map((r) => decryptTxRowFields(dek, r as Record<string, unknown>));
-      if (payee) {
-        const q = payee.toLowerCase();
-        decrypted = decrypted.filter((r) =>
-          String(r.payee ?? "").toLowerCase().includes(q)
-        );
+        });
+      };
+      const payeeQ = payee?.toLowerCase();
+      const tagsQ = tags?.toLowerCase();
+      const matches = (r: Record<string, unknown>) =>
+        (!payeeQ || String(r.payee ?? "").toLowerCase().includes(payeeQ)) &&
+        (!tagsQ || String(r.tags ?? "").toLowerCase().includes(tagsQ)) &&
+        (!exactTag || hasExactTag(r.tags as string | null, exactTag));
+
+      let decrypted: Record<string, unknown>[];
+      let truncated = false;
+      if (inMemory) {
+        const scan = await scanInBatches({
+          fetchPage: async (offset, size) => (await fetchPage(offset, size)).map(toRow),
+          match: matches,
+          limit: lim,
+          batchSize: Math.max(lim * 10, SEARCH_BATCH_SIZE),
+          maxScan: SEARCH_MAX_SCAN,
+        });
+        decrypted = scan.rows;
+        truncated = scan.truncated;
+      } else {
+        decrypted = (await fetchPage(0, lim)).map(toRow);
       }
-      if (tags) {
-        const q = tags.toLowerCase();
-        decrypted = decrypted.filter((r) =>
-          String(r.tags ?? "").toLowerCase().includes(q)
-        );
-      }
-      decrypted = decrypted.slice(0, lim);
 
       // Tag the entered/account/(reporting) trilogy on each row. Soft-fallback
       // for un-backfilled rows: entered = (currency, amount).
@@ -377,7 +407,16 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         };
       });
 
-      return dataResponse({ results: tagged, count: tagged.length, reportingCurrency: reporting });
+      return dataResponse({
+        results: tagged,
+        count: tagged.length,
+        reportingCurrency: reporting,
+        truncated,
+        ...(truncated
+          ? { note: `Stopped after scanning ${SEARCH_MAX_SCAN} rows for the payee/tag match; older matches may exist. Narrow start_date/end_date or account_id and search again.` }
+          : {}),
+        filters: { business: businessFilter, tag_exact: exactTag ?? null },
+      });
     }
   );
 
