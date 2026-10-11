@@ -36,7 +36,7 @@ let ledger: Array<Record<string, unknown>> = [];
 let tools: Record<string, Tool>;
 
 /** Newest-first ledger of `n` rows; `pick(i)` overrides fields of row i. */
-function makeLedger(n: number, pick: (i: number) => { payee?: string; tags?: string; is_business?: number | null } = () => ({})) {
+function makeLedger(n: number, pick: (i: number) => { payee?: string; note?: string; tags?: string; is_business?: number | null } = () => ({})) {
   return Array.from({ length: n }, (_, i) => {
     const o = pick(i);
     return {
@@ -51,7 +51,7 @@ function makeLedger(n: number, pick: (i: number) => { payee?: string; tags?: str
       entered_amount: -10,
       entered_fx_rate: 1,
       payee: encryptField(dek, o.payee ?? "Coffee"),
-      note: encryptField(dek, ""),
+      note: encryptField(dek, o.note ?? ""),
       tags: encryptField(dek, o.tags ?? ""),
       portfolio_holding_id: null,
       quantity: null,
@@ -142,6 +142,54 @@ describe("search_transactions payee/tag scan", () => {
     expect(out.count).toBe(0);
     expect(out.truncated).toBe(true);
     expect(out.note).toMatch(/older matches may exist/);
+  });
+});
+
+describe("search_transactions note / search", () => {
+  it("note finds a match beyond the old window (row 1100)", async () => {
+    ledger = makeLedger(1200, (i) => (i === 1100 ? { note: "Поповнення рахунку" } : {}));
+    const out = await run({ note: "поповнення" });
+    expect(out.count).toBe(1);
+    expect(out.results[0].id).toBe(100);
+    expect(out.truncated).toBe(false);
+    expect(out.filters.note).toBe("поповнення");
+  });
+
+  it("payee still looks at the payee only, not the note", async () => {
+    ledger = makeLedger(3, (i) => (i === 1 ? { note: "Поповнення рахунку" } : {}));
+    const out = await run({ payee: "поповнення" });
+    expect(out.count).toBe(0);
+  });
+
+  it("search matches payee OR note OR tags", async () => {
+    ledger = makeLedger(4, (i) => [
+      { payee: "Rent Co" },
+      { note: "rent for May" },
+      { tags: "rent,home" },
+      {},
+    ][i]);
+    const out = await run({ search: "RENT" });
+    expect(out.results.map((r: { id: number }) => r.id)).toEqual([4, 3, 2]);
+    expect(out.filters.search).toBe("RENT");
+  });
+
+  it("text filters combine with AND", async () => {
+    ledger = makeLedger(3, (i) => [
+      { payee: "Silpo", note: "weekly" },
+      { payee: "Silpo", note: "party" },
+      { payee: "ATB", note: "weekly" },
+    ][i]);
+    const out = await run({ payee: "silpo", note: "weekly" });
+    expect(out.results.map((r: { id: number }) => r.id)).toEqual([3]);
+    const out2 = await run({ search: "weekly", tag_exact: "none" });
+    expect(out2.count).toBe(0);
+  });
+
+  it("search finds an old match by paging (row 1100)", async () => {
+    ledger = makeLedger(1200, (i) => (i === 1100 ? { tags: "landlord" } : {}));
+    const out = await run({ search: "landlord" });
+    expect(out.count).toBe(1);
+    expect(out.results[0].id).toBe(100);
   });
 });
 

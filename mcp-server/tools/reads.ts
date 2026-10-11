@@ -81,6 +81,10 @@ import {
   scanInBatches,
 } from "../lib/scan-in-batches";
 import {
+  hasTextFilter,
+  matchesTextFilters,
+} from "../lib/text-match";
+import {
   analyzeRecurringGroup,
   isStale,
   STALENESS_THRESHOLD_MULTIPLIER,
@@ -90,7 +94,7 @@ import {
 } from "../../src/lib/loan-calculator";
 
 /**
- * search_transactions in-memory (payee / tags / tag_exact) scan: rows read
+ * search_transactions in-memory text-filter scan: rows read
  * per page, and the most rows one call will decrypt before answering with
  * `truncated: true`.
  */
@@ -286,9 +290,11 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   // ── search_transactions ────────────────────────────────────────────────────
   server.tool(
     "search_transactions",
-    "Flexible transaction search with partial payee match, amount range, date range, category, and tags. Each row carries both entered (user-typed) and account (settlement) amounts; pass reportingCurrency to also include a converted reporting amount per row. For dedup workflows on blank-payee imports, pass `account_id` (FK fast-path) — a year of activity in one account easily exceeds the default 50-row limit, so raise `limit` accordingly. Each row includes `quantity` (nullable; positive for buys, negative for sells; null for cash-proxy and non-investment transactions) and `is_business` (boolean). `min_amount` / `max_amount` compare the SIGNED account amount: expenses are negative, so 'spent between 500 and 1500' is min_amount -1500, max_amount -500. Optional `business` (true | false | all) scopes to business / personal rows; `tag_exact` matches one whole tag (case-insensitive), while `tags` stays a substring match. `payee` / `tags` / `tag_exact` are matched after decryption, newest rows first, scanning up to " + SEARCH_MAX_SCAN + " rows; if that bound is hit before `limit` matches are found the response says `truncated: true` (older matches may exist — narrow start_date/end_date or account_id).",
+    "Search transactions by payee, note, text, amount, date, category, tags, business flag, account or holding. Text filters are case-insensitive and combine with AND: `payee` = payee only, `note` = note only, `search` = payee OR note OR tags, `tags` = tag substring, `tag_exact` = one whole tag (`work` does not match `homework`). `min_amount` / `max_amount` compare the SIGNED account amount (expenses negative: spent 500–1500 → min -1500, max -500). `business` (true | false | all) scopes to business / personal rows. `account_id` / `portfolio_holding_id` are fast FK filters (raise `limit` for long histories). Rows carry entered + account amounts, `quantity` and `is_business`; `reportingCurrency` adds a converted amount. Text filters run after decryption over at most " + SEARCH_MAX_SCAN + " rows, newest first; `truncated: true` means older matches may exist (narrow dates or account).",
     {
-      payee: z.string().optional().describe("Partial payee/merchant name match"),
+      payee: z.string().optional().describe("Partial payee/merchant name match (payee field only — use `note` or `search` to look in the note)"),
+      note: z.string().optional().describe("Partial note match (case-insensitive substring of the note only)"),
+      search: z.string().optional().describe("Free text: matches if payee OR note OR tags contains it (case-insensitive). Combines with the other filters by AND."),
       min_amount: z.number().optional().describe("Minimum amount (signed account amount: expenses are negative)"),
       max_amount: z.number().optional().describe("Maximum amount (signed account amount: expenses are negative)"),
       start_date: ymdDate.optional().describe("Start date (YYYY-MM-DD)"),
@@ -302,17 +308,19 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
       const businessFilter = parseBusinessParam(business);
       const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
       const exactTag = tag_exact?.trim() || undefined;
-      // Push amount/date/category/business to SQL; payee/tags filters must
-      // happen in memory after decryption (the columns are encrypted per row).
+      // Push amount/date/category/business to SQL; the text filters (payee,
+      // note, search, tags, tag_exact) must happen in memory after decryption
+      // (the columns are encrypted per row) — see lib/text-match.ts.
       // With an in-memory filter the SQL rows are walked in pages until `lim`
       // matches are found (bounded by SEARCH_MAX_SCAN → `truncated`), so older
       // matches are no longer dropped by a fixed newest-N window.
-      const inMemory = Boolean(payee || tags || exactTag);
+      const textFilters = { payee, note, tags, search, tagExact: exactTag };
+      const inMemory = hasTextFilter(textFilters);
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
@@ -355,19 +363,12 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           category: category_ct && dek ? decryptField(dek, category_ct) : null,
         });
       };
-      const payeeQ = payee?.toLowerCase();
-      const tagsQ = tags?.toLowerCase();
-      const matches = (r: Record<string, unknown>) =>
-        (!payeeQ || String(r.payee ?? "").toLowerCase().includes(payeeQ)) &&
-        (!tagsQ || String(r.tags ?? "").toLowerCase().includes(tagsQ)) &&
-        (!exactTag || hasExactTag(r.tags as string | null, exactTag));
-
       let decrypted: Record<string, unknown>[];
       let truncated = false;
       if (inMemory) {
         const scan = await scanInBatches({
           fetchPage: async (offset, size) => (await fetchPage(offset, size)).map(toRow),
-          match: matches,
+          match: (r) => matchesTextFilters(r, textFilters),
           limit: lim,
           batchSize: Math.max(lim * 10, SEARCH_BATCH_SIZE),
           maxScan: SEARCH_MAX_SCAN,
@@ -413,9 +414,14 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         reportingCurrency: reporting,
         truncated,
         ...(truncated
-          ? { note: `Stopped after scanning ${SEARCH_MAX_SCAN} rows for the payee/tag match; older matches may exist. Narrow start_date/end_date or account_id and search again.` }
+          ? { note: `Stopped after scanning ${SEARCH_MAX_SCAN} rows for the text match; older matches may exist. Narrow start_date/end_date or account_id and search again.` }
           : {}),
-        filters: { business: businessFilter, tag_exact: exactTag ?? null },
+        filters: {
+          business: businessFilter,
+          tag_exact: exactTag ?? null,
+          note: note || null,
+          search: search || null,
+        },
       });
     }
   );

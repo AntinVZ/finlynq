@@ -108,6 +108,10 @@ import {
   type TxRowForLots,
 } from "../../src/lib/portfolio/lots/types";
 import { registerManageTool } from "./_consolidate";
+import { scanInBatches } from "../lib/scan-in-batches";
+import { hasTextFilter, matchesTextFilters, type TextFilters } from "../lib/text-match";
+import { parseBusinessParam } from "../../src/lib/reports/business-filter";
+import { businessFilterCondition } from "../../src/lib/reports/business-filter-sql";
 
 export function registerTransactionsTools(server: McpServer, ctx: PgToolContext) {
   const { db, userId, dek } = ctx;
@@ -2303,6 +2307,18 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // filter). Single-sourced so all three bulk families use the same wording.
   const NO_MATCH_NOTE = "No rows matched; nothing to confirm.";
 
+  // Bulk filters resolve to at most BULK_MAX_IDS ids. The text filters
+  // (payee_match / note_match / tag_exact) run in memory after decryption, so
+  // those scans read rows page by page (BULK_SCAN_BATCH) and stop after
+  // BULK_MAX_SCAN rows. Either bound hit with rows left → `truncated`: the
+  // preview mints no token and execute refuses, so a bulk write never lands
+  // on a silently partial set.
+  const BULK_MAX_IDS = 10_000;
+  const BULK_MAX_SCAN = 50_000;
+  const BULK_SCAN_BATCH = 1_000;
+  const TRUNCATED_NOTE =
+    `The filter matches more rows than one bulk operation can safely cover (over ${BULK_MAX_IDS.toLocaleString("en-US")} matches, or the text match stopped after scanning ${BULK_MAX_SCAN.toLocaleString("en-US")} rows). No confirmation token was issued; narrow the filter (start_date / end_date, account_id, category_id) and preview again.`;
+
   // Zod schema for the filter shape used by preview_bulk_*. Mirrors the logic
   // supported by /api/transactions/bulk but extended with range filters so
   // Claude doesn't have to fetch ids first.
@@ -2312,8 +2328,16 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     end_date: ymdDate.optional().describe("YYYY-MM-DD inclusive"),
     category_id: z.number().nullable().optional().describe("Exact category id (null matches uncategorized)"),
     account_id: z.number().optional().describe("Exact account id"),
-    payee_match: z.string().optional().describe("Substring match against plaintext payee (case-insensitive)"),
-  }).describe("Filter — at least one field required");
+    payee_match: z.string().optional().describe("Substring match against the decrypted payee only (case-insensitive; not the note)"),
+    note_match: z.string().optional().describe("Substring match against the decrypted note (case-insensitive)"),
+    tag_exact: z.string().optional().describe("Only rows carrying exactly this tag (whole tag, case-insensitive; `work` does not match `homework`)"),
+    business: z
+      .union([z.boolean(), z.enum(["true", "false", "all"])])
+      .optional()
+      .describe("true = business rows only, false = personal only (not flagged business; NULL counts as personal), all = no business filter (default)"),
+    min_amount: z.number().optional().describe("Minimum SIGNED account amount (expenses are negative: 'spent 500–1500' is min_amount -1500, max_amount -500)"),
+    max_amount: z.number().optional().describe("Maximum SIGNED account amount (expenses are negative)"),
+  }).describe("Filter — at least one field required; fields combine with AND. Text fields (payee_match, note_match, tag_exact) are matched after decryption.");
 
   type BulkFilter = z.infer<typeof bulkFilterSchema>;
 
@@ -2386,24 +2410,37 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   type UnappliedChange = { field: string; requestedValue: unknown; reason: string };
 
   /**
-   * Resolve a bulk filter to a list of transaction ids owned by the user.
-   * Payee match is the only one that needs decryption — everything else is SQL.
-   * Hard cap at 10k ids to keep preview/execute payloads tractable.
+   * Resolve a bulk filter to the ids of the user's matching transactions.
+   * Everything but the text filters is SQL; payee_match / note_match /
+   * tag_exact are matched after decryption via the shared text-match helper,
+   * paging newest first through scanInBatches. `truncated` means the id cap
+   * or the scan bound was hit with rows left — callers must not confirm or
+   * commit a truncated set.
    */
-  async function resolveFilterToIds(filter: BulkFilter): Promise<number[]> {
+  async function resolveFilterToIds(filter: BulkFilter): Promise<{ ids: number[]; truncated: boolean }> {
+    const business = parseBusinessParam(filter.business);
+    const textFilters: TextFilters = {
+      payee: filter.payee_match,
+      note: filter.note_match,
+      tagExact: filter.tag_exact,
+    };
+    const hasText = hasTextFilter(textFilters);
     const hasAny =
       (filter.ids && filter.ids.length > 0) ||
       filter.start_date !== undefined ||
       filter.end_date !== undefined ||
       filter.category_id !== undefined ||
       filter.account_id !== undefined ||
-      (filter.payee_match !== undefined && filter.payee_match !== "");
+      filter.min_amount !== undefined ||
+      filter.max_amount !== undefined ||
+      business !== "all" ||
+      hasText;
     if (!hasAny) throw new Error("At least one filter field is required");
 
     const whereParts: ReturnType<typeof sql>[] = [sql`user_id = ${userId}`];
     if (filter.ids && filter.ids.length > 0) {
       const safeIds = filter.ids.map((n) => Number(n)).filter((n) => Number.isFinite(n));
-      if (safeIds.length === 0) return [];
+      if (safeIds.length === 0) return { ids: [], truncated: false };
       // Defense-in-depth: parameterized ANY(ARRAY[...]::int[]) instead of
       // hand-rolled CSV (low finding, SECURITY_REVIEW 2026-05-06).
       const safeIdsExpr = sql.join(safeIds.map((id) => sql`${id}`), sql`, `);
@@ -2414,23 +2451,45 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     if (filter.category_id === null) whereParts.push(sql`category_id IS NULL`);
     else if (filter.category_id !== undefined) whereParts.push(sql`category_id = ${filter.category_id}`);
     if (filter.account_id !== undefined) whereParts.push(sql`account_id = ${filter.account_id}`);
+    if (filter.min_amount !== undefined) whereParts.push(sql`amount >= ${filter.min_amount}`);
+    if (filter.max_amount !== undefined) whereParts.push(sql`amount <= ${filter.max_amount}`);
+    const bizCond = businessFilterCondition(business, sql`is_business`);
+    if (bizCond) whereParts.push(bizCond);
+    const where = sql.join(whereParts, sql` AND `);
 
-    const rows = await q(db, sql`
-      SELECT id, payee FROM transactions
-      WHERE ${sql.join(whereParts, sql` AND `)}
-      ORDER BY date DESC, id DESC
-      LIMIT 10000
-    `);
-
-    if (!filter.payee_match) return rows.map((r) => Number(r.id));
-
-    const needle = filter.payee_match.toLowerCase();
-    const out: number[] = [];
-    for (const r of rows) {
-      const plain = dek ? (decryptField(dek, String(r.payee ?? "")) ?? "") : String(r.payee ?? "");
-      if (plain.toLowerCase().includes(needle)) out.push(Number(r.id));
+    if (!hasText) {
+      // One read; the extra row tells "exactly the cap" from "over the cap".
+      const rows = await q(db, sql`
+        SELECT id FROM transactions
+        WHERE ${where}
+        ORDER BY date DESC, id DESC
+        LIMIT ${BULK_MAX_IDS + 1}
+      `);
+      return {
+        ids: rows.slice(0, BULK_MAX_IDS).map((r) => Number(r.id)),
+        truncated: rows.length > BULK_MAX_IDS,
+      };
     }
-    return out;
+
+    const scan = await scanInBatches({
+      fetchPage: async (offset, size) => {
+        const rows = await q(db, sql`
+          SELECT id, payee, note, tags FROM transactions
+          WHERE ${where}
+          ORDER BY date DESC, id DESC
+          LIMIT ${size} OFFSET ${offset}
+        `);
+        return rows.map((r) => decryptTxRowFields(dek, { ...r }));
+      },
+      match: (r) => matchesTextFilters(r, textFilters),
+      limit: BULK_MAX_IDS + 1,
+      batchSize: BULK_SCAN_BATCH,
+      maxScan: BULK_MAX_SCAN,
+    });
+    return {
+      ids: scan.rows.slice(0, BULK_MAX_IDS).map((r) => Number(r.id)),
+      truncated: scan.truncated || scan.rows.length > BULK_MAX_IDS,
+    };
   }
 
   /**
@@ -2606,7 +2665,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
    * resolved one) so the same payload round-trips between preview/execute.
    */
   async function previewBulk(filter: BulkFilter, changes: BulkChanges, op: string) {
-    const ids = await resolveFilterToIds(filter);
+    const { ids, truncated } = await resolveFilterToIds(filter);
 
     // Resolve names → ids up front; surface conflicts as a hard error.
     const { resolved, unapplied, error } = await resolveBulkChanges(changes);
@@ -2623,7 +2682,10 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         sampleAfter: [],
         unappliedChanges: unapplied,
         ids: [],
-        note: NO_MATCH_NOTE,
+        // Zero matches in a truncated scan is not "no rows matched": older
+        // rows were never read.
+        truncated,
+        note: truncated ? TRUNCATED_NOTE : NO_MATCH_NOTE,
       };
     }
 
@@ -2669,7 +2731,20 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         sampleAfter: after,
         unappliedChanges: unapplied,
         ids: [],
+        truncated,
         confirmationToken: "",
+      };
+    }
+    // A truncated match set is never confirmable: execute would refuse it.
+    if (truncated) {
+      return {
+        affectedCount: ids.length,
+        sampleBefore: before,
+        sampleAfter: after,
+        unappliedChanges: unapplied,
+        ids: [],
+        truncated: true,
+        note: TRUNCATED_NOTE,
       };
     }
     // The token payload encodes the resolved ids — not the filter — so Claude
@@ -2677,7 +2752,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     // user-supplied `changes` (not the resolved form) so the execute caller
     // can pass the same payload back unchanged; execute re-runs resolution.
     const token = signPreviewToken(userId, op, { ids, changes });
-    return { affectedCount: ids.length, sampleBefore: before, sampleAfter: after, unappliedChanges: unapplied, ids, confirmationToken: token };
+    return { affectedCount: ids.length, sampleBefore: before, sampleAfter: after, unappliedChanges: unapplied, ids, truncated: false, confirmationToken: token };
   }
 
   /**
@@ -2770,18 +2845,18 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // a caller seeing identical sampleBefore/sampleAfter knows WHY.
   server.tool(
     "preview_bulk_update",
-    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, an `unappliedChanges` array, and a confirmationToken (5-min TTL) for execute_bulk_update. Each `unappliedChanges` entry is `{ field, requestedValue, reason }` — `field` is the change key (e.g. \"category\"), `requestedValue` is the value you sent, `reason` explains the failure. `sampleAfter.category` reflects the resolved category display name when `category` (name) resolved. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode: append|replace|remove, value }). Unknown keys fail with a 400.",
+    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, an `unappliedChanges` array, and a confirmationToken (5-min TTL) for execute_bulk_update. Each `unappliedChanges` entry is `{ field, requestedValue, reason }` — `field` is the change key (e.g. \"category\"), `requestedValue` is the value you sent, `reason` explains the failure. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode: append|replace|remove, value }). Unknown keys fail with a 400. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     {
       filter: bulkFilterSchema,
       changes: bulkChangesSchema,
     },
     async ({ filter, changes }) => {
       try {
-        const { affectedCount, sampleBefore, sampleAfter, unappliedChanges, confirmationToken, note } = await previewBulk(filter, changes, "bulk_update");
+        const { affectedCount, sampleBefore, sampleAfter, unappliedChanges, confirmationToken, note, truncated } = await previewBulk(filter, changes, "bulk_update");
         // FINLYNQ-274: omit `confirmationToken` when it wasn't minted (zero
-        // match); carry `note` when present. `>0`-match path is byte-identical.
+        // match or truncated); carry `note` when present.
         return text({ success: true, data: {
-          affectedCount, sampleBefore, sampleAfter, unappliedChanges,
+          affectedCount, sampleBefore, sampleAfter, unappliedChanges, truncated,
           ...(confirmationToken != null ? { confirmationToken } : {}),
           ...(note != null ? { note } : {}),
         } });
@@ -2798,7 +2873,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // can no longer report `updated: N` while writing nothing).
   server.tool(
     "execute_bulk_update",
-    "Commit a bulk update. Must be preceded by preview_bulk_update; the same filter+changes must be passed. Returns `{ updated, unappliedChanges }` where each `unappliedChanges` entry is `{ field, requestedValue, reason }`. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags. Unknown keys fail. Aborts (no commit) when ALL requested changes failed to resolve.",
+    "Commit a bulk update. Must be preceded by preview_bulk_update; the same filter+changes must be passed. Returns `{ updated, unappliedChanges }` where each `unappliedChanges` entry is `{ field, requestedValue, reason }`. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags. Unknown keys fail. Aborts (no commit) when ALL requested changes failed to resolve. Refuses when the filter's match set is truncated.",
     {
       filter: bulkFilterSchema,
       changes: bulkChangesSchema,
@@ -2806,7 +2881,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     },
     async ({ filter, changes, confirmation_token }) => {
       try {
-        const ids = await resolveFilterToIds(filter);
+        const { ids, truncated } = await resolveFilterToIds(filter);
+        if (truncated) return err(`Refusing to execute: ${TRUNCATED_NOTE}`);
         const check = verifyPreviewToken(confirmation_token, userId, "bulk_update", { ids, changes });
         if (!check.valid) return err(renderTokenError(check, "preview_bulk_update"));
 
@@ -2841,16 +2917,16 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── preview_bulk_delete ────────────────────────────────────────────────────
   server.tool(
     "preview_bulk_delete",
-    "Preview a bulk delete. Returns affected count, sample rows, and a confirmationToken (5-min TTL) for execute_bulk_delete.",
+    "Preview a bulk delete. Returns affected count, sample rows, and a confirmationToken (5-min TTL) for execute_bulk_delete. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     { filter: bulkFilterSchema },
     async ({ filter }) => {
       try {
-        const ids = await resolveFilterToIds(filter);
+        const { ids, truncated } = await resolveFilterToIds(filter);
         if (ids.length === 0) {
           // FINLYNQ-274: a zero-match preview mints NO token. Omit the
           // `confirmationToken` key entirely + carry an explanatory note so an
           // agent doesn't thread an empty string into execute_bulk_delete.
-          return text({ success: true, data: { affectedCount: 0, sample: [], note: NO_MATCH_NOTE } });
+          return text({ success: true, data: { affectedCount: 0, sample: [], truncated, note: truncated ? TRUNCATED_NOTE : NO_MATCH_NOTE } });
         }
         const sampleIds = ids.slice(0, 10);
         // Stream D Phase 4: a.name + c.name dropped — read *_ct only.
@@ -2878,6 +2954,10 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         // Disclose the link-sibling cascade (2026-07-30). The filter can match
         // ONE leg of a transfer / trade pair; the delete removes both, so the
         // confirmation must cover the expanded set, not the matched set.
+        if (truncated) {
+          // Never confirmable — execute_bulk_delete would refuse it.
+          return text({ success: true, data: { affectedCount: ids.length, sample, truncated: true, note: TRUNCATED_NOTE } });
+        }
         const plan = await planTransactionDelete(userId, ids, db);
         const token = signPreviewToken(userId, "bulk_delete", { ids });
         return text({
@@ -2885,6 +2965,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
           data: {
             affectedCount: ids.length,
             sample,
+            truncated: false,
             cascadedIds: plan.siblingIds,
             totalToDelete: plan.ids.length,
             ...(plan.siblingIds.length > 0
@@ -2906,14 +2987,15 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── execute_bulk_delete ────────────────────────────────────────────────────
   server.tool(
     "execute_bulk_delete",
-    "Commit a bulk delete. Must be preceded by preview_bulk_delete; the same filter must be passed.",
+    "Commit a bulk delete. Must be preceded by preview_bulk_delete; the same filter must be passed. Refuses when the filter's match set is truncated.",
     {
       filter: bulkFilterSchema,
       confirmation_token: z.string().describe("Token returned by preview_bulk_delete"),
     },
     async ({ filter, confirmation_token }) => {
       try {
-        const ids = await resolveFilterToIds(filter);
+        const { ids, truncated } = await resolveFilterToIds(filter);
+        if (truncated) return err(`Refusing to execute: ${TRUNCATED_NOTE}`);
         const check = verifyPreviewToken(confirmation_token, userId, "bulk_delete", { ids });
         if (!check.valid) return err(renderTokenError(check, "preview_bulk_delete"));
         if (ids.length === 0) return text({ success: true, data: { deleted: 0 } });
@@ -2941,7 +3023,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── preview_bulk_categorize ────────────────────────────────────────────────
   server.tool(
     "preview_bulk_categorize",
-    "Preview a bulk-categorize (shortcut for preview_bulk_update with only category_id set). Returns affected count + sample + confirmationToken.",
+    "Preview a bulk-categorize (shortcut for preview_bulk_update with only category_id set). Returns affected count + sample + confirmationToken. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     {
       filter: bulkFilterSchema,
       category_id: z.number().describe("Target category id"),
@@ -2954,7 +3036,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         const ct = cat[0].name_ct as string | null | undefined;
         const categoryName = ct && dek ? decryptField(dek, String(ct)) : null;
         const changes: BulkChanges = { category_id };
-        const { affectedCount, sampleBefore, sampleAfter, confirmationToken, note } = await previewBulk(filter, changes, "bulk_categorize");
+        const { affectedCount, sampleBefore, sampleAfter, confirmationToken, note, truncated } = await previewBulk(filter, changes, "bulk_categorize");
         // FINLYNQ-274: omit `confirmationToken` on a zero-match preview; carry
         // the explanatory `note`. The `>0`-match path stays byte-identical.
         return text({
@@ -2965,6 +3047,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
             affectedCount,
             sampleBefore,
             sampleAfter,
+            truncated,
             ...(confirmationToken != null ? { confirmationToken } : {}),
             ...(note != null ? { note } : {}),
           },
@@ -2979,7 +3062,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── execute_bulk_categorize ────────────────────────────────────────────────
   server.tool(
     "execute_bulk_categorize",
-    "Commit a bulk-categorize. Must be preceded by preview_bulk_categorize with the same filter + category_id.",
+    "Commit a bulk-categorize. Must be preceded by preview_bulk_categorize with the same filter + category_id. Refuses when the filter's match set is truncated.",
     {
       filter: bulkFilterSchema,
       category_id: z.number(),
@@ -2987,7 +3070,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     },
     async ({ filter, category_id, confirmation_token }) => {
       try {
-        const ids = await resolveFilterToIds(filter);
+        const { ids, truncated } = await resolveFilterToIds(filter);
+        if (truncated) return err(`Refusing to execute: ${TRUNCATED_NOTE}`);
         const changes: BulkChanges = { category_id };
         const check = verifyPreviewToken(confirmation_token, userId, "bulk_categorize", { ids, changes });
         if (!check.valid) return err(renderTokenError(check, "preview_bulk_categorize"));

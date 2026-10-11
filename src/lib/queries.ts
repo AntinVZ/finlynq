@@ -6,6 +6,8 @@ import type { TransactionSource } from "@/lib/tx-source";
 import type { SortableColumnId } from "@/lib/transactions/columns";
 import { computeReportingFields } from "@/lib/fx/reporting-amount";
 import { getDisplayCurrency } from "@/lib/fx-service";
+import type { BusinessFilter } from "@/lib/reports/business-filter";
+import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 
 const { accounts, categories, transactions, portfolioHoldings, securities, budgets, budgetTemplates } = schema;
 
@@ -185,6 +187,9 @@ export type TxSortFilter = {
   quantityEq?: number;
   // Source filter (small-cardinality enum). Multi-select.
   sources?: TransactionSource[];
+  // Business / personal scope (same semantics as the reports, see
+  // lib/reports/business-filter.ts). Absent or "all" = no condition.
+  business?: BusinessFilter;
   search?: string;
   // Sort whitelist — see SORTABLE_COLUMN_IDS in
   // `@/lib/transactions/columns`. Default = `date DESC`.
@@ -194,7 +199,7 @@ export type TxSortFilter = {
   offset?: number;
 };
 
-function buildTxFilterConditions(userId: string, filters?: TxSortFilter) {
+export function buildTxFilterConditions(userId: string, filters?: TxSortFilter) {
   const conditions = [eq(transactions.userId, userId)];
   // FINLYNQ-177 — single-tx id pushdown. Combined with the user_id predicate
   // above, so another user's id (or a nonexistent one) yields zero rows.
@@ -246,6 +251,10 @@ function buildTxFilterConditions(userId: string, filters?: TxSortFilter) {
   }
   if (filters?.sources && filters.sources.length > 0) {
     conditions.push(inArray(transactions.source, filters.sources));
+  }
+  if (filters?.business) {
+    const bizCond = businessFilterCondition(filters.business, transactions.isBusiness);
+    if (bizCond) conditions.push(bizCond);
   }
   if (filters?.search) {
     conditions.push(
