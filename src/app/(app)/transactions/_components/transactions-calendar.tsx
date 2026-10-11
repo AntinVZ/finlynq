@@ -17,6 +17,7 @@ import {
   type CalendarMonth,
 } from "@/lib/transactions/calendar";
 import { Scale, TrendingDown, TrendingUp } from "lucide-react";
+import { BUSINESS_PARAM, serializeBusinessFilter, type BusinessFilter } from "@/lib/reports/business-filter";
 
 const CALENDAR_KEY_PREFIX = "/api/transactions/calendar";
 
@@ -66,6 +67,7 @@ export function TransactionsCalendar({
   selectedDay,
   accountId,
   categoryId,
+  business = "all",
   onModeChange,
   onSelectDay,
   onShift,
@@ -78,6 +80,8 @@ export function TransactionsCalendar({
   selectedDay: string | null;
   accountId: string;
   categoryId: string;
+  /** Business / personal scope, same as the list. */
+  business?: BusinessFilter;
   onModeChange: (mode: CalendarMode) => void;
   onSelectDay: (day: string | null) => void;
   onShift: (delta: number) => void;
@@ -90,6 +94,8 @@ export function TransactionsCalendar({
   const qs = new URLSearchParams(mode === "month" ? { month: anchor.slice(0, 7) } : { start, end });
   if (accountId) qs.set("accountId", accountId);
   if (categoryId) qs.set("categoryId", categoryId);
+  const biz = serializeBusinessFilter(business);
+  if (biz) qs.set(BUSINESS_PARAM, biz);
 
   const { data, error, isLoading } = useSWR<CalendarResponse>(
     `${CALENDAR_KEY_PREFIX}?${qs}`,

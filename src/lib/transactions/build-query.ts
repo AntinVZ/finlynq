@@ -17,6 +17,7 @@
  */
 
 import type { ColumnId, SortableColumnId } from "@/lib/transactions/columns";
+import { BUSINESS_PARAM, serializeBusinessFilter, type BusinessFilter } from "@/lib/reports/business-filter";
 
 /** Top-bar quick filters (URL-driven). Mirrors the page `filters` state. */
 export type TxFilters = {
@@ -33,6 +34,9 @@ export type TxFilters = {
   // method, never routed through this builder). The string is kept as-is and
   // parsed to an int server-side.
   id?: string;
+  // Business / personal scope (lib/reports/business-filter.ts). "all" or
+  // absent sends nothing, so existing URLs are unchanged.
+  business?: BusinessFilter;
 };
 
 /** Per-user header sort. `null` direction = unsorted (server default date DESC). */
@@ -85,6 +89,8 @@ export function buildTransactionQuery(
   if (filters.search) params.set("search", filters.search);
   if (filters.portfolioHolding) params.set("portfolioHolding", filters.portfolioHolding);
   if (filters.tag) params.set("tag", filters.tag);
+  const business = filters.business ? serializeBusinessFilter(filters.business) : null;
+  if (business) params.set(BUSINESS_PARAM, business);
 
   // Issue #59 — sort + per-column filters. The top-bar quick filters
   // above are URL-driven (deep links from /portfolio etc. must keep

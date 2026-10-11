@@ -24,6 +24,7 @@ import useSWR from "swr";
 import { buildTransactionQuery } from "@/lib/transactions/build-query";
 import { jsonFetcher, swrListOptions } from "@/lib/swr";
 import type { Account, ColFilterShape, SortPref, Transaction } from "../_types";
+import type { BusinessFilter } from "@/lib/reports/business-filter";
 
 const limit = 50;
 
@@ -42,11 +43,16 @@ export function useTransactions(
     search: string;
     portfolioHolding: string;
     tag: string;
+    // Business / personal scope; absent or "all" sends nothing.
+    business?: BusinessFilter;
   },
   sortPref: SortPref,
   colFilters: ColFilterShape[],
   accounts: Account[],
   page: number,
+  // false holds the request (SWR null key) — e.g. until the global view scope
+  // has loaded, so the first fetch isn't an unscoped one thrown away.
+  enabled = true,
 ) {
   // Issue #59 — the top-bar quick filters are URL-driven (deep links from
   // /portfolio etc. must keep working); per-column filters + sort are persisted
@@ -54,7 +60,7 @@ export function useTransactions(
   // unit-tested buildTransactionQuery (FINLYNQ-111 Phase 1), and its string is
   // the SWR cache key (FINLYNQ-115) — deterministic per filter/sort/page combo.
   const params = buildTransactionQuery(filters, sortPref, colFilters, accounts, { page, limit });
-  const key = `/api/transactions?${params}`;
+  const key = enabled ? `/api/transactions?${params}` : null;
 
   const { data, isLoading, isValidating, mutate } = useSWR<TxListResponse>(
     key,

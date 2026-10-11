@@ -35,6 +35,7 @@ import { useTransactions } from "../_hooks/use-transactions";
 import { TransactionTable } from "./transaction-table";
 import { TransactionsCalendar, describeCalendarSelection, refreshTransactionsCalendar } from "./transactions-calendar";
 import { buildTransactionQuery } from "@/lib/transactions/build-query";
+import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { exportCsv, type CsvColumn } from "@/lib/csv-export";
 import { localDateISO, todayISO } from "@/lib/utils/date";
@@ -137,9 +138,25 @@ export function TransactionsWorkspace({
     () => (calDay ? { start: calDay, end: calDay } : periodRange(calMode, calAnchor)),
     [calDay, calMode, calAnchor],
   );
+  // All / Business / Personal: follows the global view scope unless changed
+  // on this page (components/page-scope.tsx). Only the full /transactions page
+  // applies it; the account-page embed (`locked`) always lists every row of
+  // that account.
+  const pageScope = usePageScope();
+  const business = locked ? "all" : pageScope.scope;
+  // A scope change starts the list over at page 1 (adjust-state-on-change
+  // pattern, no effect needed).
+  const [prevBusiness, setPrevBusiness] = useState(business);
+  if (prevBusiness !== business) {
+    setPrevBusiness(business);
+    setPage(0);
+  }
   const listFilters = useMemo(
-    () => (view === "calendar" ? { ...filters, startDate: calRange.start, endDate: calRange.end } : filters),
-    [view, filters, calRange],
+    () => ({
+      ...(view === "calendar" ? { ...filters, startDate: calRange.start, endDate: calRange.end } : filters),
+      business,
+    }),
+    [view, filters, calRange, business],
   );
   const shiftCal = (delta: number) => {
     setCalAnchor((a) => shiftAnchor(calMode, a, delta));
@@ -207,6 +224,7 @@ export function TransactionsWorkspace({
     colFilters,
     accounts,
     page,
+    locked || !pageScope.isLoading,
   );
 
   // Post-mutation refresh: reload the list AND notify the embedding page so it
@@ -778,7 +796,9 @@ export function TransactionsWorkspace({
         onLinkedSiblingClick={(s) => openLinkedSibling(s as LinkedSibling)}
       />
 
-      {/* List / Calendar toggle (in-app feedback 2026-10-07). */}
+      {/* List / Calendar toggle (in-app feedback 2026-10-07), plus the
+          All / Business / Personal control in "business too" usage mode. */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
       <Tabs
         value={view}
         onValueChange={(v) => {
@@ -791,6 +811,8 @@ export function TransactionsWorkspace({
           <TabsTrigger value="calendar" className="px-3"><CalendarDays className="h-4 w-4" /> Calendar</TabsTrigger>
         </TabsList>
       </Tabs>
+      {!locked && <PageScopeControl {...pageScope} />}
+      </div>
 
       {/* Search + Filters */}
       <Card className="bg-muted/30 border-dashed">
@@ -1036,6 +1058,7 @@ export function TransactionsWorkspace({
             selectedDay={calDay}
             accountId={filters.accountId}
             categoryId={filters.categoryId}
+            business={business}
             onModeChange={changeCalMode}
             onSelectDay={(day) => {
               setCalDay(day);
