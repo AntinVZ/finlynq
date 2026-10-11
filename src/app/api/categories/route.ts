@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCategories, createCategory, updateCategory, deleteCategory } from "@/lib/queries";
+import {
+  getCategories,
+  createCategory,
+  updateCategory,
+  deleteCategory,
+  getTransactionCountsByCategory,
+} from "@/lib/queries";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { requireEncryption } from "@/lib/auth/require-encryption";
 import { z } from "zod";
 import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
-import { buildNameFields, decryptNamedRows } from "@/lib/crypto/encrypted-columns";
+import {
+  buildNameFields,
+  decryptNamedRows,
+  decryptOptional,
+  encryptOptional,
+} from "@/lib/crypto/encrypted-columns";
 import { db } from "@/db";
 import { isPgErrorCode, pgErrorConstraint } from "@/lib/db-utils";
 import {
@@ -12,6 +23,8 @@ import {
   categoryDeleteBlockedMessage,
 } from "@/lib/categories/delete-blockers";
 import { categoryTypeSchema } from "@/lib/categories/category-type";
+import { getCategoryTypeChangeBlock } from "@/lib/transactions/sign-category-invariant";
+import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
 
 /**
  * Category names are unique per user via the `categories_user_name_lookup_uniq`
@@ -47,11 +60,24 @@ const putSchema = z.object({
   note: z.string().optional(),
 });
 
+// `categories.note` is a user-DEK envelope column (user-encrypted-registry);
+// MCP already writes it encrypted. Reads tolerate legacy plaintext.
+function decryptNotes<T extends { note?: string | null }>(rows: T[], dek: Buffer | null): T[] {
+  return rows.map((r) => (r.note ? { ...r, note: decryptOptional(dek, r.note) ?? r.note } : r));
+}
+
 export async function GET(request: NextRequest) {
   const auth = await requireAuth(request); if (!auth.authenticated) return auth.response;
   try {
-    const rows = await getCategories(auth.context.userId);
-    const data = decryptNamedRows(rows, auth.context.dek, { nameCt: "name" });
+    const { userId, dek } = auth.context;
+    const rows = await getCategories(userId);
+    const data = decryptNotes(decryptNamedRows(rows, dek, { nameCt: "name" }), dek);
+    // Optional `withCounts=1` adds `txCount` (transactions per category) for
+    // Settings → Categorization. Without it the response is unchanged.
+    if (request.nextUrl.searchParams.get("withCounts") === "1") {
+      const counts = await getTransactionCountsByCategory(userId);
+      return NextResponse.json(data.map((c) => ({ ...c, txCount: counts.get(Number(c.id)) ?? 0 })));
+    }
     return NextResponse.json(data);
   } catch (error: unknown) {
     await logApiError("GET", "/api/categories", error, auth.context.userId);
@@ -70,7 +96,8 @@ export async function POST(request: NextRequest) {
     const parsed = validateBody(body, postSchema);
     if (parsed.error) return parsed.error;
     const enc = buildNameFields(dek, { name: parsed.data.name });
-    const category = await createCategory(userId, { ...parsed.data, ...enc });
+    const note = parsed.data.note === undefined ? {} : { note: encryptOptional(dek, parsed.data.note) ?? "" };
+    const category = await createCategory(userId, { ...parsed.data, ...note, ...enc });
     return NextResponse.json(category, { status: 201 });
   } catch (error: unknown) {
     const duplicate = duplicateNameResponse(error);
@@ -88,10 +115,20 @@ export async function PUT(request: NextRequest) {
     const parsed = validateBody(body, putSchema);
     if (parsed.error) return parsed.error;
     const { id, ...data } = parsed.data;
+    // A type flip would retroactively mis-sign every booked row, so it is
+    // only allowed while nothing uses the category.
+    if (data.type !== undefined) {
+      const block = await getCategoryTypeChangeBlock(userId, id, data.type);
+      if (block) return NextResponse.json({ error: block.message, code: "category_in_use" }, { status: 409 });
+    }
+    if (data.note !== undefined) data.note = encryptOptional(dek, data.note) ?? "";
+    if (data.group !== undefined) data.group = data.group.trim();
     const toEncrypt: Record<string, string | null | undefined> = {};
     if ("name" in data && data.name !== undefined) toEncrypt.name = data.name;
     const enc = buildNameFields(dek, toEncrypt);
     const category = await updateCategory(id, userId, { ...data, ...enc });
+    // Name / group / type show on decrypted transaction reads.
+    invalidateUserTxCache(userId);
     return NextResponse.json(category);
   } catch (error: unknown) {
     const duplicate = duplicateNameResponse(error);

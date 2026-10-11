@@ -44,7 +44,7 @@
  */
 
 import { db, schema } from "@/db";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 import { tryDecryptField } from "@/lib/crypto/envelope";
 
 /** Possible values of `categories.type`. The DB column is plaintext text(),
@@ -195,4 +195,56 @@ export async function getCategoryTypeMap(
     out.set(Number(r.id), { type: String(r.type ?? ""), name });
   }
   return out;
+}
+
+/**
+ * Settings → Categorization: may this category's `type` change?
+ *
+ * Every row already booked against a category was signed for its CURRENT type
+ * (≤ 0 for 'E', ≥ 0 for 'I', anything for 'R'). Flipping the type would turn
+ * those rows into retroactive {@link validateSignVsCategory} mismatches and
+ * move them between the income / expense / transfer totals, so a type change
+ * is only allowed while nothing references the category: zero transactions
+ * and zero transaction splits (splits carry their own amount + category).
+ * The user can merge the category into one of the right type instead.
+ *
+ * Returns `null` when the change is allowed (same type, unknown/foreign id —
+ * the update itself is owner-scoped — or no booked rows), otherwise the
+ * counts and a user-facing message.
+ */
+export async function getCategoryTypeChangeBlock(
+  userId: string,
+  categoryId: number,
+  nextType: string,
+): Promise<{ currentType: string; transactions: number; splits: number; message: string } | null> {
+  const row = await db
+    .select({ type: schema.categories.type })
+    .from(schema.categories)
+    .where(and(eq(schema.categories.id, categoryId), eq(schema.categories.userId, userId)))
+    .get();
+  if (!row || row.type === nextType) return null;
+  const txRow = await db
+    .select({ n: count() })
+    .from(schema.transactions)
+    .where(and(eq(schema.transactions.userId, userId), eq(schema.transactions.categoryId, categoryId)))
+    .get();
+  const splitRow = await db
+    .select({ n: count() })
+    .from(schema.transactionSplits)
+    .innerJoin(schema.transactions, eq(schema.transactions.id, schema.transactionSplits.transactionId))
+    .where(and(eq(schema.transactions.userId, userId), eq(schema.transactionSplits.categoryId, categoryId)))
+    .get();
+  const transactions = Number(txRow?.n ?? 0);
+  const splits = Number(splitRow?.n ?? 0);
+  if (transactions === 0 && splits === 0) return null;
+  const parts = [
+    transactions ? `${transactions} transaction${transactions === 1 ? "" : "s"}` : null,
+    splits ? `${splits} split${splits === 1 ? "" : "s"}` : null,
+  ].filter(Boolean).join(" and ");
+  return {
+    currentType: String(row.type),
+    transactions,
+    splits,
+    message: `This category's type can't change while ${parts} use it — their signs were booked for the current type. Merge it into a category of the other type instead.`,
+  };
 }

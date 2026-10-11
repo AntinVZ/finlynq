@@ -138,6 +138,23 @@ export async function getTransactionCountByCategory(categoryId: number, userId: 
   return result?.count ?? 0;
 }
 
+/**
+ * Transactions per category for one user, as `categoryId → count` (Settings →
+ * Categorization `GET /api/categories?withCounts=1`). One GROUP BY; categories
+ * with no transactions are simply absent from the map.
+ */
+export async function getTransactionCountsByCategory(userId: string): Promise<Map<number, number>> {
+  const rows = await db
+    .select({ categoryId: transactions.categoryId, count: sql<number>`count(*)` })
+    .from(transactions)
+    .where(and(eq(transactions.userId, userId), isNotNull(transactions.categoryId)))
+    .groupBy(transactions.categoryId)
+    .all();
+  const out = new Map<number, number>();
+  for (const r of rows) if (r.categoryId != null) out.set(Number(r.categoryId), Number(r.count));
+  return out;
+}
+
 // Transactions
 //
 // Issue #59 — `sort` is whitelisted at the lib boundary so the route handler

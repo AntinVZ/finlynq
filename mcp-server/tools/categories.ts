@@ -14,7 +14,6 @@ import {
   formatResolveFailure,
   decryptNameish,
   type Row,
-  type DbLike,
   type PgToolContext,
 } from "./_shared";
 import {
@@ -37,6 +36,12 @@ import {
   PreviewAbortError,
 } from "./_confirm";
 import { registerManageTool } from "./_consolidate";
+import {
+  countCategoryDependents as countCategoryDependentsShared,
+  mergeCategoryInto,
+  totalCategoryDependents,
+  type CategoryDependentCounts,
+} from "../../src/lib/categories/merge";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
@@ -207,44 +212,10 @@ export function registerCategoriesTools(server: McpServer, ctx: PgToolContext) {
 
   // ── shared: count every dependent of a category, per type ───────────────────
   // FINLYNQ-275. The `delete` guard counts transactions/rules/subscriptions;
-  // merge must repoint EVERY table with a category_id FK, so this enumerates the
-  // full set (grep'd from src/db/schema-pg.ts): transactions, transaction_splits
-  // (owned via transaction_id → transactions; NO user_id column), subscriptions,
-  // budgets, budget_templates, recurring_transactions, email_import_rules, plus
-  // the FINLYNQ-84 transaction_rules JSONB `set_category` action. backfill_proposals
-  // (chosen_category_id) is ephemeral review state and deliberately NOT repointed.
-  async function countCategoryDependents(catId: number): Promise<{
-    transactions: number;
-    splits: number;
-    subscriptions: number;
-    budgets: number;
-    budgetTemplates: number;
-    recurringTransactions: number;
-    emailRules: number;
-    rules: number;
-  }> {
-    const one = async (query: ReturnType<typeof sql>) =>
-      Number(((await q(db, query)) as { cnt: string | number }[])[0]?.cnt ?? 0);
-    const [transactions, splits, subscriptions, budgets, budgetTemplates, recurringTransactions, emailRules, rules] =
-      await Promise.all([
-        one(sql`SELECT COUNT(*) AS cnt FROM transactions WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`
-          SELECT COUNT(*) AS cnt FROM transaction_splits ts
-          JOIN transactions t ON t.id = ts.transaction_id
-          WHERE t.user_id = ${userId} AND ts.category_id = ${catId}
-        `),
-        one(sql`SELECT COUNT(*) AS cnt FROM subscriptions WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`SELECT COUNT(*) AS cnt FROM budgets WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`SELECT COUNT(*) AS cnt FROM budget_templates WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`SELECT COUNT(*) AS cnt FROM recurring_transactions WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`SELECT COUNT(*) AS cnt FROM email_import_rules WHERE user_id = ${userId} AND category_id = ${catId}`),
-        one(sql`
-          SELECT COUNT(*) AS cnt FROM transaction_rules
-          WHERE user_id = ${userId}
-            AND actions @> ${JSON.stringify([{ kind: "set_category", categoryId: catId }])}::jsonb
-        `),
-      ]);
-    return { transactions, splits, subscriptions, budgets, budgetTemplates, recurringTransactions, emailRules, rules };
+  // merge must repoint EVERY table with a category_id FK. The table list and the
+  // SQL live in src/lib/categories/merge.ts (shared with the Settings UI).
+  async function countCategoryDependents(catId: number): Promise<CategoryDependentCounts> {
+    return countCategoryDependentsShared(db, userId, catId);
   }
 
   // ── op: rename — pure metadata write (FINLYNQ-275) ──────────────────────────
@@ -322,7 +293,7 @@ export function registerCategoriesTools(server: McpServer, ctx: PgToolContext) {
       const { src, tgt } = await resolveMerge(a);
       const srcId = Number(src.id);
       const deps = await countCategoryDependents(srcId);
-      const total = deps.transactions + deps.splits + deps.subscriptions + deps.budgets + deps.budgetTemplates + deps.recurringTransactions + deps.emailRules + deps.rules;
+      const total = totalCategoryDependents(deps);
       return {
         source: { id: srcId, name: String(src.name ?? `#${srcId}`) },
         target: { id: Number(tgt.id), name: String(tgt.name ?? `#${Number(tgt.id)}`) },
@@ -335,52 +306,10 @@ export function registerCategoriesTools(server: McpServer, ctx: PgToolContext) {
       const { src, tgt } = await resolveMerge(a);
       const srcId = Number(src.id);
       const tgtId = Number(tgt.id);
-      // Re-count under the atomic transaction so the response reflects what was
-      // actually moved (a row could have changed between preview and commit).
-      const before = await countCategoryDependents(srcId);
-      // ctx.db is the real Drizzle instance at runtime (the route passes `db`
-      // from @/db); `DbLike` only advertises `execute`, so narrow-cast to reach
-      // `.transaction` for the atomic multi-table repoint + source delete.
-      const txdb = db as unknown as {
-        transaction: (fn: (tx: { execute: DbLike["execute"] }) => Promise<unknown>) => Promise<unknown>;
-      };
-      await txdb.transaction(async (tx) => {
-        // audit-trio: the transactions repoint bumps updated_at (every UPDATE
-        // site appends it). The other tables have no audit-trio contract.
-        await tx.execute(sql`UPDATE transactions SET category_id = ${tgtId}, updated_at = NOW() WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        await tx.execute(sql`
-          UPDATE transaction_splits SET category_id = ${tgtId}
-          WHERE category_id = ${srcId}
-            AND transaction_id IN (SELECT id FROM transactions WHERE user_id = ${userId})
-        `);
-        await tx.execute(sql`UPDATE subscriptions SET category_id = ${tgtId} WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        await tx.execute(sql`UPDATE budgets SET category_id = ${tgtId} WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        await tx.execute(sql`UPDATE budget_templates SET category_id = ${tgtId} WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        await tx.execute(sql`UPDATE recurring_transactions SET category_id = ${tgtId} WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        await tx.execute(sql`UPDATE email_import_rules SET category_id = ${tgtId} WHERE user_id = ${userId} AND category_id = ${srcId}`);
-        // FINLYNQ-84 JSONB — rewrite every `set_category` action pointing at
-        // src. Element-wise via jsonb_agg + jsonb_set (NOT a text REPLACE —
-        // jsonb::text reformats keys/whitespace, so a stringified needle
-        // wouldn't match); each matching element's `categoryId` is set to tgt,
-        // every other action passed through untouched.
-        await tx.execute(sql`
-          UPDATE transaction_rules
-          SET actions = (
-            SELECT jsonb_agg(
-              CASE
-                WHEN elem->>'kind' = 'set_category' AND (elem->>'categoryId')::int = ${srcId}
-                THEN jsonb_set(elem, '{categoryId}', to_jsonb(${tgtId}::int))
-                ELSE elem
-              END
-            )
-            FROM jsonb_array_elements(actions) AS elem
-          )
-          WHERE user_id = ${userId}
-            AND actions @> ${JSON.stringify([{ kind: "set_category", categoryId: srcId }])}::jsonb
-        `);
-        // Source now has no dependents → delete it.
-        await tx.execute(sql`DELETE FROM categories WHERE id = ${srcId} AND user_id = ${userId}`);
-      });
+      // Shared core: re-counts, then one db.transaction repoints every
+      // dependent source→target and deletes the source. ctx.db is the real
+      // Drizzle instance at runtime (the route passes `db` from @/db).
+      const before = await mergeCategoryInto(db, userId, srcId, tgtId);
       // Transactions moved category → drop the per-user tx cache.
       invalidateUserTxCache(userId);
       return text({
