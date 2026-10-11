@@ -8,6 +8,8 @@ import { selfHealReportingAmounts } from "@/lib/fx/reporting-amount";
 import { todayISO } from "@/lib/utils/date";
 import { parseAccountIdsParam, ACCOUNT_IDS_PARAM } from "@/lib/reports/account-filter";
 import { isReportPeriod, type ReportPeriod as Period } from "@/lib/reports/period";
+import { parseBusinessParam, BUSINESS_PARAM } from "@/lib/reports/business-filter";
+import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 
 type GroupBy = "category" | "group";
 
@@ -64,7 +66,9 @@ export async function GET(request: NextRequest) {
   }
   const period: Period = periodParam;
   const groupBy = (params.get("groupBy") ?? "category") as GroupBy;
-  const isBusiness = params.get("business") === "true";
+  // true = business only, false = personal only, absent/all = every row
+  // (see business-filter.ts — `business=true` reads exactly as before).
+  const businessFilter = parseBusinessParam(params.get(BUSINESS_PARAM));
   // Reports-page account scoping. `null` = every account (see account-filter.ts).
   const accountIds = parseAccountIdsParam(params.get(ACCOUNT_IDS_PARAM));
 
@@ -104,7 +108,8 @@ export async function GET(request: NextRequest) {
     lte(schema.transactions.date, endDate),
     sql`${schema.categories.type} IN ('I', 'E')`,
   ];
-  if (isBusiness) conditions.push(eq(schema.transactions.isBusiness, 1));
+  const businessCond = businessFilterCondition(businessFilter, schema.transactions.isBusiness);
+  if (businessCond) conditions.push(businessCond);
   if (accountIds) conditions.push(inArray(schema.transactions.accountId, accountIds));
 
   const timeseriesRows = await db

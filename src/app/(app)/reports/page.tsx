@@ -28,6 +28,7 @@ import {
   REPORT_PERIOD_LABELS,
   type ReportPeriod as Period,
 } from "@/lib/reports/period";
+import { serializeBusinessFilter, BUSINESS_PARAM, type BusinessFilter } from "@/lib/reports/business-filter";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { SankeyChart } from "@/components/sankey-chart";
 import {
@@ -213,6 +214,12 @@ export function getPresetRange(preset: string, now: Date = new Date()): { start:
   }
 }
 
+const BUSINESS_FILTER_OPTIONS: { value: BusinessFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "business", label: "Business" },
+  { value: "personal", label: "Personal" },
+];
+
 // ── Component ──
 
 export default function ReportsPage() {
@@ -222,7 +229,8 @@ export default function ReportsPage() {
   // Shared filters
   const [startDate, setStartDate] = useState(`${currentYear}-01-01`);
   const [endDate, setEndDate] = useState(todayISO());
-  const [isBusiness, setIsBusiness] = useState(false);
+  // All / Business / Personal — "all" sends no param (see lib/reports/business-filter.ts).
+  const [businessFilter, setBusinessFilter] = useState<BusinessFilter>("all");
   const [period, setPeriod] = useState<Period>("monthly");
   const [groupBy, setGroupBy] = useState<GroupByOption>("category");
   const [datePreset, setDatePreset] = useState<string>("ytd");
@@ -251,6 +259,11 @@ export default function ReportsPage() {
     return v ? `&accountIds=${encodeURIComponent(v)}` : "";
   }, [accountIds]);
 
+  const bizParam = useMemo(() => {
+    const v = serializeBusinessFilter(businessFilter);
+    return v ? `&${BUSINESS_PARAM}=${v}` : "";
+  }, [businessFilter]);
+
   const devMode = useDevMode();
 
   // Active tab
@@ -270,8 +283,7 @@ export default function ReportsPage() {
   // Fetch trends data
   useEffect(() => {
     let cancelled = false;
-    const biz = isBusiness ? "&business=true" : "";
-    fetch(`/api/reports/trends?startDate=${startDate}&endDate=${endDate}&period=${period}&groupBy=${groupBy}${biz}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
+    fetch(`/api/reports/trends?startDate=${startDate}&endDate=${endDate}&period=${period}&groupBy=${groupBy}${bizParam}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         if (!cancelled) setTrendsData(d && typeof d === "object" ? (d as TrendsData) : null);
@@ -285,7 +297,7 @@ export default function ReportsPage() {
     return () => {
       cancelled = true;
     };
-  }, [startDate, endDate, period, groupBy, isBusiness, displayCurrency, acctParam]);
+  }, [startDate, endDate, period, groupBy, bizParam, displayCurrency, acctParam]);
 
   // Fetch balance sheet
   useEffect(() => {
@@ -306,12 +318,11 @@ export default function ReportsPage() {
   // Fetch unrealized P&L (computed inside the income-statement endpoint).
   // Same period as the rest of the income tab.
   useEffect(() => {
-    const biz = isBusiness ? "&business=true" : "";
-    fetch(`/api/reports?type=income-statement&startDate=${startDate}&endDate=${endDate}${biz}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
+    fetch(`/api/reports?type=income-statement&startDate=${startDate}&endDate=${endDate}${bizParam}${acctParam}&currency=${encodeURIComponent(displayCurrency)}`)
       .then((r) => r.json())
       .then((d) => setUnrealizedData(d?.unrealized ?? null))
       .catch(() => setUnrealizedData(null));
-  }, [startDate, endDate, isBusiness, displayCurrency, acctParam]);
+  }, [startDate, endDate, bizParam, displayCurrency, acctParam]);
 
   // Fetch YoY (dev mode only)
   useEffect(() => {
@@ -523,14 +534,24 @@ export default function ReportsPage() {
 
             <Separator orientation="vertical" className="h-8 mx-1" />
 
-            <Button
-              variant={isBusiness ? "default" : "outline"}
-              size="sm"
-              onClick={() => setIsBusiness(!isBusiness)}
-              className="h-8"
-            >
-              {isBusiness ? "Business Only" : "All Transactions"}
-            </Button>
+            {/* Business / personal scoping — trends + income statement. */}
+            <div>
+              <Label className="text-xs text-muted-foreground mb-1 block">Transactions</Label>
+              <div role="group" aria-label="Business or personal transactions" className="inline-flex rounded-md shadow-xs">
+                {BUSINESS_FILTER_OPTIONS.map((opt, i) => (
+                  <Button
+                    key={opt.value}
+                    variant={businessFilter === opt.value ? "default" : "outline"}
+                    size="sm"
+                    aria-pressed={businessFilter === opt.value}
+                    onClick={() => setBusinessFilter(opt.value)}
+                    className={`h-8 ${i > 0 ? "-ml-px rounded-l-none" : ""} ${i < BUSINESS_FILTER_OPTIONS.length - 1 ? "rounded-r-none" : ""}`}
+                  >
+                    {opt.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
           </div>
         </CardContent>
       </Card>
