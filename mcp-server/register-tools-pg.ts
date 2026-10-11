@@ -32,6 +32,7 @@ import { registerSubscriptionsTools } from "./tools/subscriptions";
 import { registerImportsTools } from "./tools/imports";
 import { registerReconcileTools } from "./tools/reconcile";
 import { registerTagsTools } from "./tools/tags";
+import { registerPayeesTools } from "./tools/payees";
 
 // Re-exported for the FINLYNQ-65 / parity regression tests, which import
 // `aggregateHoldings` from this module. The implementation moved to the lib
@@ -72,4 +73,5 @@ export function registerPgTools(
   registerImportsTools(server, ctx);
   registerReconcileTools(server, ctx);
   registerTagsTools(server, ctx);
+  registerPayeesTools(server, ctx);
 }

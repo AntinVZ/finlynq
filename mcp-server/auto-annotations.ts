@@ -95,6 +95,8 @@ export const TOOL_ANNOTATION_OVERRIDES: Record<string, ToolAnnotations> = {
   manage_splits: { destructiveHint: true },
   // rename / merge / delete rewrite tags on many rows (token-gated).
   manage_tags: { destructiveHint: true },
+  // Payee Studio: list / clusters / get read; later ops rewrite payees in bulk.
+  manage_payees: { destructiveHint: true },
   manage_transactions: { destructiveHint: true },
   manage_transfers: { destructiveHint: true },
   // reconcile-consolidation — the 3 folded import/reconcile union tools. Their

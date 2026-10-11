@@ -12,8 +12,9 @@
 // get_portfolio_performance_v2): 75 − 24 + 3 = 54 advertised. With no aliases
 // left, registered == advertised for the first time since v4.0, and the whole
 // reconcile cohort is default-ON (default-profile tools/list = 54). manage_tags
-// (tag list / rename / merge / delete) brings it to 55.
-export const MCP_TOOL_COUNTS = { http: 55, stdio: 89 } as const;
+// (tag list / rename / merge / delete) brings it to 55; manage_payees (Payee
+// Studio) to 56.
+export const MCP_TOOL_COUNTS = { http: 56, stdio: 89 } as const;
 // 4.1.0 (reconcile-consolidation): the CLEAN BREAK. The statement-import +
 // bank-reconcile cohort folds into `reconcile` / `manage_statement_import` /
 // `manage_bank_ledger` (op discriminator), un-gated into the default session
