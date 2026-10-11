@@ -62,6 +62,7 @@ export function serveTagSql(
         currency: r.currency ?? "CAD",
         reporting_amount: null,
         reporting_currency: null,
+        is_business: r.isBusiness ?? null,
       }));
     return { rows, rowCount: rows.length };
   }

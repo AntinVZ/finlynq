@@ -10,8 +10,19 @@
  *   transactions in the display currency, converted the way the dashboard
  *   converts flows (`convertReportingSlice`).
  *
+ *   Each tag also carries `businessCount` / `personalCount` (NULL = personal).
+ *   Optional `tree=1` adds `tree`: the "/" hierarchy (`колега/Шляхов` sits
+ *   under `колега`) with per-node rollups counted over DISTINCT transactions
+ *   (`count`, `businessCount`, `personalCount`, `total`, `tagCount`).
+ *
  * POST { op: "rename", tag, newName } | { op: "merge", tags, into } |
- *      { op: "delete", tags }, plus optional `dryRun: true`
+ *      { op: "delete", tags } | { op: "rename_prefix", prefix, newPrefix } |
+ *      { op: "normalize", tags? }, plus optional `dryRun: true`
+ *   rename_prefix renames a branch: `prefix` and every `prefix/…` tag; its
+ *   dry run adds `tagCount` and `collisions` (renamed tags that already exist,
+ *   which merge). normalize rewrites tags stored under several spellings to
+ *   the most used one (all such tags, or only `tags`); its dry run adds
+ *   `tags: [{ tag, variants }]`.
  *   dryRun → { affected, targetExists, targetCount, tooLarge, truncated }
  *   (what the confirm dialog shows). Without dryRun the op runs and returns
  *   { changed }. Renaming onto an existing tag merges the two; deleting a tag
@@ -32,11 +43,16 @@ import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filte
 import { getDisplayCurrency, getRateMap } from "@/lib/fx-service";
 import { convertReportingSlice } from "@/lib/fx/reporting-amount";
 import {
+  buildTagTree,
   normalizeTagOp,
+  planNormalizeSpelling,
+  planPrefixRename,
   planTagOp,
   runTagOp,
+  runTagTransform,
   scanTaggedRows,
   summarizeTags,
+  type TagSlice,
   TAG_OP_MAX_ROWS,
   type TagOp,
 } from "@/lib/transactions/tag-ops";
@@ -51,14 +67,16 @@ export async function GET(request: NextRequest) {
     const summaries = summarizeTags(scan.rows);
     const currency = await getDisplayCurrency(userId);
     const rateMap = await getRateMap(currency, userId);
-    const tags = summaries.map(({ slices, ...t }) => ({
-      ...t,
-      total: Math.round(
-        slices.reduce((sum, s) => sum + convertReportingSlice(s, currency, rateMap), 0) * 100,
-      ) / 100,
-    }));
+    const toTotal = (slices: TagSlice[]) =>
+      Math.round(slices.reduce((sum, s) => sum + convertReportingSlice(s, currency, rateMap), 0) * 100) / 100;
+    const tags = summaries.map(({ slices, ...t }) => ({ ...t, total: toTotal(slices) }));
+    const tree =
+      request.nextUrl.searchParams.get("tree") === "1"
+        ? buildTagTree(scan.rows).map(({ slices, ...n }) => ({ ...n, total: toTotal(slices) }))
+        : undefined;
     return NextResponse.json({
       tags,
+      ...(tree ? { tree } : {}),
       currency,
       business,
       scanned: scan.scanned,
@@ -78,7 +96,12 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("rename"), tag: tagName, newName: tagName, dryRun: z.boolean().optional() }),
   z.object({ op: z.literal("merge"), tags: tagNames, into: tagName, dryRun: z.boolean().optional() }),
   z.object({ op: z.literal("delete"), tags: tagNames, dryRun: z.boolean().optional() }),
+  z.object({ op: z.literal("rename_prefix"), prefix: tagName, newPrefix: tagName, dryRun: z.boolean().optional() }),
+  z.object({ op: z.literal("normalize"), tags: tagNames.optional(), dryRun: z.boolean().optional() }),
 ]);
+
+const tooLargeError = () =>
+  `This would change more transactions than one tag operation can safely cover (limit ${TAG_OP_MAX_ROWS.toLocaleString("en-US")}).`;
 
 export async function POST(request: NextRequest) {
   const auth = await requireEncryption(request);
@@ -89,6 +112,38 @@ export async function POST(request: NextRequest) {
   const parsed = validateBody(body, postSchema);
   if (parsed.error) return parsed.error;
   const input = parsed.data;
+
+  // Branch rename and spelling cleanup reuse the scan + the shared batch
+  // writer; only the per-row transform differs.
+  if (input.op === "rename_prefix" || input.op === "normalize") {
+    try {
+      const scan = await scanTaggedRows({ executor: db, userId, dek });
+      let transform: (tags: string) => string;
+      let summary: Record<string, unknown> & { affected: number; tooLarge: boolean; truncated: boolean; ids?: number[] };
+      if (input.op === "rename_prefix") {
+        const planned = planPrefixRename(input.prefix, input.newPrefix, scan);
+        if (!planned.ok) return NextResponse.json({ error: planned.error }, { status: 400 });
+        transform = planned.transform;
+        summary = planned.plan;
+      } else {
+        const only = input.tags === undefined ? undefined : typeof input.tags === "string" ? [input.tags] : input.tags;
+        const planned = planNormalizeSpelling(scan, only);
+        transform = planned.transform;
+        summary = planned.plan;
+      }
+      const { ids = [], ...publicSummary } = summary;
+      if (input.dryRun) return NextResponse.json(publicSummary);
+      if (summary.tooLarge || summary.truncated) {
+        return NextResponse.json({ ...publicSummary, error: tooLargeError(), code: "tag_op_too_large" }, { status: 409 });
+      }
+      const res = await runTagTransform({ executor: db, userId, dek, transform, ids });
+      if (res.changed > 0) invalidateUserTxCache(userId);
+      return NextResponse.json({ ...publicSummary, changed: res.changed });
+    } catch (error) {
+      await logApiError("POST", "/api/tags", error, userId);
+      return NextResponse.json({ error: safeErrorMessage(error, "Tag update failed") }, { status: 500 });
+    }
+  }
 
   const raw: TagOp =
     input.op === "rename"
@@ -114,7 +169,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         {
           ...summary,
-          error: `This would change more transactions than one tag operation can safely cover (limit ${TAG_OP_MAX_ROWS.toLocaleString("en-US")}).`,
+          error: tooLargeError(),
           code: "tag_op_too_large",
         },
         { status: 409 },

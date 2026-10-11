@@ -125,3 +125,53 @@ describe("POST /api/tags", () => {
     expect(statements.some(isTagCaseUpdate)).toBe(false);
   });
 });
+
+describe("Settings → Tags S2: tree, business split, branch rename, normalize", () => {
+  it("each tag carries business / personal counts; tree is opt-in", async () => {
+    const plainGet = (await get()).data as { tags: Array<Record<string, unknown>>; tree?: unknown };
+    expect(plainGet.tree).toBeUndefined();
+    expect(plainGet.tags[0]).toMatchObject({ tag: "Agrotrade", businessCount: 1, personalCount: 2 });
+  });
+
+  it("?tree=1 returns the / hierarchy with distinct-transaction rollups", async () => {
+    ledger.push(
+      { id: 5, userId: "userA", tags: enc("колега/Шляхов,колега/Петров"), date: "2026-04-01", amount: -10, currency: "CAD" },
+      { id: 6, userId: "userA", tags: enc("колега/Шляхов"), date: "2026-04-02", amount: -5, currency: "CAD", isBusiness: 1 },
+    );
+    const body = (await get("?tree=1")).data as { tree: Array<Record<string, unknown>> };
+    const root = body.tree.find((n) => n.key === "колега")!;
+    expect(root).toMatchObject({ count: 2, businessCount: 1, personalCount: 1, total: -15, isTag: false, childCount: 2 });
+    expect(root.slices).toBeUndefined();
+  });
+
+  it("rename_prefix previews then renames the whole branch", async () => {
+    ledger.push(
+      { id: 5, userId: "userA", tags: enc("колега/Шляхов,trip") },
+      { id: 6, userId: "userA", tags: enc("колега") },
+      { id: 7, userId: "userB", tags: enc("колега") },
+    );
+    const dry = await post({ op: "rename_prefix", prefix: "колега", newPrefix: "друг", dryRun: true });
+    expect(dry.data).toMatchObject({ affected: 2, tagCount: 2, collisions: [] });
+    expect((dry.data as Record<string, unknown>).ids).toBeUndefined();
+    expect(statements.some(isTagCaseUpdate)).toBe(false);
+
+    const { data } = await post({ op: "rename_prefix", prefix: "колега", newPrefix: "друг" });
+    expect((data as { changed: number }).changed).toBe(2);
+    expect(plain(5)).toBe("друг/Шляхов,trip");
+    expect(plain(6)).toBe("друг");
+    expect(plain(7)).toBe("колега"); // other user untouched
+    expect(invalidate).toHaveBeenCalledWith("userA");
+  });
+
+  it("rename_prefix into its own branch → 400", async () => {
+    expect((await post({ op: "rename_prefix", prefix: "a", newPrefix: "a/b" })).status).toBe(400);
+  });
+
+  it("normalize rewrites variants to the most used spelling", async () => {
+    const dry = await post({ op: "normalize", dryRun: true });
+    expect(dry.data).toMatchObject({ affected: 1, tags: [{ tag: "Agrotrade", variants: ["agrotrade"] }] });
+    const { data } = await post({ op: "normalize", tags: ["agrotrade"] });
+    expect((data as { changed: number }).changed).toBe(1);
+    expect(plain(2)).toBe("Agrotrade,trip");
+  });
+});
