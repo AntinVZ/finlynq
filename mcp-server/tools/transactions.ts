@@ -74,6 +74,9 @@ import {
   portfolioEditBlockedMessage,
 } from "../../src/lib/transactions/delete-cascade";
 import { stampSnapshotDirtyForTxIds } from "../../src/lib/transactions/snapshot-dirty-for-tx";
+import { rewriteTransactionTags } from "../../src/lib/transactions/rewrite-tags";
+import { addTags, removeTags, toTagList } from "../../src/lib/tags";
+import { tagListArg } from "../lib/tag-args";
 import {
   scanForPossibleDuplicates,
   dateBoundsForScan,
@@ -2373,6 +2376,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       mode: z.enum(["append", "replace", "remove"]),
       value: z.string(),
     }).optional().describe("Tag edit. mode=replace overwrites, append adds if not present, remove strips exact matches"),
+    add_tags: tagListArg.optional().describe("Tags to ADD to every matched row, keeping the tags each row already has. One tag, a comma list, or an array: \"trip-2024\" or [\"trip-2024\", \"Lviv\"]. A tag the row already has (any letter case or spacing) is not added twice. Can't be combined with `tags`."),
+    remove_tags: tagListArg.optional().describe("Tags to REMOVE from every matched row; other tags stay. One tag, a comma list, or an array: \"old-project\". Whole tags only, any letter case (`work` does not remove `homework`). Can't be combined with `tags`."),
   }).strict();
 
   type BulkChanges = z.infer<typeof bulkChangesSchema>;
@@ -2394,6 +2399,9 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     quantity?: number | null;
     portfolioHoldingId?: number;
     tags?: { mode: "append" | "replace" | "remove"; value: string };
+    /** add_tags / remove_tags, parsed to tag lists (lib/tags.ts identity). */
+    add_tags?: string[];
+    remove_tags?: string[];
     /**
      * Issue #93: when `category` (name) resolved successfully, carry the
      * resolved display name through so `applyChangesToRow` can re-hydrate
@@ -2535,6 +2543,24 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     if (changes.is_business !== undefined) resolved.is_business = changes.is_business;
     if (changes.quantity !== undefined) resolved.quantity = changes.quantity;
     if (changes.tags !== undefined) resolved.tags = changes.tags;
+    // add_tags / remove_tags edit each row's own list; `tags` sets one list
+    // for every row. Mixing them has no single meaning, so it's refused.
+    if (changes.tags !== undefined && (changes.add_tags !== undefined || changes.remove_tags !== undefined)) {
+      return {
+        resolved,
+        unapplied,
+        error: "`tags` can't be combined with `add_tags` / `remove_tags` in one call. Use `tags` to set the whole list, or `add_tags` / `remove_tags` to edit it.",
+      };
+    }
+    for (const key of ["add_tags", "remove_tags"] as const) {
+      if (changes[key] === undefined) continue;
+      const list = toTagList(changes[key]);
+      if (list.length === 0) {
+        unapplied.push({ field: key, requestedValue: changes[key], reason: `\`${key}\` is empty — pass at least one tag.` });
+      } else {
+        resolved[key] = list;
+      }
+    }
 
     // ── category (name) ──────────────────────────────────────────────────
     if (changes.category !== undefined) {
@@ -2638,21 +2664,27 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     if (resolved.is_business !== undefined) out.is_business = resolved.is_business;
     if (resolved.quantity !== undefined) out.quantity = resolved.quantity;
     if (resolved.portfolioHoldingId !== undefined) out.portfolio_holding_id = resolved.portfolioHoldingId;
-    if (resolved.tags !== undefined) {
-      const current = String(out.tags ?? "");
-      const currentSet = new Set(current.split(",").map((s) => s.trim()).filter(Boolean));
-      const tokens = resolved.tags.value.split(",").map((s) => s.trim()).filter(Boolean);
-      if (resolved.tags.mode === "replace") {
-        out.tags = tokens.join(",");
-      } else if (resolved.tags.mode === "append") {
-        for (const t of tokens) currentSet.add(t);
-        out.tags = Array.from(currentSet).join(",");
-      } else {
-        for (const t of tokens) currentSet.delete(t);
-        out.tags = Array.from(currentSet).join(",");
-      }
+    if (resolved.tags !== undefined && resolved.tags.mode === "replace") {
+      out.tags = resolved.tags.value.split(",").map((t) => t.trim()).filter(Boolean).join(",");
+    } else {
+      const edit = tagEditFor(resolved);
+      if (edit) out.tags = edit(String(out.tags ?? ""));
     }
     return out;
+  }
+
+  /**
+   * The per-row tag edit implied by `resolved` (append / remove modes of
+   * `tags`, `add_tags`, `remove_tags`), or null when tags aren't edited per
+   * row. Adds run before removes. Identity is lib/tags.ts (`normalizeForMatch`).
+   */
+  function tagEditFor(resolved: ResolvedChanges): ((tags: string) => string) | null {
+    const add: string[] = [...(resolved.add_tags ?? [])];
+    const remove: string[] = [...(resolved.remove_tags ?? [])];
+    if (resolved.tags?.mode === "append") add.push(...toTagList(resolved.tags.value));
+    if (resolved.tags?.mode === "remove") remove.push(...toTagList(resolved.tags.value));
+    if (add.length === 0 && remove.length === 0) return null;
+    return (tags) => removeTags(addTags(tags, add), remove);
   }
 
   /**
@@ -2809,29 +2841,16 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       // bumps updated_at; never touches `source`.
       await db.execute(sql`UPDATE transactions SET portfolio_holding_id = ${resolved.portfolioHoldingId}, updated_at = NOW() WHERE ${idMatch} AND user_id = ${userId}`);
     }
-    if (resolved.tags !== undefined) {
-      // Tag edits need per-row merging when mode != replace (because each row
-      // carries different existing tags). Fetch the current tags, decrypt,
-      // mutate, re-encrypt, write row-by-row. For replace we can write once.
-      if (resolved.tags.mode === "replace") {
-        const v = dek ? encryptField(dek, resolved.tags.value) : resolved.tags.value;
-        await db.execute(sql`UPDATE transactions SET tags = ${v}, updated_at = NOW() WHERE ${idMatch} AND user_id = ${userId}`);
-      } else {
-        const rows = await q(db, sql`SELECT id, tags FROM transactions WHERE ${idMatch} AND user_id = ${userId}`);
-        const tokens = resolved.tags.value.split(",").map((s) => s.trim()).filter(Boolean);
-        for (const r of rows) {
-          const plain = dek ? (decryptField(dek, String(r.tags ?? "")) ?? "") : String(r.tags ?? "");
-          const set = new Set(plain.split(",").map((s) => s.trim()).filter(Boolean));
-          if (resolved.tags.mode === "append") {
-            for (const t of tokens) set.add(t);
-          } else {
-            for (const t of tokens) set.delete(t);
-          }
-          const next = Array.from(set).join(",");
-          const v = dek ? encryptField(dek, next) : next;
-          await db.execute(sql`UPDATE transactions SET tags = ${v}, updated_at = NOW() WHERE id = ${Number(r.id)} AND user_id = ${userId}`);
-        }
-      }
+    if (resolved.tags !== undefined && resolved.tags.mode === "replace") {
+      // One list for every row — a single UPDATE.
+      const v = dek ? encryptField(dek, resolved.tags.value) : resolved.tags.value;
+      await db.execute(sql`UPDATE transactions SET tags = ${v}, updated_at = NOW() WHERE ${idMatch} AND user_id = ${userId}`);
+    } else {
+      // Per-row edits (append / remove / add_tags / remove_tags): each row
+      // carries different tags, so they go through the shared batch writer
+      // (decrypt → lib/tags.ts → encrypt; unchanged rows aren't written).
+      const edit = tagEditFor(resolved);
+      if (edit) await rewriteTransactionTags({ executor: db, userId, dek, ids, transform: edit });
     }
     // Post-update stamp — the row's NEW (account, date) position.
     await stampSnapshotDirtyForTxIds(userId, ids);
@@ -2845,7 +2864,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // a caller seeing identical sampleBefore/sampleAfter knows WHY.
   server.tool(
     "preview_bulk_update",
-    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, an `unappliedChanges` array, and a confirmationToken (5-min TTL) for execute_bulk_update. Each `unappliedChanges` entry is `{ field, requestedValue, reason }` — `field` is the change key (e.g. \"category\"), `requestedValue` is the value you sent, `reason` explains the failure. `sampleAfter.category` reflects the resolved category display name when `category` (name) resolved. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode: append|replace|remove, value }). Unknown keys fail with a 400. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
+    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, `unappliedChanges` ({ field, requestedValue, reason } for each change that could not be applied) and a confirmationToken (5-min TTL) for execute_bulk_update. `sampleAfter.category` shows the resolved category name. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode, value }), add_tags / remove_tags (edit each row's list; not with `tags`). Unknown keys fail. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     {
       filter: bulkFilterSchema,
       changes: bulkChangesSchema,
@@ -2873,7 +2892,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // can no longer report `updated: N` while writing nothing).
   server.tool(
     "execute_bulk_update",
-    "Commit a bulk update. Must be preceded by preview_bulk_update; the same filter+changes must be passed. Returns `{ updated, unappliedChanges }` where each `unappliedChanges` entry is `{ field, requestedValue, reason }`. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags. Unknown keys fail. Aborts (no commit) when ALL requested changes failed to resolve. Refuses when the filter's match set is truncated.",
+    "Commit a bulk update. Must be preceded by preview_bulk_update; the same filter+changes must be passed. Returns `{ updated, unappliedChanges }` where each `unappliedChanges` entry is `{ field, requestedValue, reason }`. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags, add_tags, remove_tags (`tags` can't be combined with the other two). Unknown keys fail. Aborts (no commit) when ALL requested changes failed to resolve. Refuses when the filter's match set is truncated.",
     {
       filter: bulkFilterSchema,
       changes: bulkChangesSchema,

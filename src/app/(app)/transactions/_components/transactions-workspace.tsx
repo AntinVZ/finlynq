@@ -35,6 +35,7 @@ import { useTransactions } from "../_hooks/use-transactions";
 import { TransactionTable } from "./transaction-table";
 import { TransactionsCalendar, describeCalendarSelection, refreshTransactionsCalendar } from "./transactions-calendar";
 import { buildTransactionQuery } from "@/lib/transactions/build-query";
+import { toTagList } from "@/lib/tags";
 import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { exportCsv, type CsvColumn } from "@/lib/csv-export";
@@ -303,6 +304,9 @@ export function TransactionsWorkspace({
   const [bulkNote, setBulkNote] = useState("");
   const [bulkPayee, setBulkPayee] = useState("");
   const [bulkTags, setBulkTags] = useState("");
+  // Suggestions for the bulk Add / Remove tag input: the tags on the rows in
+  // view (one entry per tag, first spelling kept).
+  const bulkTagSuggestions = useMemo(() => toTagList(txns.map((t) => t.tags ?? "")), [txns]);
   const [bulkProcessing, setBulkProcessing] = useState(false);
   const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
 
@@ -638,6 +642,7 @@ export function TransactionsWorkspace({
     if (bulkAction === "update_note") body.note = bulkNote;
     if (bulkAction === "update_payee") body.payee = bulkPayee;
     if (bulkAction === "update_tags") body.tags = bulkTags;
+    if (bulkAction === "add_tag" || bulkAction === "remove_tag") body.tag = bulkTags;
 
     await fetch("/api/transactions/bulk", {
       method: "POST",
@@ -673,7 +678,8 @@ export function TransactionsWorkspace({
     (bulkAction === "update_account" && !bulkAccountId) ||
     (bulkAction === "update_date" && !bulkDate) ||
     (bulkAction === "update_note" && bulkNote === "" && bulkAction === "update_note") ||
-    (bulkAction === "update_payee" && bulkPayee === "" && bulkAction === "update_payee");
+    (bulkAction === "update_payee" && bulkPayee === "" && bulkAction === "update_payee") ||
+    ((bulkAction === "add_tag" || bulkAction === "remove_tag") && toTagList(bulkTags).length === 0);
 
   // Pagination math + control now live in the shared <Pagination>
   // (src/components/ui/pagination.tsx) — extracted from here verbatim so the
@@ -1097,6 +1103,8 @@ export function TransactionsWorkspace({
                 <SelectItem value="update_payee">Change payee</SelectItem>
                 <SelectItem value="update_note">Change note</SelectItem>
                 <SelectItem value="update_tags">Change tags</SelectItem>
+                <SelectItem value="add_tag">Add tag</SelectItem>
+                <SelectItem value="remove_tag">Remove tag</SelectItem>
                 <SelectItem value="delete">Delete selected</SelectItem>
               </SelectContent>
             </Select>
@@ -1148,6 +1156,23 @@ export function TransactionsWorkspace({
             )}
             {bulkAction === "update_tags" && (
               <Input className="h-7 text-xs w-44" placeholder="New tags" value={bulkTags} onChange={(e) => setBulkTags(e.target.value)} />
+            )}
+            {(bulkAction === "add_tag" || bulkAction === "remove_tag") && (
+              <>
+                <Input
+                  className="h-7 text-xs w-44"
+                  placeholder={bulkAction === "add_tag" ? "Tag to add" : "Tag to remove"}
+                  title="One tag, or several separated by commas"
+                  list="bulk-tag-suggestions"
+                  value={bulkTags}
+                  onChange={(e) => setBulkTags(e.target.value)}
+                />
+                <datalist id="bulk-tag-suggestions">
+                  {bulkTagSuggestions.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+              </>
             )}
             <Button
               size="sm"
