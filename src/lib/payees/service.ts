@@ -55,9 +55,11 @@ export async function loadPayeeOverview(opts: {
   currency?: string;
   /** Override the directory lookup (tests). Default: the user's directory. */
   resolveEntity?: EntityResolver;
+  /** Keep the N most recent transactions per spelling as examples. */
+  samples?: number;
 }): Promise<PayeeOverview> {
   const { executor, userId, dek } = opts;
-  const scan = await scanPayees({ executor, userId, dek });
+  const scan = await scanPayees({ executor, userId, dek, samplesPerSpelling: opts.samples });
   const names = await loadPayeeNameMaps(executor, userId, dek);
   const { currency, convert } = await makeSliceConverter(userId, opts.currency);
   const directory = dek ? await loadDirectory(executor, userId, dek) : [];

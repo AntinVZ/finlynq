@@ -68,7 +68,11 @@ export type SpellingAgg = {
   monthCounts?: Map<string, number>;
   /** Transaction dates (unsorted); filled when `withDates`. */
   dates?: string[];
+  /** The most recent transactions (date, amount, category); filled when `samplesPerSpelling`. */
+  samples?: PayeeSample[];
 };
+
+export type PayeeSample = { date: string; amount: number; currency: string | null; categoryId: number | null };
 
 export type PayeeScan = {
   spellings: Map<string, SpellingAgg>;
@@ -212,6 +216,8 @@ export async function scanPayees(opts: {
   withMonths?: boolean;
   /** Keep transaction dates per spelling (recurrence detection). */
   withDates?: boolean;
+  /** Keep the N most recent transactions per spelling as examples (AI review). */
+  samplesPerSpelling?: number;
 }): Promise<PayeeScan> {
   const { executor, userId, dek } = opts;
   const batchSize = Math.max(1, opts.batchSize ?? PAYEE_SCAN_BATCH);
@@ -252,7 +258,7 @@ function addRow(
   source: PayeeSource,
   plain: string,
   r: Record<string, unknown>,
-  opts: { withMonths?: boolean; withDates?: boolean },
+  opts: { withMonths?: boolean; withDates?: boolean; samplesPerSpelling?: number },
 ): void {
   const spelling = spellingOf(plain);
   let agg = spellings.get(spelling);
@@ -268,6 +274,7 @@ function addRow(
       categories: new Map(),
       ...(opts.withMonths ? { months: new Map(), monthCounts: new Map() } : {}),
       ...(opts.withDates ? { dates: [] } : {}),
+      ...(opts.samplesPerSpelling ? { samples: [] } : {}),
     };
     spellings.set(spelling, agg);
   }
@@ -299,6 +306,15 @@ function addRow(
     agg.monthCounts.set(month, (agg.monthCounts.get(month) ?? 0) + 1);
   }
   if (agg.dates && date) agg.dates.push(date);
+  if (agg.samples && opts.samplesPerSpelling) {
+    agg.samples.push({ date, amount, currency, categoryId: r.category_id == null ? null : Number(r.category_id) });
+    if (agg.samples.length > opts.samplesPerSpelling) {
+      // Drop the oldest: keep the most recent N.
+      let oldest = 0;
+      for (let i = 1; i < agg.samples.length; i++) if (agg.samples[i].date < agg.samples[oldest].date) oldest = i;
+      agg.samples.splice(oldest, 1);
+    }
+  }
 }
 
 /** Decrypted account and category names for display (`id → name`). */

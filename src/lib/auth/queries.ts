@@ -993,6 +993,7 @@ async function deleteAllUserDataTx(tx: TxClient, userId: string) {
   await tx.delete(s.payeeIdentifiers).where(eq(s.payeeIdentifiers.userId, userId));
   await tx.delete(s.payeeEntities).where(eq(s.payeeEntities.userId, userId));
   await tx.delete(s.payeeBatches).where(eq(s.payeeBatches.userId, userId));
+  await tx.delete(s.payeeProposals).where(eq(s.payeeProposals.userId, userId));
 
   // settings last — it holds the api_key/api_key_dek/email_webhook_* rows and
   // we also just read the import_email from here above.

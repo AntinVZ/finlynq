@@ -49,6 +49,8 @@ export const MCP_READ_OPS: ReadonlySet<string> = new Set([
   // manage_payees (Payee Studio) read ops.
   "clusters",
   "batches",
+  "review",
+  "proposals",
 ]);
 
 /** `op` as a safe label, or null (never echoes free text from the arguments). */

@@ -672,6 +672,12 @@ export async function POST(request: NextRequest) {
             Number(data.amount),
           )
         : null;
+    // Payee Studio import hint (default OFF): a payee matching a directory
+    // alias is saved under its canonical name.
+    if (data.payee) {
+      const { canonicalPayeeHint } = await import("@/lib/payees/import-assist");
+      data.payee = (await canonicalPayeeHint(db, auth.userId, auth.dek, data.payee).catch(() => null)) ?? data.payee;
+    }
     const encrypted = encryptTxWrite(auth.dek, data);
     // Issue #28: hard-code the writer surface at the route boundary rather
     // than relying on the schema default. Defensive against a future writer

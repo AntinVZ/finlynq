@@ -57,7 +57,12 @@ export type PayeeOp =
   | { op: "split"; entityId: number; aliasIds: number[]; name: string; type?: PayeeType; apply?: boolean }
   | { op: "apply"; entityIds?: number[] }
   | { op: "delete"; entityId: number }
-  | { op: "undo"; batchId: number };
+  | { op: "undo"; batchId: number }
+  /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
+  | { op: "bulk"; kind: string; ops: SingleOp[]; aliasSource?: string; labels?: string[] };
+
+/** Ops that can run inside a bulk batch. */
+export type SingleOp = Exclude<PayeeOp, { op: "undo" } | { op: "bulk" }>;
 
 export type PayeeOpResult = {
   op: PayeeOp["op"];
@@ -126,6 +131,8 @@ export async function executePayeeOp(opts: {
   op: PayeeOp;
   actor: BatchActor;
   dryRun?: boolean;
+  /** Runs inside the same transaction once the batch is written (also in a dry run, then rolled back). */
+  onBatch?: (tx: PayeeExecutor, result: PayeeOpResult) => Promise<void>;
 }): Promise<PayeeOpResult> {
   const { executor, userId, dek, op, actor } = opts;
   const dryRun = opts.dryRun === true;
@@ -135,6 +142,7 @@ export async function executePayeeOp(opts: {
   try {
     const result = await inTransaction(executor, async (tx) => {
       const out = op.op === "undo" ? await runUndo(tx, userId, dek, op.batchId, dryRun) : await runOp(tx, userId, dek, op, actor, dryRun);
+      if (opts.onBatch && !out.blocked) await opts.onBatch(tx, out);
       if (dryRun) throw new DryRunRollback(out);
       if (out.blocked) throw new PayeeDirectoryError(out.blocked, "too_large");
       return out;
@@ -172,12 +180,12 @@ async function runOp(
   tx: PayeeExecutor,
   userId: string,
   dek: Buffer,
-  op: Exclude<PayeeOp, { op: "undo" }>,
+  root: Exclude<PayeeOp, { op: "undo" }>,
   actor: BatchActor,
   dryRun: boolean,
 ): Promise<PayeeOpResult> {
   const out: PayeeOpResult = {
-    op: op.op,
+    op: root.op,
     dryRun,
     batchId: null,
     entity: null,
@@ -192,10 +200,13 @@ async function runOp(
     blocked: null,
     fingerprint: "",
   };
-  const { batchId } = await runPayeeBatch({ executor: tx, userId, dek, kind: op.op, actor }, async (btx, journal) => {
-    const entities = await loadDirectory(btx, userId, dek);
-    /** Entities whose payees get rewritten afterwards; null = none. */
-    let applyTo: number[] | null = null;
+  const kind = root.op === "bulk" ? root.kind : root.op;
+  /** Alias source label: a bulk batch may override it (e.g. "proposal"). */
+  const src = (fallback: string) => (root.op === "bulk" && root.aliasSource ? root.aliasSource : fallback);
+  const { batchId } = await runPayeeBatch({ executor: tx, userId, dek, kind, actor }, async (btx, journal) => {
+    const entities: PayeeEntity[] = [];
+    /** Entities whose payees get rewritten afterwards. */
+    const applyTo: number[] = [];
 
     const addAliases = async (entityId: number, aliases: AliasInput[], source: string, allowedOwners?: ReadonlySet<number>) => {
       const self = entities.find((e) => e.id === entityId);
@@ -238,199 +249,212 @@ async function runOp(
       return id;
     };
 
-    switch (op.op) {
-      case "create": {
-        const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId });
-        await addAliases(id, op.aliases ?? [], "manual");
-        await addIdentifiers(id, op.identifiers ?? []);
-        if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
-          out.warnings.push(`"${op.name}" looks like a private person; check the type.`);
-        }
-        if (op.apply !== false) applyTo = [id];
-        break;
-      }
-      case "update": {
-        const e = entityOf(entities, op.entityId);
-        await journal.willModify([e.id]);
-        const patch: Parameters<typeof updateEntityRow>[4] = {};
-        let renamed = false;
-        if (op.name !== undefined) {
-          const clean = validateEntityName(op.name);
-          if (clean !== e.name) {
-            assertExactFree(entities, clean, e.id);
-            patch.name = clean;
-            renamed = true;
+    const steps = root.op === "bulk" ? root.ops : [root];
+    for (let step = 0; step < steps.length; step++) {
+      const op = steps[step];
+      // Each step sees the directory as the previous steps left it.
+      entities.splice(0, entities.length, ...(await loadDirectory(btx, userId, dek)));
+      try {
+        switch (op.op) {
+          case "create": {
+            const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId });
+            await addAliases(id, op.aliases ?? [], src("manual"));
+            await addIdentifiers(id, op.identifiers ?? []);
+            if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
+              out.warnings.push(`"${op.name}" looks like a private person; check the type.`);
+            }
+            if (op.apply !== false) applyTo.push(id);
+            break;
+          }
+          case "update": {
+            const e = entityOf(entities, op.entityId);
+            await journal.willModify([e.id]);
+            const patch: Parameters<typeof updateEntityRow>[4] = {};
+            let renamed = false;
+            if (op.name !== undefined) {
+              const clean = validateEntityName(op.name);
+              if (clean !== e.name) {
+                assertExactFree(entities, clean, e.id);
+                patch.name = clean;
+                renamed = true;
+              }
+            }
+            if (op.type !== undefined) patch.type = asType(op.type, e.name);
+            if (op.note !== undefined) patch.note = op.note?.trim() ? op.note.trim() : null;
+            if (op.defaultCategoryId !== undefined) {
+              if (op.defaultCategoryId != null) {
+                const cat = normalizeDbRows(await btx.execute(sql`SELECT id FROM categories WHERE id = ${op.defaultCategoryId} AND user_id = ${userId}`));
+                if (!cat.length) throw new PayeeDirectoryError(`No category #${op.defaultCategoryId}.`, "not_found");
+              }
+              patch.defaultCategoryId = op.defaultCategoryId;
+            }
+            await updateEntityRow(btx, userId, dek, e.id, patch);
+            if (renamed) {
+              // The old canonical name stays as an alias, so rows already using it still resolve.
+              await btx.execute(sql`UPDATE payee_aliases SET source = 'rename' WHERE entity_id = ${e.id} AND user_id = ${userId} AND source = 'canonical'`);
+              await insertAlias(btx, userId, dek, { entityId: e.id, pattern: patch.name!, mode: "exact", source: "canonical" });
+              journal.count("renamed");
+              if (op.apply !== false) applyTo.push(e.id);
+            }
+            journal.count("updated");
+            out.entity = { id: e.id, name: patch.name ?? e.name, type: patch.type ?? e.type };
+            break;
+          }
+          case "alias_add": {
+            const e = entityOf(entities, op.entityId);
+            await journal.willModify([e.id]);
+            if (!op.aliases.length) throw new PayeeDirectoryError("Name at least one alias.");
+            await addAliases(e.id, op.aliases, src("manual"));
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            if (op.apply !== false && out.aliasesAdded.length) applyTo.push(e.id);
+            break;
+          }
+          case "alias_from_rule": {
+            const rows = normalizeDbRows<{ id: unknown; conditions: unknown; actions: unknown }>(
+              await btx.execute(sql`SELECT id, conditions, actions FROM transaction_rules WHERE id = ${op.ruleId} AND user_id = ${userId}`),
+            );
+            if (!rows.length) throw new PayeeDirectoryError(`No rule #${op.ruleId}.`, "not_found");
+            const parse = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
+            const rule = decryptRuleFields(dek, { conditions: parse(rows[0].conditions), actions: parse(rows[0].actions) } as Parameters<typeof decryptRuleFields>[1]) as {
+              conditions: { all?: Array<{ field?: string; op?: string; value?: unknown }> };
+              actions: Array<{ kind?: string; to?: unknown }>;
+            };
+            const aliases: AliasInput[] = (rule.conditions?.all ?? [])
+              .filter((c) => c.field === "payee" && typeof c.value === "string" && c.value)
+              .map((c) => ({ pattern: String(c.value), mode: asMode(c.op === "exact" ? "exact" : c.op) }));
+            if (!aliases.length) throw new PayeeDirectoryError("This rule has no payee condition to turn into an alias.");
+            let entityId = op.entityId;
+            if (entityId == null) {
+              const to = rule.actions?.find((a) => a.kind === "rename_payee" && typeof a.to === "string")?.to as string | undefined;
+              if (!to) throw new PayeeDirectoryError("Pick the payee entity: this rule doesn't rename the payee.");
+              const owner = exactAliasOwners(entities, to)[0];
+              entityId = owner ? owner.id : await createEntity(to, guessPayeeType(to).type);
+            }
+            const e = entities.find((x) => x.id === entityId);
+            if (e) await journal.willModify([e.id]);
+            else if (!out.created) entityOf(entities, entityId);
+            await addAliases(entityId, aliases, "rule");
+            out.entity = out.entity ?? (e ? { id: e.id, name: e.name, type: e.type } : null);
+            if (op.apply !== false) applyTo.push(entityId);
+            break;
+          }
+          case "alias_remove": {
+            const e = entityOf(entities, op.entityId);
+            const ids = new Set(op.aliasIds ?? []);
+            for (const p of op.patterns ?? []) {
+              const key = payeeMatchKey(p);
+              for (const a of e.aliases) if (a.pattern === p.trim() || (a.mode === "exact" && key && payeeMatchKey(a.pattern) === key)) ids.add(a.id);
+            }
+            const victims = e.aliases.filter((a) => ids.has(a.id));
+            if (!victims.length) throw new PayeeDirectoryError("None of those aliases belong to this payee.", "not_found");
+            if (victims.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name can't be removed; rename the payee instead.");
+            await journal.willModify([e.id]);
+            await btx.execute(sql`DELETE FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(victims.map((a) => sql`${a.id}`), sql`, `)})`);
+            out.aliasesRemoved = victims.length;
+            journal.count("aliases_removed", victims.length);
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            break;
+          }
+          case "identifiers": {
+            const e = entityOf(entities, op.entityId);
+            await journal.willModify([e.id]);
+            await addIdentifiers(e.id, op.add ?? []);
+            const remove = (op.remove ?? []).filter((id) => e.identifiers.some((i) => i.id === id));
+            if (remove.length) {
+              await btx.execute(sql`DELETE FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(remove.map((i) => sql`${i}`), sql`, `)})`);
+              out.identifiersRemoved = remove.length;
+              journal.count("identifiers_removed", remove.length);
+            }
+            if (!out.identifiersAdded.length && !remove.length) throw new PayeeDirectoryError("Nothing to add or remove.");
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            break;
+          }
+          case "merge": {
+            const sourceIds = [...new Set(op.entityIds ?? [])];
+            const sources = sourceIds.map((id) => entityOf(entities, id));
+            const payees = [...new Set((op.payees ?? []).map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean))];
+            const target: PayeeEntity | null = "entityId" in op.into ? entityOf(entities, op.into.entityId) : null;
+            // Aliases owned by the entities being merged may move freely.
+            const allowed = new Set([...sourceIds, ...(target ? [target.id] : [])]);
+            const merged = sources.filter((s) => s.id !== target?.id);
+            if (!merged.length && !payees.length) throw new PayeeDirectoryError("Name the payees or entities to merge.");
+            // Person / merchant mixing is allowed by hand, but said out loud.
+            const names = [...merged.map((s) => s.name), ...payees, target?.name ?? ("name" in op.into ? op.into.name : "")];
+            const people = names.filter((n) => n && guessPayeeType(n).isPerson);
+            if (people.length && people.length < names.filter(Boolean).length) {
+              out.warnings.push(`This mixes a private person (${people[0]}) with other payees. Check before confirming.`);
+            }
+            for (const p of payees) assertExactFree(entities, p, target?.id, allowed);
+            let targetId: number;
+            if (target) {
+              await journal.willModify([target.id, ...merged.map((s) => s.id)]);
+              targetId = target.id;
+              out.entity = { id: target.id, name: target.name, type: target.type };
+            } else {
+              const into = op.into as { name: string; type?: PayeeType };
+              await journal.willModify(merged.map((s) => s.id));
+              const keep = merged[0];
+              targetId = await createEntity(into.name, asType(into.type, into.name), { note: keep?.note ?? null, defaultCategoryId: keep?.defaultCategoryId ?? null }, allowed);
+            }
+            for (const s of merged) {
+              // Move every alias; a merged entity's canonical name becomes an ordinary exact alias.
+              await btx.execute(sql`
+                UPDATE payee_aliases SET entity_id = ${targetId}, source = CASE WHEN source = 'canonical' THEN 'merge' ELSE source END
+                WHERE user_id = ${userId} AND entity_id = ${s.id}`);
+              await btx.execute(sql`UPDATE payee_identifiers SET entity_id = ${targetId} WHERE user_id = ${userId} AND entity_id = ${s.id}`);
+              await btx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ${s.id}`);
+              out.entitiesRemoved++;
+              journal.count("entities_merged");
+            }
+            // Duplicate exact aliases / identifiers left by the move collapse to one.
+            await dedupeEntity(btx, userId, dek, targetId);
+            const reloaded = await loadDirectory(btx, userId, dek);
+            entities.splice(0, entities.length, ...reloaded);
+            await addAliases(targetId, payees.map((p) => ({ pattern: p, mode: "exact" as const })), src("merge"));
+            if (op.apply !== false) applyTo.push(targetId);
+            break;
+          }
+          case "split": {
+            const e = entityOf(entities, op.entityId);
+            const moving = e.aliases.filter((a) => op.aliasIds.includes(a.id));
+            if (!moving.length) throw new PayeeDirectoryError("Pick the aliases to split off.", "not_found");
+            if (moving.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name stays with the payee; pick other aliases.");
+            await journal.willModify([e.id]);
+            const id = await createEntity(op.name, asType(op.type, op.name), {}, new Set([e.id]));
+            await btx.execute(sql`
+              UPDATE payee_aliases SET entity_id = ${id}, source = 'split'
+              WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(moving.map((a) => sql`${a.id}`), sql`, `)})`);
+            journal.count("aliases_moved", moving.length);
+            await dedupeEntity(btx, userId, dek, id);
+            out.warnings.push(`Rows already renamed to "${e.name}" keep that name; undo the batch that renamed them to get the original spellings back.`);
+            if (op.apply !== false) applyTo.push(id);
+            break;
+          }
+          case "apply": {
+            const ids = op.entityIds?.length ? op.entityIds : entities.map((e) => e.id);
+            for (const id of ids) entityOf(entities, id);
+            applyTo.push(...ids);
+            break;
+          }
+          case "delete": {
+            const e = entityOf(entities, op.entityId);
+            await journal.willModify([e.id]);
+            await btx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ${e.id}`);
+            out.entitiesRemoved = 1;
+            journal.count("entities_deleted");
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            break;
           }
         }
-        if (op.type !== undefined) patch.type = asType(op.type, e.name);
-        if (op.note !== undefined) patch.note = op.note?.trim() ? op.note.trim() : null;
-        if (op.defaultCategoryId !== undefined) {
-          if (op.defaultCategoryId != null) {
-            const cat = normalizeDbRows(await btx.execute(sql`SELECT id FROM categories WHERE id = ${op.defaultCategoryId} AND user_id = ${userId}`));
-            if (!cat.length) throw new PayeeDirectoryError(`No category #${op.defaultCategoryId}.`, "not_found");
-          }
-          patch.defaultCategoryId = op.defaultCategoryId;
-        }
-        await updateEntityRow(btx, userId, dek, e.id, patch);
-        if (renamed) {
-          // The old canonical name stays as an alias, so rows already using it still resolve.
-          await btx.execute(sql`UPDATE payee_aliases SET source = 'rename' WHERE entity_id = ${e.id} AND user_id = ${userId} AND source = 'canonical'`);
-          await insertAlias(btx, userId, dek, { entityId: e.id, pattern: patch.name!, mode: "exact", source: "canonical" });
-          journal.count("renamed");
-          if (op.apply !== false) applyTo = [e.id];
-        }
-        journal.count("updated");
-        out.entity = { id: e.id, name: patch.name ?? e.name, type: patch.type ?? e.type };
-        break;
-      }
-      case "alias_add": {
-        const e = entityOf(entities, op.entityId);
-        await journal.willModify([e.id]);
-        if (!op.aliases.length) throw new PayeeDirectoryError("Name at least one alias.");
-        await addAliases(e.id, op.aliases, "manual");
-        out.entity = { id: e.id, name: e.name, type: e.type };
-        if (op.apply !== false && out.aliasesAdded.length) applyTo = [e.id];
-        break;
-      }
-      case "alias_from_rule": {
-        const rows = normalizeDbRows<{ id: unknown; conditions: unknown; actions: unknown }>(
-          await btx.execute(sql`SELECT id, conditions, actions FROM transaction_rules WHERE id = ${op.ruleId} AND user_id = ${userId}`),
-        );
-        if (!rows.length) throw new PayeeDirectoryError(`No rule #${op.ruleId}.`, "not_found");
-        const parse = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
-        const rule = decryptRuleFields(dek, { conditions: parse(rows[0].conditions), actions: parse(rows[0].actions) } as Parameters<typeof decryptRuleFields>[1]) as {
-          conditions: { all?: Array<{ field?: string; op?: string; value?: unknown }> };
-          actions: Array<{ kind?: string; to?: unknown }>;
-        };
-        const aliases: AliasInput[] = (rule.conditions?.all ?? [])
-          .filter((c) => c.field === "payee" && typeof c.value === "string" && c.value)
-          .map((c) => ({ pattern: String(c.value), mode: asMode(c.op === "exact" ? "exact" : c.op) }));
-        if (!aliases.length) throw new PayeeDirectoryError("This rule has no payee condition to turn into an alias.");
-        let entityId = op.entityId;
-        if (entityId == null) {
-          const to = rule.actions?.find((a) => a.kind === "rename_payee" && typeof a.to === "string")?.to as string | undefined;
-          if (!to) throw new PayeeDirectoryError("Pick the payee entity: this rule doesn't rename the payee.");
-          const owner = exactAliasOwners(entities, to)[0];
-          entityId = owner ? owner.id : await createEntity(to, guessPayeeType(to).type);
-        }
-        const e = entities.find((x) => x.id === entityId);
-        if (e) await journal.willModify([e.id]);
-        else if (!out.created) entityOf(entities, entityId);
-        await addAliases(entityId, aliases, "rule");
-        out.entity = out.entity ?? (e ? { id: e.id, name: e.name, type: e.type } : null);
-        if (op.apply !== false) applyTo = [entityId];
-        break;
-      }
-      case "alias_remove": {
-        const e = entityOf(entities, op.entityId);
-        const ids = new Set(op.aliasIds ?? []);
-        for (const p of op.patterns ?? []) {
-          const key = payeeMatchKey(p);
-          for (const a of e.aliases) if (a.pattern === p.trim() || (a.mode === "exact" && key && payeeMatchKey(a.pattern) === key)) ids.add(a.id);
-        }
-        const victims = e.aliases.filter((a) => ids.has(a.id));
-        if (!victims.length) throw new PayeeDirectoryError("None of those aliases belong to this payee.", "not_found");
-        if (victims.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name can't be removed; rename the payee instead.");
-        await journal.willModify([e.id]);
-        await btx.execute(sql`DELETE FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(victims.map((a) => sql`${a.id}`), sql`, `)})`);
-        out.aliasesRemoved = victims.length;
-        journal.count("aliases_removed", victims.length);
-        out.entity = { id: e.id, name: e.name, type: e.type };
-        break;
-      }
-      case "identifiers": {
-        const e = entityOf(entities, op.entityId);
-        await journal.willModify([e.id]);
-        await addIdentifiers(e.id, op.add ?? []);
-        const remove = (op.remove ?? []).filter((id) => e.identifiers.some((i) => i.id === id));
-        if (remove.length) {
-          await btx.execute(sql`DELETE FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(remove.map((i) => sql`${i}`), sql`, `)})`);
-          out.identifiersRemoved = remove.length;
-          journal.count("identifiers_removed", remove.length);
-        }
-        if (!out.identifiersAdded.length && !remove.length) throw new PayeeDirectoryError("Nothing to add or remove.");
-        out.entity = { id: e.id, name: e.name, type: e.type };
-        break;
-      }
-      case "merge": {
-        const sourceIds = [...new Set(op.entityIds ?? [])];
-        const sources = sourceIds.map((id) => entityOf(entities, id));
-        const payees = [...new Set((op.payees ?? []).map((p) => p.replace(/\s+/g, " ").trim()).filter(Boolean))];
-        const target: PayeeEntity | null = "entityId" in op.into ? entityOf(entities, op.into.entityId) : null;
-        // Aliases owned by the entities being merged may move freely.
-        const allowed = new Set([...sourceIds, ...(target ? [target.id] : [])]);
-        const merged = sources.filter((s) => s.id !== target?.id);
-        if (!merged.length && !payees.length) throw new PayeeDirectoryError("Name the payees or entities to merge.");
-        // Person / merchant mixing is allowed by hand, but said out loud.
-        const names = [...merged.map((s) => s.name), ...payees, target?.name ?? ("name" in op.into ? op.into.name : "")];
-        const people = names.filter((n) => n && guessPayeeType(n).isPerson);
-        if (people.length && people.length < names.filter(Boolean).length) {
-          out.warnings.push(`This mixes a private person (${people[0]}) with other payees. Check before confirming.`);
-        }
-        for (const p of payees) assertExactFree(entities, p, target?.id, allowed);
-        let targetId: number;
-        if (target) {
-          await journal.willModify([target.id, ...merged.map((s) => s.id)]);
-          targetId = target.id;
-          out.entity = { id: target.id, name: target.name, type: target.type };
-        } else {
-          const into = op.into as { name: string; type?: PayeeType };
-          await journal.willModify(merged.map((s) => s.id));
-          const keep = merged[0];
-          targetId = await createEntity(into.name, asType(into.type, into.name), { note: keep?.note ?? null, defaultCategoryId: keep?.defaultCategoryId ?? null }, allowed);
-        }
-        for (const s of merged) {
-          // Move every alias; a merged entity's canonical name becomes an ordinary exact alias.
-          await btx.execute(sql`
-            UPDATE payee_aliases SET entity_id = ${targetId}, source = CASE WHEN source = 'canonical' THEN 'merge' ELSE source END
-            WHERE user_id = ${userId} AND entity_id = ${s.id}`);
-          await btx.execute(sql`UPDATE payee_identifiers SET entity_id = ${targetId} WHERE user_id = ${userId} AND entity_id = ${s.id}`);
-          await btx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ${s.id}`);
-          out.entitiesRemoved++;
-          journal.count("entities_merged");
-        }
-        // Duplicate exact aliases / identifiers left by the move collapse to one.
-        await dedupeEntity(btx, userId, dek, targetId);
-        const reloaded = await loadDirectory(btx, userId, dek);
-        entities.splice(0, entities.length, ...reloaded);
-        await addAliases(targetId, payees.map((p) => ({ pattern: p, mode: "exact" as const })), "merge");
-        if (op.apply !== false) applyTo = [targetId];
-        break;
-      }
-      case "split": {
-        const e = entityOf(entities, op.entityId);
-        const moving = e.aliases.filter((a) => op.aliasIds.includes(a.id));
-        if (!moving.length) throw new PayeeDirectoryError("Pick the aliases to split off.", "not_found");
-        if (moving.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name stays with the payee; pick other aliases.");
-        await journal.willModify([e.id]);
-        const id = await createEntity(op.name, asType(op.type, op.name), {}, new Set([e.id]));
-        await btx.execute(sql`
-          UPDATE payee_aliases SET entity_id = ${id}, source = 'split'
-          WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(moving.map((a) => sql`${a.id}`), sql`, `)})`);
-        journal.count("aliases_moved", moving.length);
-        await dedupeEntity(btx, userId, dek, id);
-        out.warnings.push(`Rows already renamed to "${e.name}" keep that name; undo the batch that renamed them to get the original spellings back.`);
-        if (op.apply !== false) applyTo = [id];
-        break;
-      }
-      case "apply": {
-        const ids = op.entityIds?.length ? op.entityIds : entities.map((e) => e.id);
-        for (const id of ids) entityOf(entities, id);
-        applyTo = ids;
-        break;
-      }
-      case "delete": {
-        const e = entityOf(entities, op.entityId);
-        await journal.willModify([e.id]);
-        await btx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ${e.id}`);
-        out.entitiesRemoved = 1;
-        journal.count("entities_deleted");
-        out.entity = { id: e.id, name: e.name, type: e.type };
-        break;
+      } catch (e) {
+        // In a bulk batch, say which step failed (the whole batch rolls back).
+        const label = root.op === "bulk" ? root.labels?.[step] : undefined;
+        if (label && e instanceof PayeeDirectoryError) throw new PayeeDirectoryError(`${label}: ${e.message}`, e.code);
+        throw e;
       }
     }
 
-    if (applyTo && applyTo.length) {
+    if (applyTo.length) {
       const dir = await loadDirectory(btx, userId, dek);
       const matcher = buildPayeeMatcher(dir);
       const plan = await planPayeeApply({ executor: btx, userId, dek, matcher, entityIds: new Set(applyTo) });
@@ -445,7 +469,7 @@ async function runOp(
         if (fresh) out.entity = { id: fresh.id, name: fresh.name, type: fresh.type };
       }
     }
-    if (!out.fingerprint) out.fingerprint = `${op.op}:${out.entity?.id ?? ""}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.entitiesRemoved}`;
+    if (!out.fingerprint) out.fingerprint = `${root.op}:${out.entity?.id ?? ""}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.entitiesRemoved}`;
   });
   out.batchId = batchId;
   return out;

@@ -63,9 +63,16 @@ export type BatchRow = {
   canUndo: boolean;
 };
 
-export type PayeeSettings = { advancedMode: boolean; identifierKinds: string[] };
+export type PayeeSettings = {
+  advancedMode: boolean;
+  identifierKinds: string[];
+  importHint: boolean;
+  autopilotEnabled: boolean;
+  autopilotThreshold: number;
+};
 
 export type PayeesResponse = {
+  draftCount?: number;
   entities: EntityRow[];
   batches: BatchRow[];
   settings: PayeeSettings;
@@ -101,6 +108,9 @@ const BATCH_LABEL: Record<string, string> = {
   split: "Split",
   apply: "Payees renamed",
   delete: "Removed from directory",
+  approve: "AI proposals accepted",
+  import_hint: "Canonical names on import",
+  autopilot: "Autopilot",
 };
 
 /** "Merged · 12 rows · by AI (MCP)" */

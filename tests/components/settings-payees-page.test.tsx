@@ -98,7 +98,7 @@ describe("Settings → Payees", () => {
     setup();
     await screen.findAllByText("Епіцентр");
     fireEvent.click(screen.getByRole("tab", { name: /Clusters/ }));
-    expect(screen.getByText("90%")).toBeTruthy();
+    expect(screen.getAllByTitle("How sure the match is")[0].textContent).toBe("90%");
     expect(screen.getByText(/one-letter suffix/)).toBeTruthy();
     expect(screen.getByText("Looks like a private person")).toBeTruthy();
   });

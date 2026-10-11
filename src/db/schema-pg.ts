@@ -2112,6 +2112,28 @@ export const payeeBatches = pgTable("payee_batches", {
   check("payee_batches_actor_check", sql`${t.actor} IN ('web','mcp','autopilot','import')`),
 ]);
 
+// ─── Payee Studio AI proposals (P3) ─────────────────────────────────────────
+//
+// Drafts submitted by an AI client over MCP (`manage_payees op=propose`);
+// nothing changes until a person approves (one payee batch, undoable).
+// `payload` = encrypted proposal JSON (names, aliases, identifiers, reason).
+// Migration: scripts/migrations/20261011c_payee_proposals.sql.
+export const payeeProposals = pgTable("payee_proposals", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  status: text("status").notNull().default("draft"),
+  confidence: doublePrecision("confidence").notNull().default(0),
+  needsDecision: boolean("needs_decision").notNull().default(false),
+  payload: text("payload").notNull(),
+  source: text("source").notNull().default("mcp"),
+  batchId: integer("batch_id"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  decidedAt: timestamp("decided_at", { withTimezone: true }),
+}, (t) => [
+  index("payee_proposals_user_status_idx").on(t.userId, t.status, t.createdAt.desc()),
+  check("payee_proposals_status_check", sql`${t.status} IN ('draft','approved','rejected')`),
+]);
+
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────
 //
 // Append-only record of every admin mutation. Never UPDATE/DELETE via app code;

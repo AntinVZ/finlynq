@@ -796,6 +796,17 @@ export async function writeStagedImport(
     }
   });
 
+  // Payee Studio import hint / autopilot (both default OFF; each change is an
+  // undoable payee batch). Never allowed to fail the import.
+  if (dek && shaped.length > 0) {
+    try {
+      const { applyPayeeImportAssist } = await import("@/lib/payees/import-assist");
+      await applyPayeeImportAssist({ executor: db, userId, dek, stagedImportId });
+    } catch (err) {
+      console.warn("[payees] import assist skipped:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
   const newCount = shaped.filter((r) => r.dedupStatus === "new").length;
   return {
     ok: true,

@@ -15,6 +15,11 @@
  * token bound to those rows; the same call with the token commits. The AI
  * proposes, the human approves.
  *
+ * AI layer (P3): review returns a compact pack (unrecognized payees and
+ * clusters with example rows, plus the directory); propose stores drafts and
+ * changes NOTHING; approve (two-step) applies chosen drafts as one batch;
+ * reject drops drafts; proposals lists them.
+ *
  * Identifiers (IBAN, tax id, card) are masked in every answer.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -27,6 +32,15 @@ import { listPayeeBatches } from "../../src/lib/payees/batches";
 import { planPayeeApply } from "../../src/lib/payees/apply";
 import { ALIAS_MODES, IDENTIFIER_KINDS, maskIdentifier, type PayeeEntity } from "../../src/lib/payees/directory";
 import { PAYEE_TYPES } from "../../src/lib/payees/match-key";
+import {
+  approveProposals,
+  buildReviewPack,
+  listProposals,
+  MAX_PROPOSALS_PER_CALL,
+  proposalOut,
+  rejectProposals,
+  saveProposals,
+} from "../../src/lib/payees/proposals";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
 import { loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
@@ -246,6 +260,26 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     return out;
   }
 
+  async function opApprove(ids: number[], token: string | undefined) {
+    if (!dek) return err("Unlock required: payee changes need the encryption key. Sign in to Finlynq in the browser, then retry.");
+    try {
+      const sorted = [...new Set(ids)].sort((a, b) => a - b);
+      const preview = await approveProposals({ executor: db, userId, dek, ids: sorted, actor: "mcp", dryRun: true });
+      const payload = { ids: sorted, fingerprint: preview.result.fingerprint };
+      if (!token) {
+        if (preview.result.blocked) return dataResponse({ preview: true, ...opOut(preview.result), note: "Blocked: no confirmation token issued." });
+        return dataResponse({ preview: true, proposals: sorted, ...opOut(preview.result), confirmationToken: signPreviewToken(userId, "manage_payees_approve", payload) });
+      }
+      const check = verifyPreviewToken(token, userId, "manage_payees_approve", payload);
+      if (!check.valid) return err(`Confirmation token invalid: ${check.reason}. Re-call without confirmation_token to refresh the preview.`);
+      const done = await approveProposals({ executor: db, userId, dek, ids: sorted, actor: "mcp" });
+      return dataResponse({ approved: done.approved, ...opOut(done.result), changed: done.result.rows.total, ...(done.result.batchId != null ? { undoWith: `manage_payees op=undo batch_id=${done.result.batchId} (within 30 days)` } : {}) });
+    } catch (e) {
+      if (e instanceof PayeeDirectoryError || e instanceof PayeeBatchError) return err(e.message);
+      throw e;
+    }
+  }
+
   const tokenArg = z
     .string()
     .optional()
@@ -266,7 +300,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings with confidence, reasons, needsDecision for private persons), get (payee, cluster or entity_id), batches. Writes (directory + rename stored payees to the canonical name, one undoable batch each, 30 days): create, update, alias_add (or from a rule), alias_remove, identifiers, merge (entities / payees / cluster_ids into one), split, apply, undo. Every write is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with the token. Never merge people with merchants unless the user says so. Bank-statement rows and import hashes are never changed. Workflow: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings, confidence, reasons, needsDecision for people), get, batches, review (compact pack for you to analyse), proposals. AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Direct writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -362,6 +396,41 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         confirmation_token: tokenArg,
       }),
       z.object({
+        op: z.literal("review"),
+        limit: z.number().int().positive().max(300).optional().describe("Most unrecognized payees in the pack (default 60; clusters get half)."),
+      }),
+      z.object({
+        op: z.literal("propose"),
+        proposals: z
+          .array(
+            z.object({
+              canonical: z.string().describe("Canonical name, e.g. \"Епіцентр\"."),
+              type: z.enum(PAYEE_TYPES).optional(),
+              entity_id: z.number().int().positive().optional().describe("Extend this existing entry instead of creating one."),
+              aliases: z.array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.enum(ALIAS_MODES).optional() })])).optional().describe("Exact spellings from review (or {pattern, mode})."),
+              identifiers: z.array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string() })).optional(),
+              reason: z.string().optional().describe("Why, in one sentence the user will read."),
+              confidence: z.number().min(0).max(1).optional().describe("0–1."),
+            }),
+          )
+          .min(1)
+          .max(MAX_PROPOSALS_PER_CALL),
+      }),
+      z.object({
+        op: z.literal("proposals"),
+        status: z.enum(["draft", "approved", "rejected", "all"]).optional().describe("Default draft."),
+        limit: z.number().int().positive().max(1000).optional(),
+      }),
+      z.object({
+        op: z.literal("approve"),
+        proposal_ids: z.array(z.number().int().positive()).min(1).max(MAX_PROPOSALS_PER_CALL),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("reject"),
+        proposal_ids: z.array(z.number().int().positive()).min(1).max(1000),
+      }),
+      z.object({
         op: z.literal("undo"),
         batch_id: z.number().int().positive().describe("A batch_id from a write result or op=batches."),
         confirmation_token: tokenArg,
@@ -420,6 +489,34 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return await writeOp({ op: "apply", entityIds: input.entity_ids }, input.confirmation_token);
           case "undo":
             return await writeOp({ op: "undo", batchId: input.batch_id }, input.confirmation_token);
+          case "review": {
+            const o = await loadPayeeOverview({ executor: db, userId, dek, samples: 3 });
+            const drafts = dek ? await listProposals(db, userId, dek, { status: "draft" }) : [];
+            return dataResponse({ ...buildReviewPack(o, drafts, { limit: input.limit }), ...scanMeta(o) });
+          }
+          case "propose": {
+            if (!dek) return err("Unlock required: proposals are stored encrypted. Sign in to Finlynq in the browser, then retry.");
+            try {
+              const res = await saveProposals({ executor: db, userId, dek, proposals: input.proposals.map((p) => ({ ...p, entityId: p.entity_id })), source: "mcp" });
+              return dataResponse({
+                saved: res.saved.map((x) => ({ proposal_id: x.id, canonical: x.canonical, ...(x.needsDecision ? { needsDecision: true } : {}), ...(x.notes.length ? { notes: x.notes } : {}) })),
+                ...(res.rejected.length ? { rejected: res.rejected } : {}),
+                note: "Saved as drafts — nothing changed. The user reviews them in Settings → Payees → AI review, or approve with op=approve (two-step) once they agree.",
+              });
+            } catch (e) {
+              if (e instanceof PayeeDirectoryError) return err(e.message);
+              throw e;
+            }
+          }
+          case "proposals": {
+            if (!dek) return err("Unlock required: proposals are stored encrypted.");
+            const list = await listProposals(db, userId, dek, { status: input.status ?? "draft", limit: input.limit });
+            return dataResponse({ proposals: list.map(proposalOut), total: list.length });
+          }
+          case "approve":
+            return await opApprove(input.proposal_ids, input.confirmation_token);
+          case "reject":
+            return dataResponse({ rejected: await rejectProposals(db, userId, input.proposal_ids) });
         }
       } catch (e) {
         return err(String(e instanceof Error ? e.message : e));

@@ -311,6 +311,10 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       }
     }
     await tx.execute(sql`UPDATE payee_batches SET undone_at = NOW() WHERE id = ${batchId} AND user_id = ${userId}`);
+    // AI proposals approved by this batch go back to draft.
+    await tx.execute(sql`
+      UPDATE payee_proposals SET status = 'draft', batch_id = NULL, decided_at = NULL
+      WHERE user_id = ${userId} AND batch_id = ${batchId}`);
     return {
       batchId,
       restoredRows,

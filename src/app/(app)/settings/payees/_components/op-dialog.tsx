@@ -47,8 +47,11 @@ export function describeRows(p: OpPreview): string {
   return `Renames ${p.rows.total} row${p.rows.total === 1 ? "" : "s"}: ${parts.join(", ")}.`;
 }
 
-export async function postPayeeOp(body: Record<string, unknown>): Promise<{ ok: boolean; data: OpPreview | null; error: string }> {
-  const res = await fetch("/api/payees", {
+export async function postPayeeOp(
+  body: Record<string, unknown>,
+  endpoint = "/api/payees",
+): Promise<{ ok: boolean; data: OpPreview | null; error: string }> {
+  const res = await fetch(endpoint, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -65,6 +68,7 @@ export function OpDialog({
   onDone,
   children,
   confirmLabel = "Confirm",
+  endpoint = "/api/payees",
 }: {
   title: string;
   /** The op request; null while the form inside is incomplete. */
@@ -73,6 +77,8 @@ export function OpDialog({
   onDone: (result: OpPreview) => void;
   children?: React.ReactNode;
   confirmLabel?: string;
+  /** POST target; the proposals page approves through /api/payees/proposals. */
+  endpoint?: string;
 }) {
   const key = body ? JSON.stringify(body) : "";
   const [checked, setChecked] = useState<{ key: string; preview: OpPreview | null; error: string }>({ key: "", preview: null, error: "" });
@@ -83,14 +89,14 @@ export function OpDialog({
     if (!key) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const r = await postPayeeOp({ ...JSON.parse(key), dryRun: true });
+      const r = await postPayeeOp({ ...JSON.parse(key), dryRun: true }, endpoint);
       if (!cancelled) setChecked({ key, preview: r.data, error: r.error });
     }, 250);
     return () => {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [key]);
+  }, [key, endpoint]);
 
   const preview = key && checked.key === key ? checked.preview : null;
   const previewError = key && checked.key === key ? checked.error : "";
@@ -100,7 +106,7 @@ export function OpDialog({
     if (!body) return;
     setBusy(true);
     setError("");
-    const r = await postPayeeOp(body);
+    const r = await postPayeeOp(body, endpoint);
     setBusy(false);
     if (!r.ok || !r.data) {
       setError(r.error);

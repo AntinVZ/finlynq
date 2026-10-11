@@ -134,8 +134,8 @@ export default function PayeesSettingsPage() {
     await mutate();
   }
 
-  async function setAdvanced(on: boolean) {
-    await fetch("/api/payees/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ advancedMode: on }) }).catch(() => null);
+  async function saveSettings(patch: Record<string, unknown>) {
+    await fetch("/api/payees/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).catch(() => null);
     await mutate();
   }
 
@@ -192,6 +192,14 @@ export default function PayeesSettingsPage() {
         <p className="text-sm text-muted-foreground mt-0.5">
           Every merchant, service and person you pay or get paid by, with the spellings they come in
         </p>
+        <Link href="/settings/payees/review" className="inline-flex items-center gap-1 text-sm mt-2 hover:underline">
+          AI review
+          {data?.draftCount ? (
+            <Badge variant="secondary">{data.draftCount} waiting</Badge>
+          ) : (
+            <span className="text-xs text-muted-foreground">(proposals from your AI assistant)</span>
+          )}
+        </Link>
       </div>
 
       <Card>
@@ -467,14 +475,14 @@ export default function PayeesSettingsPage() {
         <CardHeader>
           <CardTitle className="text-base">Studio settings</CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
           <label className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
               className="mt-1"
               checked={data?.settings.advancedMode ?? false}
               disabled={!data}
-              onChange={(e) => setAdvanced(e.target.checked)}
+              onChange={(e) => saveSettings({ advancedMode: e.target.checked })}
             />
             <span>
               Advanced mode
@@ -484,6 +492,54 @@ export default function PayeesSettingsPage() {
               </span>
             </span>
           </label>
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={data?.settings.importHint ?? false}
+              disabled={!data}
+              onChange={(e) => saveSettings({ importHint: e.target.checked })}
+            />
+            <span>
+              Use canonical names for new payees
+              <span className="block text-xs text-muted-foreground">
+                When an imported row or a new transaction has a payee that matches an alias, save it under the canonical name.
+                Imports are recorded in Changes and can be undone.
+              </span>
+            </span>
+          </label>
+          <div className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="mt-1"
+              aria-label="Autopilot"
+              checked={data?.settings.autopilotEnabled ?? false}
+              disabled={!data}
+              onChange={(e) => saveSettings({ autopilotEnabled: e.target.checked })}
+            />
+            <span className="flex-1">
+              Autopilot for new payees
+              <span className="block text-xs text-muted-foreground">
+                On import, a payee not in the directory that is very close to exactly one entry (at or above the threshold) is
+                renamed and its spelling added as an alias. Never for people or sole proprietors; every run can be undone.
+              </span>
+              <label className="mt-1 inline-flex items-center gap-2 text-xs">
+                Threshold
+                <select
+                  className="h-7 rounded-md border bg-background px-1 text-xs"
+                  value={String(data?.settings.autopilotThreshold ?? 0.9)}
+                  disabled={!data || !data.settings.autopilotEnabled}
+                  onChange={(e) => saveSettings({ autopilotThreshold: Number(e.target.value) })}
+                >
+                  {[0.75, 0.8, 0.85, 0.9, 0.95, 0.99].map((t) => (
+                    <option key={t} value={String(t)}>
+                      {Math.round(t * 100)}%
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </span>
+          </div>
         </CardContent>
       </Card>
 

@@ -57,6 +57,8 @@ export type PayeeGroup = {
   /** Directory entity this group resolves to (P2), if any. */
   entityId: number | null;
   entityName: string | null;
+  /** Most recent transactions (when the scan kept samples). */
+  samples?: Array<{ date: string; amount: number; currency: string | null; category: string | null }>;
 };
 
 export type PayeeCluster = {
@@ -133,6 +135,13 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
     const suggestedName = clean ? clean.spelling : cleanPayeeDisplay(name);
     const sliceList = [...slices.values()];
     const entity = opts.resolveEntity ? opts.resolveEntity(name, acc.key) : null;
+    const samples = spellings.some((s) => s.samples)
+      ? spellings
+          .flatMap((s) => s.samples ?? [])
+          .sort((a, b) => b.date.localeCompare(a.date))
+          .slice(0, 3)
+          .map((x) => ({ date: x.date, amount: x.amount, currency: x.currency, category: x.categoryId == null ? null : opts.categoryNames?.get(x.categoryId) ?? null }))
+      : undefined;
     out.push({
       key: acc.key,
       name,
@@ -151,6 +160,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       type: guessPayeeType(suggestedName || name),
       entityId: entity?.id ?? null,
       entityName: entity?.name ?? null,
+      ...(samples ? { samples } : {}),
     });
   }
   out.sort((a, b) => b.count - a.count || b.rows - a.rows || a.name.localeCompare(b.name));
@@ -169,8 +179,18 @@ type Edge = { a: number; b: number; confidence: number; reason: string };
 export function scorePair(a: PayeeGroup, b: PayeeGroup): { confidence: number; reason: string } | null {
   if (!a.key || !b.key) return null;
   if (a.type.isPerson !== b.type.isPerson) return null; // never pair a person with a merchant
-  const ca = coreOfKey(a.key);
-  const cb = coreOfKey(b.key);
+  return scoreKeys(a.key, b.key);
+}
+
+/**
+ * How alike two DIFFERENT matching keys are: same core (one-letter suffix /
+ * legal form) 0.9, one continues the other 0.75, small edit distance
+ * 0.6–0.88. Null below that. Identical keys are the caller's business.
+ */
+export function scoreKeys(keyA: string, keyB: string): { confidence: number; reason: string } | null {
+  if (!keyA || !keyB) return null;
+  const ca = coreOfKey(keyA);
+  const cb = coreOfKey(keyB);
   if (ca === cb) return { confidence: 0.9, reason: "same name apart from a one-letter suffix or legal form" };
   const ta = ca.split(" ");
   const tb = cb.split(" ");

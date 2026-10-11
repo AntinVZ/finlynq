@@ -13,8 +13,8 @@
  *   currency.
  *
  *   Also: `entities` (the directory, with resolved transaction counts and
- *   totals), `batches` (the 20 newest change batches, with `canUndo`) and
- *   `settings`. A group's `entityId` / `entityName` say which entity its
+ *   totals), `batches` (the 20 newest change batches, with `canUndo`),
+ *   `settings` and `draftCount` (AI proposals awaiting review). A group's `entityId` / `entityName` say which entity its
  *   spellings resolve to (unrecognized = none).
  *
  * POST { op, …, dryRun? } — directory change (create, update, alias_add,
@@ -29,6 +29,7 @@
  * decryption (lib/payees) — no SQL text matching on payee.
  */
 import { NextResponse } from "next/server";
+import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
@@ -44,8 +45,13 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
   const limitRaw = Number(request.nextUrl.searchParams.get("limit") ?? "");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 20_000) : 5_000;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
-  const [batches, settings] = await Promise.all([listPayeeBatches(db, userId, { limit: 20 }), getPayeeSettings(db, userId)]);
+  const [batches, settings, drafts] = await Promise.all([
+    listPayeeBatches(db, userId, { limit: 20 }),
+    getPayeeSettings(db, userId),
+    db.execute(sql`SELECT count(*)::int AS n FROM payee_proposals WHERE user_id = ${userId} AND status = 'draft'`),
+  ]);
   return NextResponse.json({
+    draftCount: Number((drafts as unknown as { rows: Array<{ n: number }> }).rows?.[0]?.n ?? 0),
     entities: overview.entities,
     batches,
     settings,
