@@ -35,6 +35,10 @@ const ALLOWED_KEYS: ReadonlySet<keyof TxFilters> = new Set([
   "search",
   "portfolioHolding",
   "tag",
+  "tags_all",
+  "tags_any",
+  "tags_none",
+  "untagged",
 ]);
 
 export function buildTxDrillUrl(filters: Partial<TxFilters>): string {

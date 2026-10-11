@@ -10,11 +10,18 @@
  *   payee / note / tags → substring of that one field
  *   search              → substring of payee OR note OR tags
  *   tagExact            → one whole tag, via `hasExactTag` (`work` ≠ `homework`)
+ *   tagFilter           → tags_all / tags_any / tags_none / untagged, via
+ *                         `matchesTagFilter` (whole tags, same identity)
  * All comparisons run on `normalizeForMatch` text (case, apostrophes, Unicode
  * NFC, dashes, whitespace). An empty string (or a blank `tagExact`) counts as
  * "not set", matching how the tools always treated an empty `payee`.
  */
-import { exactTagMatcher } from "../../src/lib/reports/tag-filter";
+import {
+  compileTagFilter,
+  exactTagMatcher,
+  hasTagFilter,
+  type TagFilter,
+} from "../../src/lib/reports/tag-filter";
 import {
   containsNormalized,
   containsNormalizedNeedle,
@@ -27,6 +34,7 @@ export type TextFilters = {
   tags?: string;
   search?: string;
   tagExact?: string;
+  tagFilter?: TagFilter;
 };
 
 export type TextRow = {
@@ -42,7 +50,7 @@ export function containsCI(value: unknown, needle: string): boolean {
 
 /** True when at least one filter would constrain the rows. */
 export function hasTextFilter(f: TextFilters): boolean {
-  return Boolean(f.payee || f.note || f.tags || f.search || f.tagExact?.trim());
+  return Boolean(f.payee || f.note || f.tags || f.search || f.tagExact?.trim() || hasTagFilter(f.tagFilter));
 }
 
 /**
@@ -55,6 +63,7 @@ export function compileTextFilters(f: TextFilters): (row: TextRow) => boolean {
   const tags = f.tags ? normalizeForMatch(f.tags) : null;
   const search = f.search ? normalizeForMatch(f.search) : null;
   const exact = f.tagExact?.trim() ? exactTagMatcher(f.tagExact) : null;
+  const multi = compileTagFilter(f.tagFilter);
   return (row) => {
     if (payee != null && !containsNormalizedNeedle(row.payee, payee)) return false;
     if (note != null && !containsNormalizedNeedle(row.note, note)) return false;
@@ -70,6 +79,7 @@ export function compileTextFilters(f: TextFilters): (row: TextRow) => boolean {
       return false;
     }
     if (exact && !exact(row.tags == null ? null : String(row.tags))) return false;
+    if (multi && !multi(row.tags == null ? null : String(row.tags))) return false;
     return true;
   };
 }

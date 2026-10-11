@@ -4,7 +4,7 @@ import { requireAuth } from "@/lib/auth/require-auth";
 import { requireEncryption } from "@/lib/auth/require-encryption";
 import { encryptTxWrite, decryptTxRows, filterDecryptedBySearch, nameLookupCandidates, decryptName } from "@/lib/crypto/encrypted-columns";
 import { containsNormalizedNeedle, normalizeForMatch } from "@/lib/text-normalize";
-import { exactTagMatcher } from "@/lib/reports/tag-filter";
+import { compileTagFilter, exactTagMatcher, hasTagFilter, parseTagFilter } from "@/lib/reports/tag-filter";
 import { decryptField } from "@/lib/crypto/envelope";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
 import { buildHoldingResolver } from "@/lib/external-import/portfolio-holding-resolver";
@@ -155,6 +155,16 @@ export async function GET(request: NextRequest) {
   // `hasExactTag` semantics (normalized: case, apostrophes, Unicode, dashes),
   // the same identity the MCP `tag_exact` filter uses.
   const tag = params.get("tag") ?? undefined;
+  // Multi-tag filter (whole tags, same identity as `tag`): tags_all /
+  // tags_any / tags_none take a comma list (the param may also repeat);
+  // untagged=true keeps rows without tags. Also post-decrypt.
+  const tagFilter = parseTagFilter({
+    tags_all: params.getAll("tags_all"),
+    tags_any: params.getAll("tags_any"),
+    tags_none: params.getAll("tags_none"),
+    untagged: params.get("untagged"),
+  });
+  const hasMultiTagFilter = hasTagFilter(tagFilter);
 
   // Issue #59 — parse the new sort + per-column filter query params. SQL-
   // pushdown filters (date / numeric / multi-id / enum) are wired into
@@ -275,7 +285,7 @@ export async function GET(request: NextRequest) {
   }
 
   // FK filter is SQL-side, so it's NOT a postDecryptFilter — paginate normally.
-  const postDecryptFilter = search || tag || hasEncryptedSubstringFilter;
+  const postDecryptFilter = search || tag || hasMultiTagFilter || hasEncryptedSubstringFilter;
   const filters: TxSortFilter = {
     id: idFilter,
     startDate: params.get("startDate") ?? undefined,
@@ -394,6 +404,10 @@ export async function GET(request: NextRequest) {
   if (tag) {
     const hasTag = exactTagMatcher(tag);
     decrypted = decrypted.filter((r) => hasTag(r.tags));
+  }
+  const multiTag = compileTagFilter(tagFilter);
+  if (multiTag) {
+    decrypted = decrypted.filter((r) => multiTag(r.tags));
   }
 
   // Issue #59 — per-column substring filters on encrypted fields.

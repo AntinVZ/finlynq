@@ -28,6 +28,11 @@ export type TxFilters = {
   search?: string;
   portfolioHolding?: string;
   tag?: string;
+  // Multi-tag filter (whole tags; comma lists). `untagged` is "true" or empty.
+  tags_all?: string;
+  tags_any?: string;
+  tags_none?: string;
+  untagged?: string;
   // FINLYNQ-177 — first-class single-transaction deep link. `id=<n>` filters
   // the page to exactly one transaction (owner-scoped SQL pushdown on the GET
   // route). Distinct from the DELETE handler's `id` param (different HTTP
@@ -89,6 +94,10 @@ export function buildTransactionQuery(
   if (filters.search) params.set("search", filters.search);
   if (filters.portfolioHolding) params.set("portfolioHolding", filters.portfolioHolding);
   if (filters.tag) params.set("tag", filters.tag);
+  if (filters.tags_all) params.set("tags_all", filters.tags_all);
+  if (filters.tags_any) params.set("tags_any", filters.tags_any);
+  if (filters.tags_none) params.set("tags_none", filters.tags_none);
+  if (filters.untagged === "true") params.set("untagged", "true");
   const business = filters.business ? serializeBusinessFilter(filters.business) : null;
   if (business) params.set(BUSINESS_PARAM, business);
 

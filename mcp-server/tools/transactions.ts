@@ -76,7 +76,8 @@ import {
 import { stampSnapshotDirtyForTxIds } from "../../src/lib/transactions/snapshot-dirty-for-tx";
 import { rewriteTransactionTags } from "../../src/lib/transactions/rewrite-tags";
 import { addTags, removeTags, toTagList } from "../../src/lib/tags";
-import { tagListArg } from "../lib/tag-args";
+import { tagFilterArgs, tagListArg } from "../lib/tag-args";
+import { parseTagFilter } from "../../src/lib/reports/tag-filter";
 import {
   scanForPossibleDuplicates,
   dateBoundsForScan,
@@ -2310,8 +2311,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // filter). Single-sourced so all three bulk families use the same wording.
   const NO_MATCH_NOTE = "No rows matched; nothing to confirm.";
 
-  // Bulk filters resolve to at most BULK_MAX_IDS ids. The text filters
-  // (payee_match / note_match / tag_exact) run in memory after decryption, so
+  // Bulk filters resolve to at most BULK_MAX_IDS ids. The text and tag filters
+  // (payee_match / note_match / tag_exact / tags_*) run in memory after decryption, so
   // those scans read rows page by page (BULK_SCAN_BATCH) and stop after
   // BULK_MAX_SCAN rows. Either bound hit with rows left → `truncated`: the
   // preview mints no token and execute refuses, so a bulk write never lands
@@ -2334,13 +2335,14 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     payee_match: z.string().optional().describe("Substring match against the decrypted payee only (case-insensitive; not the note)"),
     note_match: z.string().optional().describe("Substring match against the decrypted note (case-insensitive)"),
     tag_exact: z.string().optional().describe("Only rows carrying exactly this tag (whole tag, case-insensitive; `work` does not match `homework`)"),
+    ...tagFilterArgs,
     business: z
       .union([z.boolean(), z.enum(["true", "false", "all"])])
       .optional()
       .describe("true = business rows only, false = personal only (not flagged business; NULL counts as personal), all = no business filter (default)"),
     min_amount: z.number().optional().describe("Minimum SIGNED account amount (expenses are negative: 'spent 500–1500' is min_amount -1500, max_amount -500)"),
     max_amount: z.number().optional().describe("Maximum SIGNED account amount (expenses are negative)"),
-  }).describe("Filter — at least one field required; fields combine with AND. Text fields (payee_match, note_match, tag_exact) are matched after decryption.");
+  }).describe("Filter — at least one field required; fields combine with AND. Text and tag fields (payee_match, note_match, tag_exact, tags_all, tags_any, tags_none, untagged) are matched after decryption.");
 
   type BulkFilter = z.infer<typeof bulkFilterSchema>;
 
@@ -2431,6 +2433,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       payee: filter.payee_match,
       note: filter.note_match,
       tagExact: filter.tag_exact,
+      tagFilter: parseTagFilter(filter),
     };
     const hasText = hasTextFilter(textFilters);
     const hasAny =
@@ -2864,7 +2867,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // a caller seeing identical sampleBefore/sampleAfter knows WHY.
   server.tool(
     "preview_bulk_update",
-    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, `unappliedChanges` ({ field, requestedValue, reason } for each change that could not be applied) and a confirmationToken (5-min TTL) for execute_bulk_update. `sampleAfter.category` shows the resolved category name. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode, value }), add_tags / remove_tags (edit each row's list; not with `tags`). Unknown keys fail. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
+    "Preview a bulk update over transactions matching `filter`. Returns affected count, before/after samples, `unappliedChanges` ({ field, requestedValue, reason } for each change that could not be applied) and a confirmationToken (5-min TTL) for execute_bulk_update. `sampleAfter.category` shows the resolved category name. Accepted `changes` keys: category_id, category (name), account_id, date, note, payee, is_business (0/1), quantity (null clears), portfolioHoldingId, portfolioHolding (name/ticker), tags ({ mode, value }), add_tags / remove_tags (edit each row's list; not with `tags`). Unknown keys fail. If the filter matches more than 10,000 rows, or a text / tag filter stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     {
       filter: bulkFilterSchema,
       changes: bulkChangesSchema,
@@ -2936,7 +2939,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── preview_bulk_delete ────────────────────────────────────────────────────
   server.tool(
     "preview_bulk_delete",
-    "Preview a bulk delete. Returns affected count, sample rows, and a confirmationToken (5-min TTL) for execute_bulk_delete. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
+    "Preview a bulk delete. Returns affected count, sample rows, and a confirmationToken (5-min TTL) for execute_bulk_delete. If the filter matches more than 10,000 rows, or a text / tag filter stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     { filter: bulkFilterSchema },
     async ({ filter }) => {
       try {
@@ -3042,7 +3045,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
   // ── preview_bulk_categorize ────────────────────────────────────────────────
   server.tool(
     "preview_bulk_categorize",
-    "Preview a bulk-categorize (shortcut for preview_bulk_update with only category_id set). Returns affected count + sample + confirmationToken. If the filter matches more than 10,000 rows, or a text filter (payee_match / note_match / tag_exact) stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
+    "Preview a bulk-categorize (shortcut for preview_bulk_update with only category_id set). Returns affected count + sample + confirmationToken. If the filter matches more than 10,000 rows, or a text / tag filter stops after scanning 50,000 rows, the preview says `truncated: true` and issues no token (narrow the filter).",
     {
       filter: bulkFilterSchema,
       category_id: z.number().describe("Target category id"),

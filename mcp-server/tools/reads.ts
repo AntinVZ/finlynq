@@ -44,8 +44,14 @@ import {
   businessFilterCondition,
 } from "../../src/lib/reports/business-filter-sql";
 import {
+  compileTagFilter,
   exactTagMatcher,
+  hasTagFilter,
+  parseTagFilter,
+  tagFilterAcceptsUntagged,
+  type TagFilter,
 } from "../../src/lib/reports/tag-filter";
+import { tagFilterArgs } from "../lib/tag-args";
 import {
   isCashGroup,
 } from "../../src/lib/accounts/groups";
@@ -118,48 +124,56 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
 
   /**
    * `AND …` fragment scoping a report's `transactions t` rows to the business
-   * filter and, when `tag` is set, to rows carrying that exact tag.
-   * `transactions.tags` is encrypted per row, so the tag can't be matched in
-   * SQL: the candidate rows in the same window are decrypted here and the
-   * matching ids are fed back as an id list. Without a DEK only legacy
+   * filter and, when `tag` and/or the multi-tag filter (`tags_all` /
+   * `tags_any` / `tags_none` / `untagged`) is set, to the rows whose tags
+   * match (AND). `transactions.tags` is encrypted per row, so tags can't be
+   * matched in SQL: the candidate rows in the same window are decrypted here
+   * and the matching ids are fed back as an id list. Without a DEK only legacy
    * plaintext tags can match (`tagNote` says so).
    */
   async function reportScope(opts: {
     business: BusinessFilter;
     tag: string | undefined;
+    tagFilter?: TagFilter;
     startDate: string;
     endDate?: string;
   }): Promise<{ where: SQL; tagNote?: string }> {
     const bizCond = businessFilterCondition(opts.business, sql`t.is_business`);
     const bizSql = bizCond ? sql`AND ${bizCond}` : sql``;
     const tag = opts.tag?.trim();
-    if (!tag) return { where: bizSql };
+    const multi = compileTagFilter(opts.tagFilter);
+    if (!tag && !multi) return { where: bizSql };
 
+    // Rows without tags can only match when neither `tag` nor tags_all /
+    // tags_any asks for a tag; otherwise skip them in SQL.
+    const needsTags = !!tag || !tagFilterAcceptsUntagged(opts.tagFilter);
     const candidates = await q(db, sql`
       SELECT t.id, t.tags
       FROM transactions t
       WHERE t.user_id = ${userId}
         AND t.date >= ${opts.startDate}
         ${opts.endDate ? sql`AND t.date <= ${opts.endDate}` : sql``}
-        AND t.tags IS NOT NULL AND t.tags <> ''
+        ${needsTags ? sql`AND t.tags IS NOT NULL AND t.tags <> ''` : sql``}
         ${bizSql}
     `);
     const ids: number[] = [];
-    const hasTag = exactTagMatcher(tag);
+    const hasTag = tag ? exactTagMatcher(tag) : null;
     for (const r of candidates) {
       let tags = r.tags as string | null;
       if (dek) {
         try {
           tags = decryptField(dek, tags);
         } catch {
-          continue; // undecryptable row can't be proven to carry the tag
+          continue; // undecryptable row can't be proven to match
         }
       }
-      if (hasTag(tags)) ids.push(Number(r.id));
+      if (hasTag && !hasTag(tags)) continue;
+      if (multi && !multi(tags)) continue;
+      ids.push(Number(r.id));
     }
     const tagNote = dek
       ? undefined
-      : "No decryption key on this connection: only unencrypted (legacy) tags can match the `tag` filter.";
+      : "No decryption key on this connection: only unencrypted (legacy) tags can match the tag filters.";
     if (ids.length === 0) return { where: sql`${bizSql} AND FALSE`, tagNote };
     // ids are integers read back from transactions.id, so inlining them is
     // safe and avoids one bind parameter per matching row.
@@ -291,7 +305,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   // ── search_transactions ────────────────────────────────────────────────────
   server.tool(
     "search_transactions",
-    "Search transactions by payee, note, text, amount, date, category, tags, business flag, account or holding. Text filters are case-insensitive and combine with AND: `payee` = payee only, `note` = note only, `search` = payee OR note OR tags, `tags` = tag substring, `tag_exact` = one whole tag (`work` does not match `homework`). `min_amount` / `max_amount` compare the SIGNED account amount (expenses negative: spent 500–1500 → min -1500, max -500). `business` (true | false | all) scopes to business / personal rows. `account_id` / `portfolio_holding_id` are fast FK filters (raise `limit` for long histories). Rows carry entered + account amounts, `quantity` and `is_business`; `reportingCurrency` adds a converted amount. Text filters run after decryption over at most " + SEARCH_MAX_SCAN + " rows, newest first; `truncated: true` means older matches may exist (narrow dates or account).",
+    "Search transactions by payee, note, text, amount, date, category, tags, business flag, account or holding. Text filters are case-insensitive and combine with AND: `payee` = payee only, `note` = note only, `search` = payee OR note OR tags, `tags` = tag substring, `tag_exact` / `tags_all` / `tags_any` / `tags_none` / `untagged` = whole tags. `min_amount` / `max_amount` compare the SIGNED account amount (expenses negative: spent 500–1500 → min -1500, max -500). `business` (true | false | all) scopes to business / personal rows. `account_id` / `portfolio_holding_id` are fast FK filters (raise `limit` for long histories). Rows carry entered + account amounts, `quantity` and `is_business`; `reportingCurrency` adds a converted amount. Text filters run after decryption over at most " + SEARCH_MAX_SCAN + " rows, newest first; `truncated: true` means older matches may exist (narrow dates or account).",
     {
       payee: z.string().optional().describe("Partial payee/merchant name match (payee field only — use `note` or `search` to look in the note)"),
       note: z.string().optional().describe("Partial note match (case-insensitive substring of the note only)"),
@@ -303,13 +317,14 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       category: z.string().optional().describe("Category name (exact)"),
       tags: z.string().optional().describe("Tag to search for (partial match)"),
       tag_exact: z.string().optional().describe("Only transactions carrying exactly this tag (whole tag, case-insensitive; `work` does not match `homework`)."),
+      ...tagFilterArgs,
       business: businessArg,
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
       const businessFilter = parseBusinessParam(business);
       const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
@@ -320,7 +335,8 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       // With an in-memory filter the SQL rows are walked in pages until `lim`
       // matches are found (bounded by SEARCH_MAX_SCAN → `truncated`), so older
       // matches are no longer dropped by a fixed newest-N window.
-      const textFilters = { payee, note, tags, search, tagExact: exactTag };
+      const tagFilter = parseTagFilter({ tags_all, tags_any, tags_none, untagged });
+      const textFilters = { payee, note, tags, search, tagExact: exactTag, tagFilter };
       const inMemory = hasTextFilter(textFilters);
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
@@ -422,6 +438,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         filters: {
           business: businessFilter,
           tag_exact: exactTag ?? null,
+          ...(hasTagFilter(tagFilter) ? { tag_filter: tagFilter } : {}),
           note: note || null,
           search: search || null,
         },
@@ -472,7 +489,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   // ── get_spending_trends ────────────────────────────────────────────────────
   server.tool(
     "get_spending_trends",
-    "Get spending trends over time grouped by category. Rollups-first (FINLYNQ-269): the default payload returns `totalsByPeriod` (per-bucket grand totals) + `totalsByCategory` (each category summed over the window) — a small bounded shape suited to a context window — and OMITS the verbose per-(period,category) cells. Pass `detail: true` to also get the full cell `rows`. Totals are in the user's display currency by default; pass reportingCurrency to override. Issue #210: `priorMonths: N` returns N+1 monthly buckets — the current (partial) month plus N priors. `months` is accepted as a deprecated alias. Optional `business` (true | false | all) and `tag` (exact tag) scope which transactions are counted.",
+    "Get spending trends over time grouped by category. Rollups-first (FINLYNQ-269): the default payload returns `totalsByPeriod` (per-bucket grand totals) + `totalsByCategory` (each category summed over the window) — a small bounded shape suited to a context window — and OMITS the verbose per-(period,category) cells. Pass `detail: true` to also get the full cell `rows`. Totals are in the user's display currency by default; pass reportingCurrency to override. Issue #210: `priorMonths: N` returns N+1 monthly buckets — the current (partial) month plus N priors. `months` is accepted as a deprecated alias. Optional `business` (true | false | all), `tag` (exact tag) and `tags_all` / `tags_any` / `tags_none` / `untagged` scope which transactions are counted.",
     {
       period: z.enum(["weekly", "monthly", "yearly"]).describe("Aggregation period"),
       priorMonths: z.number().optional().describe("Months to look back, in addition to the current (partial) month. Default 12 → returns 13 buckets (current + 12 priors)."),
@@ -481,8 +498,9 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       detail: z.boolean().optional().describe("Include the full per-(period,category) cell rows. Default false — the rollup totals are returned without them."),
       business: businessArg,
       tag: tagArg,
+      ...tagFilterArgs,
     },
-    async ({ period, priorMonths, months, reportingCurrency, detail, business, tag }) => {
+    async ({ period, priorMonths, months, reportingCurrency, detail, business, tag, tags_all, tags_any, tags_none, untagged }) => {
       const reporting = await resolveReportingCurrency(db, userId, reportingCurrency);
       if (months !== undefined && priorMonths === undefined) {
 
@@ -494,7 +512,8 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       const startDate = new Date(now.getFullYear(), now.getMonth() - lookback, 1)
         .toISOString().split("T")[0];
       const businessFilter = parseBusinessParam(business);
-      const scope = await reportScope({ business: businessFilter, tag, startDate });
+      const tagFilter = parseTagFilter({ tags_all, tags_any, tags_none, untagged });
+      const scope = await reportScope({ business: businessFilter, tag, tagFilter, startDate });
 
       // Postgres date truncation
       const truncExpr = period === "weekly"
@@ -573,7 +592,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         priorMonths: lookback,
         currentMonth: currentMonthStr,
         // Echo the scoping so a caller can tell a filtered total from a full one.
-        filters: { business: businessFilter, tag: tag?.trim() || null },
+        filters: { business: businessFilter, tag: tag?.trim() || null, ...(hasTagFilter(tagFilter) ? { tag_filter: tagFilter } : {}) },
         ...(scope.tagNote ? { note: scope.tagNote } : {}),
         // FINLYNQ-268 (phase 4, flow axis): spending trends are cash-flow
         // aggregates (SUM(transactions.amount)), not portfolio valuation.
@@ -586,18 +605,20 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
   // ── get_income_statement ───────────────────────────────────────────────────
   server.tool(
     "get_income_statement",
-    "Generate income statement for a period. Totals are in the user's display currency by default; pass reportingCurrency to override. Optional `business` (true = business only, false = personal only, all = default) and `tag` (exact tag) scope the income/expense rows; the `unrealized` block is holdings-based and is not scoped by them.",
+    "Generate income statement for a period. Totals are in the user's display currency by default; pass reportingCurrency to override. Optional `business` (true = business only, false = personal only, all = default) `tag` (exact tag) and `tags_all` / `tags_any` / `tags_none` / `untagged` scope the income/expense rows; the `unrealized` block is holdings-based and is not scoped by them.",
     {
       start_date: ymdDate.describe("Start date (YYYY-MM-DD)"),
       end_date: ymdDate.describe("End date (YYYY-MM-DD)"),
       reportingCurrency: z.string().optional().describe("ISO code; defaults to user's display currency."),
       business: businessArg,
       tag: tagArg,
+      ...tagFilterArgs,
     },
-    async ({ start_date, end_date, reportingCurrency, business, tag }) => {
+    async ({ start_date, end_date, reportingCurrency, business, tag, tags_all, tags_any, tags_none, untagged }) => {
       const reporting = await resolveReportingCurrency(db, userId, reportingCurrency);
       const businessFilter = parseBusinessParam(business);
-      const scope = await reportScope({ business: businessFilter, tag, startDate: start_date, endDate: end_date });
+      const tagFilter = parseTagFilter({ tags_all, tags_any, tags_none, untagged });
+      const scope = await reportScope({ business: businessFilter, tag, tagFilter, startDate: start_date, endDate: end_date });
       // Stream D Phase 4: c.name dropped — read c.name_ct only.
       const rawRows = await q(db, sql`
         SELECT c.id AS category_id, c.type AS category_type, c."group" AS category_group,
@@ -637,7 +658,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
         rows,
         reportingCurrency: reporting,
         // Echo the scoping so a caller can tell a filtered statement from a full one.
-        filters: { business: businessFilter, tag: tag?.trim() || null },
+        filters: { business: businessFilter, tag: tag?.trim() || null, ...(hasTagFilter(tagFilter) ? { tag_filter: tagFilter } : {}) },
         ...(scope.tagNote ? { note: scope.tagNote } : {}),
         // FINLYNQ-268 (phase 4, flow axis): the statement's primary money
         // figures are cash-flow income/expense totals (SUM(transactions.amount)
