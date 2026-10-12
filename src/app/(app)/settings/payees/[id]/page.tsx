@@ -28,9 +28,10 @@ import { batchLabel, PAYEE_TYPE_OPTIONS, PayeeAvatar, typeLabel, WebsiteLink, ty
 const LOGO_MAX_BYTES = 20 * 1024;
 const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp"];
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
+import { RequisitesCard, type Requisite } from "../_components/requisites-card";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
-type Identifier = { id: number; kind: string; value: string };
+type Identifier = Requisite;
 type EntityResponse = {
   entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; website: string | null; logo: string | null; aliases: Alias[]; identifiers: Identifier[] };
   spellings: PayeeGroupRow[];
@@ -70,7 +71,6 @@ export default function PayeeEntityPage() {
   const [status, setStatus] = useState("");
   const [edit, setEdit] = useState<{ name: string; type: string; note: string; categoryId: string } | null>(null);
   const [newAlias, setNewAlias] = useState({ pattern: "", mode: "exact" });
-  const [newId, setNewId] = useState({ kind: "iban", value: "" });
   const [splitIds, setSplitIds] = useState<Set<number>>(new Set());
   const [splitName, setSplitName] = useState("");
   const [rulesOpen, setRulesOpen] = useState(false);
@@ -89,7 +89,6 @@ export default function PayeeEntityPage() {
     setEdit(null);
     setSplitIds(new Set());
     setNewAlias({ pattern: "", mode: "exact" });
-    setNewId({ kind: newId.kind, value: "" });
     if (then === "back") {
       router.push("/settings/payees");
       return;
@@ -370,48 +369,13 @@ export default function PayeeEntityPage() {
       </Card>
 
       {advanced && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Requisites</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {e.identifiers.length === 0 ? (
-              <p className="text-xs text-muted-foreground">None yet.</p>
-            ) : (
-              <ul className="divide-y rounded-lg border">
-                {e.identifiers.map((i) => (
-                  <li key={i.id} className="flex flex-wrap items-center gap-2 p-2 text-sm">
-                    <span className="text-xs text-muted-foreground w-28">{IDENTIFIER_LABEL[i.kind] ?? i.kind}</span>
-                    <span className="font-mono break-all">{i.kind === "card_last4" ? `•••• ${i.value}` : i.value}</span>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="ml-auto h-7 text-xs text-destructive"
-                      onClick={() => setAction({ title: "Remove requisite", body: { op: "identifiers", entityId: e.id, remove: [i.id] }, confirm: "Remove" })}
-                    >
-                      Remove
-                    </Button>
-                  </li>
-                ))}
-              </ul>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <select aria-label="Requisite kind" className="h-9 rounded-md border bg-background px-2 text-sm" value={newId.kind} onChange={(ev) => setNewId({ ...newId, kind: ev.target.value })}>
-                {kinds.map((k) => (
-                  <option key={k} value={k}>{IDENTIFIER_LABEL[k] ?? k}</option>
-                ))}
-              </select>
-              <Input className="flex-1 min-w-48" aria-label="Requisite value" placeholder={newId.kind === "card_last4" ? "Last 4 digits (a full number is cut to 4)" : "Value"} value={newId.value} onChange={(ev) => setNewId({ ...newId, value: ev.target.value })} />
-              <Button
-                size="sm"
-                disabled={!newId.value.trim()}
-                onClick={() => setAction({ title: "Add requisite", body: { op: "identifiers", entityId: e.id, add: [{ kind: newId.kind, value: newId.value.trim() }] }, confirm: "Add" })}
-              >
-                Add…
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <RequisitesCard
+          entityId={e.id}
+          entityType={e.type}
+          requisites={e.identifiers}
+          allowedKinds={kinds}
+          onAction={(a) => setAction({ title: a.title, body: a.body, confirm: a.confirm })}
+        />
       )}
 
       <Card>

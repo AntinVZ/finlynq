@@ -26,6 +26,7 @@ import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
+import { edrpouChecksumOk, ibanChecksumOk, parseIdentifierQuery, rnokppChecksumOk } from "./requisites";
 import type { PayeeExecutor } from "./scan";
 
 export const ALIAS_MODES = ["exact", "contains", "regex"] as const;
@@ -34,7 +35,20 @@ export const IDENTIFIER_KINDS = ["iban", "tax_id", "edrpou", "card_last4", "cryp
 export type IdentifierKind = (typeof IDENTIFIER_KINDS)[number];
 
 export type PayeeAlias = { id: number; entityId: number; pattern: string; mode: AliasMode; source: string; createdAt: string | null };
-export type PayeeIdentifier = { id: number; entityId: number; kind: IdentifierKind; value: string; createdAt: string | null };
+export type PayeeIdentifier = {
+  id: number;
+  entityId: number;
+  kind: IdentifierKind;
+  value: string;
+  /** P5f: free label ("Mono black"), bank, ISO currency; primary / active flags. */
+  label: string | null;
+  bank: string | null;
+  currency: string | null;
+  isPrimary: boolean;
+  isActive: boolean;
+  createdAt: string | null;
+};
+export type IdentifierDetails = { label?: string | null; bank?: string | null; currency?: string | null; isPrimary?: boolean; isActive?: boolean };
 export type PayeeEntity = {
   id: number;
   name: string;
@@ -111,12 +125,23 @@ export async function loadDirectory(executor: PayeeExecutor, userId: string, dek
     e.aliases.push({ id: Number(r.id), entityId: e.id, pattern, mode: String(r.mode) as AliasMode, source: String(r.source), createdAt: iso(r.created_at) });
   }
   for (const r of normalizeDbRows<Record<string, unknown>>(
-    await executor.execute(sql`SELECT id, entity_id, kind, value, created_at FROM payee_identifiers WHERE user_id = ${userId} ORDER BY id`),
+    await executor.execute(sql`SELECT id, entity_id, kind, value, label, bank, currency, is_primary, is_active, created_at FROM payee_identifiers WHERE user_id = ${userId} ORDER BY id`),
   )) {
     const e = byId.get(Number(r.entity_id));
     const value = dec(dek, r.value);
     if (!e || value == null) continue;
-    e.identifiers.push({ id: Number(r.id), entityId: e.id, kind: String(r.kind) as IdentifierKind, value, createdAt: iso(r.created_at) });
+    e.identifiers.push({
+      id: Number(r.id),
+      entityId: e.id,
+      kind: String(r.kind) as IdentifierKind,
+      value,
+      label: dec(dek, r.label),
+      bank: dec(dek, r.bank),
+      currency: r.currency == null ? null : String(r.currency),
+      isPrimary: r.is_primary === true || r.is_primary === "t",
+      isActive: !(r.is_active === false || r.is_active === "f"),
+      createdAt: iso(r.created_at),
+    });
   }
   return [...byId.values()];
 }
@@ -218,16 +243,46 @@ export function normalizeIdentifier(kind: IdentifierKind, raw: string): string {
     return iban;
   }
   if (kind === "edrpou") {
-    if (!/^\d{8}$/.test(v)) throw new PayeeDirectoryError("An EDRPOU code is 8 digits.");
-    return v;
+    const d = v.replace(/[\s-]+/g, "");
+    if (!/^\d{8}$/.test(d)) throw new PayeeDirectoryError("An EDRPOU code is exactly 8 digits (legal entities; a ФОП has an ІПН instead).");
+    return d;
   }
   if (kind === "tax_id") {
-    const d = v.replace(/\s+/g, "");
-    if (!/^[A-Za-z0-9-]{5,20}$/.test(d)) throw new PayeeDirectoryError("A tax id is 5–20 letters or digits.");
+    const d = v.replace(/[\s-]+/g, "");
+    if (!/^\d{10}$/.test(d)) throw new PayeeDirectoryError("A tax id (ІПН / РНОКПП) is exactly 10 digits.");
     return d;
   }
   if (!/^[A-Za-z0-9:_-]{10,120}$/.test(v)) throw new PayeeDirectoryError("A wallet address is 10–120 letters or digits.");
   return v;
+}
+
+const PERSONISH = new Set<string>(["person", "sole_proprietor"]);
+
+/**
+ * Plain-language WARNINGS for an identifier (never a refusal): a check digit
+ * that doesn't add up ("looks like a typo"), or a code that doesn't fit the
+ * payee's type (8 digits = a legal entity's EDRPOU, 10 = a person's / ФОП's
+ * ІПН) with the type it suggests.
+ */
+export function identifierWarnings(kind: IdentifierKind, value: string, entityType: PayeeType): string[] {
+  const out: string[] = [];
+  if (kind === "tax_id") {
+    if (!rnokppChecksumOk(value)) out.push(`The ІПН / РНОКПП ${maskIdentifier(kind, value)} fails its check digit — it looks like a typo.`);
+    if (!PERSONISH.has(entityType)) out.push("A 10-digit ІПН belongs to a private person or a ФОП; consider changing the type to Person or Sole proprietor.");
+  }
+  if (kind === "edrpou") {
+    if (!edrpouChecksumOk(value)) out.push(`The EDRPOU code ${value} fails its check digit — it looks like a typo.`);
+    if (PERSONISH.has(entityType)) out.push("An 8-digit EDRPOU belongs to a legal entity (a ФОП has none); consider changing the type to Company.");
+  }
+  if (kind === "iban" && value.startsWith("UA") && !ibanChecksumOk(value)) out.push(`The IBAN ${maskIdentifier(kind, value)} fails its check digits — it looks like a typo.`);
+  return out;
+}
+
+/** Which requisite kinds make sense for a payee type (the UI hides the rest). */
+export function identifierKindsForType(type: PayeeType): IdentifierKind[] {
+  if (PERSONISH.has(type)) return ["tax_id", "iban", "card_last4", "crypto_wallet"];
+  if (type === "company" || type === "bank" || type === "government") return ["edrpou", "iban", "card_last4", "crypto_wallet"];
+  return ["edrpou", "iban", "card_last4", "crypto_wallet", "tax_id"];
 }
 
 /**
@@ -242,8 +297,16 @@ export function maskIdentifier(kind: IdentifierKind, value: string): string {
   return value.length > 10 ? `${value.slice(0, 4)}…${value.slice(-4)}` : "••••";
 }
 
-/** Find entities by an identifier value (any kind, normalized compare). */
+/**
+ * Find entities by an identifier value (any kind, normalized compare). A card
+ * (last 4 digits) is a WEAK match: several entities may share the same 4
+ * digits, so callers must treat more than one hit as candidates, never pick
+ * one, and never use a card match for automatic renames.
+ */
 export function findByIdentifier(entities: PayeeEntity[], raw: string): PayeeEntity[] {
+  // A card in any written form (`5168 **** 1234`, `*1234`, a full number) → its last 4 digits.
+  const parsed = parseIdentifierQuery(raw);
+  if (parsed?.kind === "card_last4") return entities.filter((e) => e.identifiers.some((i) => i.kind === "card_last4" && i.value === parsed.value));
   const q = raw.replace(/\s+/g, "").toUpperCase();
   if (q.length < 4) return [];
   return entities.filter((e) =>
@@ -309,15 +372,28 @@ export async function insertIdentifier(
   executor: PayeeExecutor,
   userId: string,
   dek: Buffer,
-  i: { entityId: number; kind: IdentifierKind; value: string },
+  i: { entityId: number; kind: IdentifierKind; value: string } & IdentifierDetails,
 ): Promise<number> {
   const rows = normalizeDbRows<{ id: unknown }>(
     await executor.execute(sql`
-      INSERT INTO payee_identifiers (user_id, entity_id, kind, value)
-      VALUES (${userId}, ${i.entityId}, ${i.kind}, ${enc(dek, i.value)})
+      INSERT INTO payee_identifiers (user_id, entity_id, kind, value, label, bank, currency, is_primary, is_active)
+      VALUES (${userId}, ${i.entityId}, ${i.kind}, ${enc(dek, i.value)}, ${i.label ? enc(dek, i.label) : null}, ${i.bank ? enc(dek, i.bank) : null},
+              ${i.currency ?? null}, ${i.isPrimary === true}, ${i.isActive !== false})
       RETURNING id`),
   );
   return Number(rows[0].id);
+}
+
+/** Update an identifier's details (not its kind / value). */
+export async function updateIdentifierRow(executor: PayeeExecutor, userId: string, dek: Buffer, id: number, patch: IdentifierDetails): Promise<void> {
+  const sets = [];
+  if (patch.label !== undefined) sets.push(sql`label = ${patch.label ? enc(dek, patch.label) : null}`);
+  if (patch.bank !== undefined) sets.push(sql`bank = ${patch.bank ? enc(dek, patch.bank) : null}`);
+  if (patch.currency !== undefined) sets.push(sql`currency = ${patch.currency}`);
+  if (patch.isPrimary !== undefined) sets.push(sql`is_primary = ${patch.isPrimary}`);
+  if (patch.isActive !== undefined) sets.push(sql`is_active = ${patch.isActive}`);
+  if (!sets.length) return;
+  await executor.execute(sql`UPDATE payee_identifiers SET ${sql.join(sets, sql`, `)} WHERE id = ${id} AND user_id = ${userId}`);
 }
 
 /**

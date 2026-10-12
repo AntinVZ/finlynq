@@ -62,6 +62,17 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url === "/api/payees/requisites" && body) return { ok: true, json: async () => ({ saved: [{ id: 9 }], rejected: [], missing: [] }) };
+    if (url.startsWith("/api/payees/requisites?action=mine")) {
+      return {
+        ok: true,
+        json: async () => ({
+          scanned: { transactions: 40, bank: 1 }, truncated: false,
+          links: [{ ref: "r_link000000000000", payee: "Romashka LLC", entity: { id: 3, name: "ТОВ Ромашка" }, via: "iban UA21…6001", rows: 2 }],
+          suggestions: [{ ref: "r_card000000000000", counterparty: { entityId: 5, name: "Степаненко" }, kind: "card_last4", masked: "•••• 5678", valid: true, rows: 3, firstDate: "2026-01-01", lastDate: "2026-09-01", ownedBy: [], example: "Степаненко · Переказ з картки •••• 5678" }],
+        }),
+      };
+    }
     if (url === "/api/payees/lookalikes" && body) return { ok: true, json: async () => ({ rejected: true }) };
     if (url.startsWith("/api/payees/lookalikes")) {
       return {
@@ -292,3 +303,21 @@ describe("Settings → Payees look-alikes (P5b)", () => {
     expect(screen.getByText(/Answered “Different payee” \(1\)/)).toBeTruthy();
   });
 });
+
+describe("Settings → Payees requisites tab (P5f)", () => {
+  it("looks for requisites only when asked and saves picked ones as drafts", async () => {
+    const calls = setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Requisites/ }));
+    expect(calls.some((c) => c.url.includes("action=mine"))).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Look for requisites in my transactions" }));
+    expect(await screen.findByText("•••• 5678")).toBeTruthy();
+    expect(screen.getByText("weak evidence")).toBeTruthy();
+    expect(screen.getByText(/via iban UA21…6001/)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Pick Card •••• 5678"));
+    fireEvent.click(screen.getByRole("button", { name: "Save 1 as drafts for review" }));
+    expect(await screen.findByText(/Saved 1 draft/)).toBeTruthy();
+    expect(calls.find((c) => c.url === "/api/payees/requisites" && c.body)?.body).toEqual({ action: "propose", refs: ["r_card000000000000"] });
+  });
+});
+

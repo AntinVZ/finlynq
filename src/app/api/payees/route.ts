@@ -75,7 +75,14 @@ const name = z.string().min(1).max(200);
 const type = z.enum(PAYEE_TYPES).optional();
 const id = z.number().int().positive();
 const alias = z.object({ pattern: z.string().min(1).max(200), mode: z.enum(ALIAS_MODES).optional() });
-const identifier = z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string().min(1).max(200) });
+const details = {
+  label: z.string().max(60).nullable().optional(),
+  bank: z.string().max(60).nullable().optional(),
+  currency: z.string().max(3).nullable().optional(),
+  isPrimary: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+};
+const identifier = z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string().min(1).max(200), ...details });
 const dryRun = z.boolean().optional();
 const apply = z.boolean().optional();
 
@@ -96,7 +103,15 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("alias_add"), entityId: id, aliases: z.array(alias).min(1).max(100), apply, dryRun }),
   z.object({ op: z.literal("alias_remove"), entityId: id, aliasIds: z.array(id).max(200).optional(), patterns: z.array(z.string().max(200)).max(200).optional(), dryRun }),
   z.object({ op: z.literal("alias_from_rule"), ruleId: id, entityId: id.optional(), apply, dryRun }),
-  z.object({ op: z.literal("identifiers"), entityId: id, add: z.array(identifier).max(20).optional(), remove: z.array(id).max(50).optional(), dryRun }),
+  z.object({
+    op: z.literal("identifiers"),
+    entityId: id,
+    add: z.array(identifier).max(20).optional(),
+    update: z.array(z.object({ id, ...details })).max(50).optional(),
+    deactivate: z.array(id).max(50).optional(),
+    remove: z.array(id).max(50).optional(),
+    dryRun,
+  }),
   z.object({
     op: z.literal("merge"),
     into: z.union([z.object({ entityId: id }), z.object({ name, type })]),

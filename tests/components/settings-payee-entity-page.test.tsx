@@ -76,3 +76,47 @@ describe("payee entity page — website and logo", () => {
     await waitFor(() => expect(calls.some((c) => c.body?.op === "update" && c.body.website === "silpo.ua" && c.body.dryRun === true)).toBe(true));
   });
 });
+
+describe("payee entity page — requisites (P5f)", () => {
+  const settings = { advancedMode: true, identifierKinds: ["iban", "tax_id", "edrpou", "card_last4", "crypto_wallet"] };
+  const cards = [
+    { id: 1, kind: "card_last4", value: "1234", label: "Mono black", bank: "monobank", currency: "UAH", isPrimary: true, isActive: true },
+    { id: 2, kind: "card_last4", value: "4321", label: "Privat", bank: null, currency: null, isPrimary: false, isActive: false },
+    { id: 3, kind: "iban", value: "UA213223130000026007233566001", label: "rent", bank: null, currency: "UAH", isPrimary: false, isActive: true },
+  ];
+
+  it("groups several cards and accounts with labels, primary and inactive; offers only the kinds that fit a person", async () => {
+    renderEntityPage(entityResponse({ type: "person", identifiers: cards }), settings);
+    const cardsGroup = await screen.findByRole("region", { name: "Cards (last 4 digits)" });
+    expect(cardsGroup.textContent).toMatch(/•••• 1234Mono blackmonobankUAHPrimary/);
+    expect(cardsGroup.textContent).toMatch(/•••• 4321PrivatInactive/);
+    expect(screen.getByRole("region", { name: "IBAN accounts" }).textContent).toMatch(/UA213223130000026007233566001rent/);
+    const kinds = [...(screen.getByLabelText("Requisite kind") as HTMLSelectElement).options].map((o) => o.value);
+    expect(kinds).toContain("tax_id");
+    expect(kinds).not.toContain("edrpou");
+  });
+
+  it("hints when a code doesn't fit, and previews add / deactivate", async () => {
+    const calls = renderEntityPage(entityResponse({ type: "person", identifiers: cards }), settings);
+    await screen.findByRole("region", { name: "Cards (last 4 digits)" });
+    fireEvent.change(screen.getByLabelText("Requisite kind"), { target: { value: "tax_id" } });
+    fireEvent.change(screen.getByLabelText("Requisite value"), { target: { value: "14360570" } });
+    expect(screen.getByText(/looks like an EDRPOU/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Requisite value"), { target: { value: "3123456789" } });
+    fireEvent.change(screen.getByLabelText("New requisite label"), { target: { value: "ІПН" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Add…" }).at(-1)!);
+    await waitFor(() => expect(calls.some((c) => c.body?.op === "identifiers" && (c.body.add as Array<{ kind: string; value: string; label: string }>)?.[0]?.value === "3123456789")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Deactivate" })[0]); // IBAN accounts come first for a person
+    await waitFor(() => expect(calls.some((c) => c.body?.op === "identifiers" && JSON.stringify(c.body.deactivate) === "[3]")).toBe(true));
+  });
+
+  it("a company gets EDRPOU and no ІПН", async () => {
+    renderEntityPage(entityResponse({ type: "company", identifiers: [] }), settings);
+    await screen.findByText("Requisites");
+    const kinds = [...(screen.getByLabelText("Requisite kind") as HTMLSelectElement).options].map((o) => o.value);
+    expect(kinds).toContain("edrpou");
+    expect(kinds).not.toContain("tax_id");
+  });
+});
+

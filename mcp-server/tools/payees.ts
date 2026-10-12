@@ -51,6 +51,7 @@ import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
 import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
+import { mineIdentifiers, proposeMined } from "../../src/lib/payees/mine";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
 
 const ymdArg = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
@@ -109,7 +110,16 @@ function entityOut(e: PayeeEntity) {
     ...(e.note ? { note: e.note } : {}),
     default_category_id: e.defaultCategoryId,
     aliases: e.aliases.map((a) => ({ alias_id: a.id, pattern: a.pattern, mode: a.mode, source: a.source })),
-    identifiers: e.identifiers.map((i) => ({ identifier_id: i.id, kind: i.kind, value: maskIdentifier(i.kind, i.value) })),
+    identifiers: e.identifiers.map((i) => ({
+      identifier_id: i.id,
+      kind: i.kind,
+      value: maskIdentifier(i.kind, i.value),
+      ...(i.label ? { label: i.label } : {}),
+      ...(i.bank ? { bank: i.bank } : {}),
+      ...(i.currency ? { currency: i.currency } : {}),
+      ...(i.isPrimary ? { primary: true } : {}),
+      ...(i.isActive ? {} : { inactive: true }),
+    })),
   };
 }
 
@@ -291,6 +301,13 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     }
   }
 
+  const identifierDetailsArgs = {
+    label: z.string().max(60).nullable().optional().describe("e.g. \"Mono black\", \"rent account\"."),
+    bank: z.string().max(60).nullable().optional(),
+    currency: z.string().max(3).nullable().optional().describe("ISO code, e.g. UAH."),
+    is_primary: z.boolean().optional(),
+    is_active: z.boolean().optional(),
+  };
   const tokenArg = z
     .string()
     .optional()
@@ -311,7 +328,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, mine_identifiers, dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -377,7 +394,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       z.object({
         op: z.literal("identifiers"),
         entity_id: z.number().int().positive(),
-        add: identifierArg,
+        add: z
+          .array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string(), ...identifierDetailsArgs }))
+          .optional()
+          .describe("Requisites to add. tax_id = ІПН/РНОКПП, 10 digits (people / ФОП); edrpou = 8 digits (legal entities); card_last4 keeps the last 4 digits only. A failed check digit is a warning, not a refusal."),
+        update: z.array(z.object({ identifier_id: z.number().int().positive(), ...identifierDetailsArgs })).optional().describe("Change label / bank / currency / is_primary / is_active of existing requisites."),
+        deactivate: z.array(z.number().int().positive()).optional().describe("identifier_id values to mark inactive (kept for history and search)."),
         remove: z.array(z.number().int().positive()).optional().describe("identifier_id values to remove."),
         confirmation_token: tokenArg,
       }),
@@ -440,6 +462,14 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         content: z.string().min(1).max(5_000_000).describe("A finlynq-payee-dictionary file (JSON or YAML)."),
         resolutions: z.record(z.string(), z.string()).optional().describe("Per conflicting entry index: \"skip\" or \"merge:<entity_id>\" (from the preview)."),
         confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("mine_identifiers"),
+        limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 100)."),
+      }),
+      z.object({
+        op: z.literal("propose_identifiers"),
+        refs: z.array(z.string()).min(1).max(200).describe("`ref` values from mine_identifiers (suggestions or links)."),
       }),
       z.object({
         op: z.literal("lookalikes"),
@@ -534,9 +564,63 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return await writeOp({ op: "alias_add", entityId: input.entity_id, aliases: toAliases(input.aliases), apply: input.apply }, input.confirmation_token);
           case "alias_remove":
             return await writeOp({ op: "alias_remove", entityId: input.entity_id, aliasIds: input.alias_ids, patterns: input.patterns }, input.confirmation_token);
-          case "identifiers":
-            if (!input.add?.length && !input.remove?.length) return await opEntity(input.entity_id);
-            return await writeOp({ op: "identifiers", entityId: input.entity_id, add: input.add, remove: input.remove }, input.confirmation_token);
+          case "identifiers": {
+            if (!input.add?.length && !input.remove?.length && !input.update?.length && !input.deactivate?.length) return await opEntity(input.entity_id);
+            const det = (d: { label?: string | null; bank?: string | null; currency?: string | null; is_primary?: boolean; is_active?: boolean }) => ({
+              label: d.label,
+              bank: d.bank,
+              currency: d.currency,
+              isPrimary: d.is_primary,
+              isActive: d.is_active,
+            });
+            return await writeOp(
+              {
+                op: "identifiers",
+                entityId: input.entity_id,
+                add: input.add?.map((a) => ({ kind: a.kind, value: a.value, ...det(a) })),
+                update: input.update?.map((u) => ({ id: u.identifier_id, ...det(u) })),
+                deactivate: input.deactivate,
+                remove: input.remove,
+              },
+              input.confirmation_token,
+            );
+          }
+          case "mine_identifiers": {
+            if (!dek) return err("Unlock required: payees and notes are encrypted.");
+            const directory = await loadDirectory(db, userId, dek);
+            const r = await mineIdentifiers({ executor: db, userId, dek, matcher: buildPayeeMatcher(directory), directory, limit: input.limit ?? 100 });
+            return dataResponse({
+              suggestions: r.suggestions.map((x) => ({
+                ref: x.ref,
+                payee: x.counterparty.name,
+                ...(x.counterparty.entityId != null ? { entity_id: x.counterparty.entityId } : {}),
+                kind: x.kind,
+                value: x.masked,
+                ...(x.valid ? {} : { checkDigitWarning: true }),
+                strength: x.kind === "card_last4" ? "weak" : "strong",
+                rows: x.rows,
+                firstDate: x.firstDate,
+                lastDate: x.lastDate,
+                ...(x.ownedBy.length ? { alsoOn: x.ownedBy } : {}),
+                example: x.example,
+              })),
+              links: r.links.map((l) => ({ ref: l.ref, payee: l.payee, looksLike: { entity_id: l.entity.id, name: l.entity.name }, via: l.via, rows: l.rows })),
+              scanned: r.scanned,
+              truncated: r.truncated,
+              howTo: "Values are masked. To keep some, call op=propose_identifiers refs=[…] — they become DRAFT proposals the user approves (AI review page or op=approve). A card's last 4 digits are weak evidence: never treat them as proof on their own.",
+            });
+          }
+          case "propose_identifiers": {
+            if (!dek) return err("Unlock required: proposals are stored encrypted.");
+            const directory = await loadDirectory(db, userId, dek);
+            const r = await mineIdentifiers({ executor: db, userId, dek, matcher: buildPayeeMatcher(directory), directory, limit: 5000 });
+            const res = await proposeMined({ executor: db, userId, dek, report: r, refs: input.refs, source: "mcp" });
+            return dataResponse({
+              saved: res.saved.map((x) => ({ proposal_id: x.id, canonical: x.canonical, ...(x.notes.length ? { notes: x.notes } : {}) })),
+              ...(res.rejected.length ? { rejected: res.rejected } : {}),
+              ...(res.missing.length ? { missing: res.missing, note: "Some refs no longer match (the data changed); re-run op=mine_identifiers." } : {}),
+            });
+          }
           case "merge": {
             let payees = input.payees ?? [];
             if (input.cluster_ids?.length) {

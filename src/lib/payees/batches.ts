@@ -81,7 +81,7 @@ async function snapshot(tx: PayeeExecutor, userId: string, ids: number[]): Promi
   return {
     entities: await q(sql`SELECT id, name, type, note, default_category_id, website, logo, created_at, updated_at FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(ids)}) FOR UPDATE`),
     aliases: await q(sql`SELECT id, entity_id, pattern, mode, key_hash, source, created_at FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
-    identifiers: await q(sql`SELECT id, entity_id, kind, value, created_at FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
+    identifiers: await q(sql`SELECT id, entity_id, kind, value, label, bank, currency, is_primary, is_active, created_at FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
   };
 }
 
@@ -376,8 +376,11 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       }
       for (const i of undo.before.identifiers) {
         await tx.execute(sql`
-          INSERT INTO payee_identifiers (id, user_id, entity_id, kind, value, created_at)
-          VALUES (${Number(i.id)}, ${userId}, ${Number(i.entity_id)}, ${i.kind as string}, ${i.value as string}, ${i.created_at as string}::timestamptz)`);
+          INSERT INTO payee_identifiers (id, user_id, entity_id, kind, value, label, bank, currency, is_primary, is_active, created_at)
+          VALUES (${Number(i.id)}, ${userId}, ${Number(i.entity_id)}, ${i.kind as string}, ${i.value as string},
+                  ${(i.label as string | null) ?? null}, ${(i.bank as string | null) ?? null}, ${(i.currency as string | null) ?? null},
+                  ${i.is_primary === true || i.is_primary === "t"}, ${!(i.is_active === false || i.is_active === "f")},
+                  ${i.created_at as string}::timestamptz)`);
       }
     }
     await tx.execute(sql`UPDATE payee_batches SET undone_at = NOW() WHERE id = ${batchId} AND user_id = ${userId}`);

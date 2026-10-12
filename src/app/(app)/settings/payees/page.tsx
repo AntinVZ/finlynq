@@ -30,7 +30,7 @@
  * "Explain" says why two payees are (not) clustered.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
@@ -41,7 +41,6 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowDown, ArrowUp, Search, Settings2 } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
 import { containsNormalized } from "@/lib/text-normalize";
-import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import {
   batchLabel,
   confidenceBadge,
@@ -60,10 +59,11 @@ import { StudioSettingsDialog } from "./_components/settings-dialog";
 import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
 import { LookalikesPanel } from "./_components/lookalikes-panel";
+import { MinePanel } from "./_components/mine-panel";
 
 const PAGE_SIZES = [25, 50] as const;
 
-type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "changes" | "insights";
+type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "requisites" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
@@ -73,7 +73,7 @@ type Action =
 
 export default function PayeesSettingsPage() {
   const [tabChoice, setTab] = useState<Tab | null>(null);
-  const [page, setPage] = useState(0);
+  const [pageState, setPageState] = useState({ key: "", page: 0 });
   const [pageSize, setPageSize] = useState<number>(25);
   const [drawer, setDrawer] = useState<PayeeGroupRow | null>(null);
   const [explain, setExplain] = useState<{ a: string; b: string } | null>(null);
@@ -88,7 +88,10 @@ export default function PayeesSettingsPage() {
   const loadError = loadErr ? "Couldn't load payees." : "";
   // Open on Clusters when there are merge candidates, else on Unrecognized.
   const tab: Tab = tabChoice ?? (data && data.clusters.length === 0 ? "unrecognized" : "clusters");
-  useEffect(() => setPage(0), [tab, query, pageSize]);
+  // The page resets whenever the tab, the search or the page size changes.
+  const pageKey = `${tab}\u0000${query}\u0000${pageSize}`;
+  const page = pageState.key === pageKey ? pageState.page : 0;
+  const setPage = (fn: (p: number) => number) => setPageState({ key: pageKey, page: fn(page) });
   const currency = data?.currency ?? "USD";
   const entities = useMemo(() => data?.entities ?? [], [data]);
   const entityOptions = useMemo(() => entities.map((e) => ({ id: e.id, name: e.name, type: e.type })), [entities]);
@@ -237,6 +240,7 @@ export default function PayeesSettingsPage() {
     { id: "lookalikes", label: `Look-alikes${data ? ` (${data.lookalikeCount ?? 0})` : ""}` },
     { id: "unrecognized", label: `Unrecognized${data ? ` (${unrecognizedCount})` : ""}` },
     { id: "directory", label: `Directory${data ? ` (${entities.length})` : ""}` },
+    { id: "requisites", label: "Requisites" },
     { id: "changes", label: "Changes" },
     { id: "insights", label: "Insights" },
   ];
@@ -359,6 +363,10 @@ export default function PayeesSettingsPage() {
             <InsightsPanel />
           ) : tab === "lookalikes" ? (
             <LookalikesPanel onChanged={() => mutate()} />
+          ) : tab === "requisites" ? (
+            <div className="space-y-6">
+              <MinePanel onSaved={() => mutate()} />
+            </div>
           ) : tab === "clusters" ? (
             clusters.length === 0 ? (
               <p className="text-sm text-muted-foreground">{query ? "No clusters match." : "No look-alike payees found."}</p>

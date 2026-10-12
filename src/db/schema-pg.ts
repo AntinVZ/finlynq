@@ -2091,6 +2091,12 @@ export const payeeIdentifiers = pgTable("payee_identifiers", {
   entityId: integer("entity_id").notNull().references(() => payeeEntities.id, { onDelete: "cascade" }),
   kind: text("kind").notNull(),
   value: text("value").notNull(),
+  // P5f (20261012_payee_identifier_details.sql): encrypted label / bank, plain currency + flags.
+  label: text("label"),
+  bank: text("bank"),
+  currency: text("currency"),
+  isPrimary: boolean("is_primary").notNull().default(false),
+  isActive: boolean("is_active").notNull().default(true),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   index("payee_identifiers_entity_idx").on(t.entityId),

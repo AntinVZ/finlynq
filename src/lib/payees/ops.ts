@@ -28,15 +28,18 @@ import {
   IDENTIFIER_KINDS,
   insertAlias,
   insertEntity,
+  identifierWarnings,
   insertIdentifier,
   loadDirectory,
   maskIdentifier,
   normalizeIdentifier,
   PayeeDirectoryError,
   updateEntityRow,
+  updateIdentifierRow,
   validateAlias,
   validateEntityName,
   type AliasMode,
+  type IdentifierDetails,
   type IdentifierKind,
   type PayeeEntity,
 } from "./directory";
@@ -50,7 +53,9 @@ import type { PayeeExecutor } from "./scan";
 import { invalidatePayeeSuggest } from "./suggest";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
-export type IdentifierInput = { kind: IdentifierKind; value: string };
+export type IdentifierInput = { kind: IdentifierKind; value: string } & IdentifierDetails;
+/** P5f: change an existing requisite's details (not its value). */
+export type IdentifierUpdate = { id: number } & IdentifierDetails;
 
 export type PayeeOp =
   | { op: "create"; name: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; aliases?: AliasInput[]; identifiers?: IdentifierInput[]; apply?: boolean }
@@ -59,7 +64,7 @@ export type PayeeOp =
   | { op: "alias_add"; entityId: number; aliases: AliasInput[]; apply?: boolean }
   | { op: "alias_remove"; entityId: number; aliasIds?: number[]; patterns?: string[] }
   | { op: "alias_from_rule"; ruleId: number; entityId?: number; apply?: boolean }
-  | { op: "identifiers"; entityId: number; add?: IdentifierInput[]; remove?: number[] }
+  | { op: "identifiers"; entityId: number; add?: IdentifierInput[]; update?: IdentifierUpdate[]; deactivate?: number[]; remove?: number[] }
   | { op: "merge"; into: { entityId: number } | { name: string; type?: PayeeType }; entityIds?: number[]; payees?: string[]; apply?: boolean }
   | { op: "split"; entityId: number; aliasIds: number[]; name: string; type?: PayeeType; apply?: boolean }
   | { op: "apply"; entityIds?: number[] }
@@ -89,6 +94,8 @@ export type PayeeOpResult = {
   aliasesRemoved: number;
   identifiersAdded: Array<{ kind: IdentifierKind; masked: string }>;
   identifiersRemoved: number;
+  /** P5f: requisites whose details changed (incl. deactivated). */
+  identifiersUpdated: number;
   entitiesRemoved: number;
   rows: {
     total: number;
@@ -120,6 +127,27 @@ function entityOf(entities: PayeeEntity[], id: number): PayeeEntity {
 }
 
 const PERSON_ENTITY_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
+
+/** Trim / validate requisite details: label and bank ≤ 60 chars, currency a 3-letter ISO code. */
+function cleanIdentifierDetails(d: IdentifierDetails): IdentifierDetails {
+  const out: IdentifierDetails = {};
+  const text = (v: string | null | undefined, what: string) => {
+    if (v == null) return null;
+    const t = v.replace(/\s+/g, " ").trim();
+    if (t.length > 60) throw new PayeeDirectoryError(`The ${what} is too long (60 characters max).`);
+    return t || null;
+  };
+  if (d.label !== undefined) out.label = text(d.label, "label");
+  if (d.bank !== undefined) out.bank = text(d.bank, "bank name");
+  if (d.currency !== undefined) {
+    const c = d.currency?.trim().toUpperCase() || null;
+    if (c && !/^[A-Z]{3}$/.test(c)) throw new PayeeDirectoryError("The currency is a 3-letter code (UAH, USD, EUR…).");
+    out.currency = c;
+  }
+  if (d.isPrimary !== undefined) out.isPrimary = d.isPrimary;
+  if (d.isActive !== undefined) out.isActive = d.isActive;
+  return out;
+}
 
 const asType = (t: string | undefined, fallbackName: string): PayeeType =>
   t && (PAYEE_TYPES as readonly string[]).includes(t) ? (t as PayeeType) : guessPayeeType(fallbackName).type;
@@ -185,6 +213,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     aliasesRemoved: 0,
     identifiersAdded: [],
     identifiersRemoved: 0,
+    identifiersUpdated: 0,
     entitiesRemoved: undo.removedEntities,
     rows: { ...emptyRows(), total: undo.restoredRows },
     undo,
@@ -212,6 +241,7 @@ async function runOp(
     aliasesRemoved: 0,
     identifiersAdded: [],
     identifiersRemoved: 0,
+    identifiersUpdated: 0,
     entitiesRemoved: 0,
     rows: emptyRows(),
     warnings: [],
@@ -243,15 +273,19 @@ async function runOp(
         journal.count("aliases_added");
       }
     };
-    const addIdentifiers = async (entityId: number, ids: IdentifierInput[]) => {
+    const addIdentifiers = async (entityId: number, ids: IdentifierInput[], entityType?: PayeeType) => {
       const self = entities.find((e) => e.id === entityId);
+      const type = entityType ?? self?.type ?? "other";
       for (const i of ids) {
         if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(`Unknown identifier kind "${i.kind}".`);
         const value = normalizeIdentifier(i.kind, i.value);
         if (self?.identifiers.some((x) => x.kind === i.kind && x.value === value)) continue;
         if (out.identifiersAdded.some((x) => x.kind === i.kind && x.masked === maskIdentifier(i.kind, value))) continue;
-        await insertIdentifier(btx, userId, dek, { entityId, kind: i.kind, value });
+        const details = cleanIdentifierDetails(i);
+        if (details.isPrimary) await btx.execute(sql`UPDATE payee_identifiers SET is_primary = false WHERE user_id = ${userId} AND entity_id = ${entityId} AND kind = ${i.kind}`);
+        await insertIdentifier(btx, userId, dek, { entityId, kind: i.kind, value, ...details });
         out.identifiersAdded.push({ kind: i.kind, masked: maskIdentifier(i.kind, value) });
+        for (const w of identifierWarnings(i.kind, value, type)) if (!out.warnings.includes(w)) out.warnings.push(w);
         journal.count("identifiers_added");
       }
     };
@@ -278,7 +312,7 @@ async function runOp(
           case "create": {
             const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId, website: op.website });
             await addAliases(id, op.aliases ?? [], src("manual"));
-            await addIdentifiers(id, op.identifiers ?? []);
+            await addIdentifiers(id, op.identifiers ?? [], out.entity!.type);
             if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
               out.warnings.push(`"${op.name}" looks like a private person; check the type.`);
             }
@@ -391,13 +425,33 @@ async function runOp(
             const e = entityOf(entities, op.entityId);
             await journal.willModify([e.id]);
             await addIdentifiers(e.id, op.add ?? []);
+            const own = (id: number) => {
+              const i = e.identifiers.find((x) => x.id === id);
+              if (!i) throw new PayeeDirectoryError(`Requisite #${id} doesn't belong to this payee.`, "not_found");
+              return i;
+            };
+            for (const u of op.update ?? []) {
+              const cur = own(u.id);
+              const details = cleanIdentifierDetails(u);
+              if (details.isPrimary) await btx.execute(sql`UPDATE payee_identifiers SET is_primary = false WHERE user_id = ${userId} AND entity_id = ${e.id} AND kind = ${cur.kind} AND id <> ${cur.id}`);
+              await updateIdentifierRow(btx, userId, dek, cur.id, details);
+              out.identifiersUpdated++;
+              journal.count("identifiers_updated");
+            }
+            for (const id of op.deactivate ?? []) {
+              const cur = own(id);
+              if (!cur.isActive) continue;
+              await updateIdentifierRow(btx, userId, dek, cur.id, { isActive: false, isPrimary: false });
+              out.identifiersUpdated++;
+              journal.count("identifiers_deactivated");
+            }
             const remove = (op.remove ?? []).filter((id) => e.identifiers.some((i) => i.id === id));
             if (remove.length) {
               await btx.execute(sql`DELETE FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(remove.map((i) => sql`${i}`), sql`, `)})`);
               out.identifiersRemoved = remove.length;
               journal.count("identifiers_removed", remove.length);
             }
-            if (!out.identifiersAdded.length && !remove.length) throw new PayeeDirectoryError("Nothing to add or remove.");
+            if (!out.identifiersAdded.length && !remove.length && !out.identifiersUpdated) throw new PayeeDirectoryError("Nothing to add, change or remove.");
             out.entity = { id: e.id, name: e.name, type: e.type };
             break;
           }
@@ -568,7 +622,7 @@ async function runOp(
         if (fresh) out.entity = { id: fresh.id, name: fresh.name, type: fresh.type };
       }
     }
-    if (!out.fingerprint) out.fingerprint = `${root.op}:${out.entity?.id ?? ""}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.entitiesRemoved}`;
+    if (!out.fingerprint) out.fingerprint = `${root.op}:${out.entity?.id ?? ""}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
   });
   out.batchId = batchId;
   return out;
