@@ -57,6 +57,8 @@ export const MCP_READ_OPS: ReadonlySet<string> = new Set([
   "dictionary_export",
   "mine_identifiers",
   "whose",
+  "suspicious",
+  "own_accounts",
 ]);
 
 /** `op` as a safe label, or null (never echoes free text from the arguments). */

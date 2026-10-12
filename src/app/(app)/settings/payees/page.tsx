@@ -59,6 +59,7 @@ import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog"
 import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
+import { OwnAccountsPanel } from "./_components/own-accounts-panel";
 import { useStudioT, type StudioT } from "./_components/i18n";
 import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
@@ -278,6 +279,11 @@ export default function PayeesSettingsPage() {
           {t("page.bankOp")}
         </Badge>
       )}
+      {g.ownAccount && (
+        <Badge variant="outline" className="text-[10px]" title={t("own.badgeTitle", { account: g.ownAccount })}>
+          {t("own.badge")}
+        </Badge>
+      )}
       {g.brand?.typeOnly && !g.bankOperation && (
         <Badge variant="outline" className="text-[10px]" title={t("page.noBrandTitle", { words: g.brand.removed.join(", ") })}>
           {t("page.noBrand")}
@@ -468,6 +474,7 @@ export default function PayeesSettingsPage() {
             <LookalikesPanel onChanged={() => mutate()} />
           ) : tab === "requisites" ? (
             <div className="space-y-6">
+              <OwnAccountsPanel onChanged={() => mutate()} />
               <WhosePanel onChanged={() => mutate()} />
               <MinePanel onSaved={() => mutate()} />
             </div>

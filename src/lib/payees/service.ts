@@ -14,6 +14,7 @@ import { getPayeeSettings, vocabularyOf } from "./settings";
 import type { PayeeVocabulary } from "./type-words";
 import { entityMerchantTypeHints, loadMerchantTypes, type EntityTypeHint, type MerchantType, type MerchantTypeRef } from "./merchant-types";
 import { listSuspicious, type SuspiciousEntry } from "./suspicious";
+import { describeOwnAccount, loadOwnMatcher, type OwnMatcher } from "./own-accounts";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -66,6 +67,8 @@ export type PayeeOverview = {
   vocab: PayeeVocabulary;
   /** P6: the merchant-type dictionary (the virtual starting set when the user has none). */
   merchantTypes: MerchantType[];
+  /** P6.2 (76): the user's own accounts / cards. */
+  own: OwnMatcher;
 };
 
 /** Scan, group and cluster every payee of a user, resolved against the directory. */
@@ -87,6 +90,8 @@ export async function loadPayeeOverview(opts: {
   const matcher = buildPayeeMatcher(directory);
   const vocab = vocabularyOf(await getPayeeSettings(executor, userId));
   const merchantTypes = await loadMerchantTypes(executor, userId);
+  const own = await loadOwnMatcher(executor, userId, dek);
+  const directoryById = new Map(directory.map((e) => [e.id, e]));
   const typeById = new Map(merchantTypes.filter((t) => t.id != null).map((t) => [t.id!, t]));
   const resolveEntity: EntityResolver =
     opts.resolveEntity ??
@@ -100,6 +105,12 @@ export async function loadPayeeOverview(opts: {
     convert,
     resolveEntity,
     vocab,
+    own,
+    ownOfEntity: (id) => {
+      const e = directoryById.get(id);
+      const hit = e ? own.forEntity(e) : null;
+      return hit ? describeOwnAccount(hit) : null;
+    },
   });
   const totals = new Map<number, { count: number; total: number; lastDate: string | null }>();
   for (const g of groups) {
@@ -150,6 +161,7 @@ export async function loadPayeeOverview(opts: {
     undecryptable: scan.undecryptable,
     vocab,
     merchantTypes,
+    own,
   };
 }
 
@@ -202,10 +214,11 @@ export async function loadMerchantAnalytics(opts: {
   const { executor, userId, dek } = opts;
   const display = opts.currency ?? (await getDisplayCurrency(userId));
   const vocab = vocabularyOf(await getPayeeSettings(executor, userId));
-  const [rateMap, directory, names] = await Promise.all([
+  const [rateMap, directory, names, own] = await Promise.all([
     getRateMap(display, userId),
     dek ? loadDirectory(executor, userId, dek) : Promise.resolve([]),
     loadPayeeNameMaps(executor, userId, dek),
+    loadOwnMatcher(executor, userId, dek),
   ]);
   return computeMerchantAnalytics({
     executor,
@@ -223,6 +236,7 @@ export async function loadMerchantAnalytics(opts: {
     asOf: opts.asOf,
     categoryNames: names.categories,
     vocab,
+    own,
   });
 }
 

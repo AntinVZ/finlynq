@@ -11,7 +11,9 @@
  *   - `rows`: for every rewritten payee, the table, row id and the stored
  *     value before and after (ciphertext — the blob is encrypted anyway);
  *   - `types` (P6): merchant-type rows before the batch changed / removed
- *     them, and the ids it created.
+ *     them, and the ids it created;
+ *   - `own` (P6.2): own account / card rows (ciphertext) before the batch
+ *     changed / removed them, and the ids it created.
  * `summary` (plain JSONB) holds counts only — never names or payees.
  *
  * Undo:
@@ -52,7 +54,7 @@ export type RowChange = {
   cols?: Partial<Record<ExtraColumn, { old: string | null; new: string | null }>>;
 };
 export type ExtraColumn = "tags" | "note";
-type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[]; types?: { before: StoredRow[]; created: number[] } };
+type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[]; types?: { before: StoredRow[]; created: number[] }; own?: { before: StoredRow[]; created: number[] } };
 
 export class PayeeBatchError extends Error {
   constructor(message: string, public readonly code: string = "invalid") {
@@ -97,6 +99,9 @@ export class PayeeBatchJournal {
   private readonly typesBefore: StoredRow[] = [];
   private readonly typesSnapped = new Set<number>();
   readonly typesCreated: number[] = [];
+  private readonly ownBefore: StoredRow[] = [];
+  private readonly ownSnapped = new Set<number>();
+  readonly ownCreated: number[] = [];
 
   constructor(private readonly tx: PayeeExecutor, private readonly userId: string) {}
 
@@ -134,6 +139,25 @@ export class PayeeBatchJournal {
     return this.typesSnapped.size > 0 || this.typesCreated.length > 0;
   }
 
+  /** P6.2: snapshot own account rows before the first change to them. Idempotent. */
+  async willModifyOwn(ids: Iterable<number>): Promise<void> {
+    const fresh = [...new Set(ids)].filter((id) => !this.ownSnapped.has(id) && !this.ownCreated.includes(id));
+    if (!fresh.length) return;
+    const rows = normalizeDbRows<StoredRow>(
+      await this.tx.execute(sql`SELECT id, iban, card_last4, bank, label, currency, owner, created_at FROM payee_own_accounts WHERE user_id = ${this.userId} AND id = ANY(${idList(fresh)}) FOR UPDATE`),
+    ).map(toJsonRow);
+    for (const id of fresh) this.ownSnapped.add(id);
+    this.ownBefore.push(...rows);
+  }
+
+  createdOwn(id: number): void {
+    this.ownCreated.push(id);
+  }
+
+  get touchedOwn(): boolean {
+    return this.ownSnapped.size > 0 || this.ownCreated.length > 0;
+  }
+
   rowChanged(change: RowChange): void {
     this.rows.push(change);
   }
@@ -154,6 +178,7 @@ export class PayeeBatchJournal {
       created: [...this.created],
       rows: this.rows,
       ...(this.typesBefore.length || this.typesCreated.length ? { types: { before: this.typesBefore, created: [...this.typesCreated] } } : {}),
+      ...(this.ownBefore.length || this.ownCreated.length ? { own: { before: this.ownBefore, created: [...this.ownCreated] } } : {}),
     };
   }
 }
@@ -172,7 +197,7 @@ export async function runPayeeBatch<T>(
   return inTransaction(opts.executor, async (tx) => {
     const journal = new PayeeBatchJournal(tx, userId);
     const result = await body(tx, journal);
-    if (journal.rows.length === 0 && journal.entityIds.length === 0 && !journal.touchedTypes) return { result, batchId: null };
+    if (journal.rows.length === 0 && journal.entityIds.length === 0 && !journal.touchedTypes && !journal.touchedOwn) return { result, batchId: null };
     const summary = { ...journal.summary, rows: journal.rows.length };
     const undo = encryptField(dek, JSON.stringify(journal.undoData()));
     const rows = normalizeDbRows<{ id: unknown }>(
@@ -432,6 +457,18 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       await tx.execute(sql`
         DELETE FROM payee_merchant_types t WHERE t.user_id = ${userId} AND t.id = ANY(${idList(createdTypes)})
           AND NOT EXISTS (SELECT 1 FROM payee_entities e WHERE e.merchant_type_id = t.id)`);
+    }
+    // 3. Own accounts / cards (P6.2): drop the created rows, bring back the changed / removed ones.
+    if (undo.own?.created.length) {
+      await tx.execute(sql`DELETE FROM payee_own_accounts WHERE user_id = ${userId} AND id = ANY(${idList(undo.own.created)})`);
+    }
+    for (const o of undo.own?.before ?? []) {
+      await tx.execute(sql`
+        INSERT INTO payee_own_accounts (id, user_id, iban, card_last4, bank, label, currency, owner, created_at)
+        VALUES (${Number(o.id)}, ${userId}, ${(o.iban as string | null) ?? null}, ${(o.card_last4 as string | null) ?? null}, ${(o.bank as string | null) ?? null},
+                ${(o.label as string | null) ?? null}, ${(o.currency as string | null) ?? null}, ${o.owner as string}, ${o.created_at as string}::timestamptz)
+        ON CONFLICT (id) DO UPDATE SET iban = EXCLUDED.iban, card_last4 = EXCLUDED.card_last4, bank = EXCLUDED.bank, label = EXCLUDED.label,
+          currency = EXCLUDED.currency, owner = EXCLUDED.owner`);
     }
     await tx.execute(sql`UPDATE payee_batches SET undone_at = NOW() WHERE id = ${batchId} AND user_id = ${userId}`);
     // AI proposals approved by this batch go back to draft.

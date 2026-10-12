@@ -993,6 +993,7 @@ async function deleteAllUserDataTx(tx: TxClient, userId: string) {
   await tx.delete(s.payeeAliases).where(eq(s.payeeAliases.userId, userId));
   await tx.delete(s.payeeIdentifiers).where(eq(s.payeeIdentifiers.userId, userId));
   await tx.delete(s.payeeEntities).where(eq(s.payeeEntities.userId, userId));
+  await tx.delete(s.payeeOwnAccounts).where(eq(s.payeeOwnAccounts.userId, userId));
   await tx.delete(s.payeeMerchantTypes).where(eq(s.payeeMerchantTypes.userId, userId));
   await tx.delete(s.payeeBatches).where(eq(s.payeeBatches.userId, userId));
   await tx.delete(s.payeeProposals).where(eq(s.payeeProposals.userId, userId));

@@ -23,6 +23,7 @@ import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { computePayeeInsights } from "@/lib/payees/insights";
 import { getPayeeSettings, vocabularyOf } from "@/lib/payees/settings";
 import { loadMerchantAnalytics, makeSliceConverter } from "@/lib/payees/service";
+import { loadOwnMatcher } from "@/lib/payees/own-accounts";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const dateParam = (v: string | null) => (v && DATE_RE.test(v) ? v : null);
@@ -68,6 +69,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     months: intParam(params.get("months"), 12),
     recentDays: intParam(params.get("recentDays"), 90),
     vocab: vocabularyOf(await getPayeeSettings(db, userId)),
+    own: await loadOwnMatcher(db, userId, dek),
   });
   return NextResponse.json(insights);
 });

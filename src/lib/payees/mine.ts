@@ -15,6 +15,10 @@
  *     a suggestion to add that spelling as an alias of X (never applied by
  *     itself). A card's last 4 digits are too weak for this.
  *
+ * P6.2 (76): a requisite from "Мої рахунки і картки" (own IBAN / card) is
+ * never suggested — payments to it are transfers between own accounts;
+ * `ownSkipped` counts the distinct own requisites left out.
+ *
  * Everything returned is masked (IBAN edges, ІПН last 2, card last 4); an
  * example row is shown through `maskSensitiveText`. The full values stay in
  * memory and are only used to store DRAFT proposals (`proposeMined`), which
@@ -29,6 +33,7 @@ import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { extractRequisites, maskSensitiveText, type RequisiteKind } from "./requisites";
 import { maskIdentifier, type PayeeEntity, type PayeeMatcher } from "./directory";
 import { saveProposals, type ProposalInput } from "./proposals";
+import { loadOwnMatcher, type OwnMatcher } from "./own-accounts";
 
 export const MINE_BATCH = 2_000;
 export const MINE_MAX_ROWS = 250_000;
@@ -65,6 +70,8 @@ export type MineReport = {
   links: MinedLink[];
   scanned: { transactions: number; bank: number };
   truncated: boolean;
+  /** P6.2: distinct own requisites (own accounts / cards) found and left out. */
+  ownSkipped: number;
 };
 
 type Internal = { s: MinedSuggestion; value: string };
@@ -86,6 +93,8 @@ export async function mineIdentifiers(opts: {
   directory: PayeeEntity[];
   limit?: number;
   maxRows?: number;
+  /** Own accounts / cards (loaded when absent). */
+  own?: OwnMatcher;
 }): Promise<MineReport & { internal: Map<string, Internal>; linkValues: Map<string, { payee: string; entityId: number }> }> {
   const { executor, userId, dek, matcher, directory } = opts;
   const maxRows = opts.maxRows ?? MINE_MAX_ROWS;
@@ -96,6 +105,8 @@ export async function mineIdentifiers(opts: {
     list.push({ id: e.id, name: e.name });
     owners.set(k, list);
   }
+  const ownMatcher = opts.own ?? (await loadOwnMatcher(executor, userId, dek));
+  const ownSeen = new Set<string>();
   const found = new Map<string, Internal>();
   const links = new Map<string, MinedLink>();
   const linkValues = new Map<string, { payee: string; entityId: number }>();
@@ -127,6 +138,10 @@ export async function mineIdentifiers(opts: {
         const cp = m.kind === "match" ? { entityId: m.entityId, name: m.name, key } : { entityId: null, name: spelling || "(no payee)", key };
         const date = r.date == null ? null : String(r.date).slice(0, 10);
         for (const q of reqs) {
+          if (ownMatcher.byValue(q.kind, q.value)) {
+            ownSeen.add(`${q.kind}:${q.value}`);
+            continue;
+          }
           const own = owners.get(`${q.kind}:${q.value}`) ?? [];
           // Strong requisite owned by another entry than the one the payee resolves to → link suggestion.
           if (STRONG.has(q.kind) && own.length === 1 && own[0].id !== cp.entityId && spelling) {
@@ -182,6 +197,7 @@ export async function mineIdentifiers(opts: {
     links: [...links.values()].sort((a, b) => b.rows - a.rows).slice(0, limit),
     scanned,
     truncated,
+    ownSkipped: ownSeen.size,
     internal: found,
     linkValues,
   };
@@ -189,7 +205,7 @@ export async function mineIdentifiers(opts: {
 
 /** Public view of a mining run (no full values, no internals). */
 export function mineReportOut(r: Awaited<ReturnType<typeof mineIdentifiers>>): MineReport {
-  return { suggestions: r.suggestions, links: r.links, scanned: r.scanned, truncated: r.truncated };
+  return { suggestions: r.suggestions, links: r.links, scanned: r.scanned, truncated: r.truncated, ownSkipped: r.ownSkipped };
 }
 
 /**

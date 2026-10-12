@@ -43,6 +43,8 @@ export type OpPreview = {
   /** P6.2: entries a type word reached but left alone (alias-only match, mixed hints). */
   skipped?: Array<{ id: number; name: string; reason: string }>;
   merchantTypes?: { added: string[]; updated: string[]; removed: string[] };
+  /** P6.2: own accounts / cards changed (masked descriptions). */
+  ownAccounts?: { added: string[]; updated: string[]; removed: string[] };
 };
 
 const TABLE_LABEL = { transactions: "op.inTransactions", recurring: "op.inRecurring", staged: "op.inStaged" } as const;
@@ -193,6 +195,9 @@ export function OpDialog({
               {preview.merchantTypes && preview.merchantTypes.added.length > 0 && <p className="text-xs text-muted-foreground">{t("op.typesAdded", { list: preview.merchantTypes.added.join(", ") })}</p>}
               {preview.merchantTypes && preview.merchantTypes.updated.length > 0 && <p className="text-xs text-muted-foreground">{t("op.typesUpdated", { list: preview.merchantTypes.updated.join(", ") })}</p>}
               {preview.merchantTypes && preview.merchantTypes.removed.length > 0 && <p className="text-xs text-muted-foreground">{t("op.typesRemoved", { list: preview.merchantTypes.removed.join(", ") })}</p>}
+              {preview.ownAccounts && preview.ownAccounts.added.length > 0 && <p className="text-xs">{t("own.added", { list: preview.ownAccounts.added.join("; ") })}</p>}
+              {preview.ownAccounts && preview.ownAccounts.updated.length > 0 && <p className="text-xs">{t("own.updated", { list: preview.ownAccounts.updated.join("; ") })}</p>}
+              {preview.ownAccounts && preview.ownAccounts.removed.length > 0 && <p className="text-xs">{t("own.removed", { list: preview.ownAccounts.removed.join("; ") })}</p>}
               {preview.rows.conflicts.length > 0 && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">
                   {t("op.conflicts", { list: preview.rows.conflicts.map((c) => `“${c.payee}”`).join(", ") })}

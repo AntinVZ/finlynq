@@ -14,6 +14,11 @@
  *                   interval, cadence label, next expected date
  *   - concentration: share of spend of the top 5 / top 10 and the HHI
  *
+ * P6.2 (76): transfers between the user's own accounts (a payee that
+ * mentions an own IBAN / card, or resolves to an entry holding one) are not
+ * merchants either: counted in `totals.ownTransfers`, out of the tops,
+ * the monthly split and concentration — like the bank's own rows.
+ *
  * Money is the signed sum of `transactions` in the display currency
  * (`convert`); "spend" is the net outflow (−total when negative). Read only;
  * only `transactions` is scanned (other tables mirror it).
@@ -21,6 +26,7 @@
 import { mergeSlices, scanPayees, type AmountSlice, type PayeeExecutor } from "./scan";
 import type { PayeeMatcher } from "./directory";
 import { bankOperationOf, type PayeeVocabulary } from "./type-words";
+import { EMPTY_OWN_MATCHER, type OwnMatcher } from "./own-accounts";
 import { formatMerchantType, merchantTypeFilter, type MerchantTypeRef } from "./merchant-types";
 
 export type Counterparty = {
@@ -48,7 +54,7 @@ export type PayeeInsights = {
   window: { months: number; from: string };
   currency: string;
   /** `bankOperations`: the bank's own service rows (P6, B25) — counted here, kept out of the tops and concentration. */
-  totals: { counterparties: number; transactions: number; spend: number; income: number; bankOperations: { transactions: number; spend: number } };
+  totals: { counterparties: number; transactions: number; spend: number; income: number; bankOperations: { transactions: number; spend: number }; ownTransfers: { transactions: number; spend: number } };
   topBySpend: Counterparty[];
   topByCount: Counterparty[];
   monthly: { months: string[]; series: Array<{ id: string; name: string; values: number[] }> };
@@ -124,7 +130,10 @@ export async function computePayeeInsights(opts: {
   merchantType?: string;
   /** P6: add `byMerchantType`, grouped by the type's group or position. */
   groupByMerchantType?: "group" | "position";
+  /** P6.2: own accounts / cards — transfers to them are not merchant spend. */
+  own?: OwnMatcher;
 }): Promise<PayeeInsights> {
+  const own = opts.own ?? EMPTY_OWN_MATCHER;
   const months = Math.min(Math.max(opts.months ?? 12, 1), 60);
   const recentDays = Math.min(Math.max(opts.recentDays ?? 90, 7), 730);
   const limit = Math.min(Math.max(opts.limit ?? 10, 1), 50);
@@ -154,8 +163,14 @@ export async function computePayeeInsights(opts: {
     lastDate: string | null;
     /** The bank's own service row (fee, own transfer, interest…). */
     bankOperation: boolean;
+    /** P6.2: a transfer between own accounts. */
+    ownTransfer: boolean;
   };
   const accs = new Map<string, Acc>();
+  const ownEntity = (id: number | null) => {
+    const e = id == null ? undefined : opts.matcher.entity(id);
+    return Boolean(e && own.forEntity(e));
+  };
   for (const s of scan.spellings.values()) {
     if (!s.key || s.counts.transactions === 0) continue;
     const m = opts.matcher.match(s.spelling);
@@ -175,10 +190,12 @@ export async function computePayeeInsights(opts: {
         firstDate: null,
         lastDate: null,
         bankOperation: false,
+        ownTransfer: ownEntity(m.kind === "match" ? m.entityId : null),
       };
       accs.set(id, a);
     }
-    if (bankOperationOf(s.spelling, opts.vocab)) a.bankOperation = true;
+    if (own.inText(s.spelling)) a.ownTransfer = true;
+    else if (bankOperationOf(s.spelling, opts.vocab)) a.bankOperation = true;
     a.spellingCounts.set(s.spelling, s.counts.transactions);
     a.count += s.counts.transactions;
     mergeSlices(a.slices, s.slices);
@@ -225,8 +242,9 @@ export async function computePayeeInsights(opts: {
   const typeTest = opts.merchantType?.trim() ? merchantTypeFilter(opts.merchantType) : null;
   const active = cps.filter((c) => c.window.count > 0 && (!typeTest || typeTest(typeOf(c))));
   // B25: merchant tops, the monthly split and concentration leave the bank's own rows out.
-  const inWindow = active.filter((c) => !c.acc.bankOperation);
-  const bankOps = active.filter((c) => c.acc.bankOperation);
+  const inWindow = active.filter((c) => !c.acc.bankOperation && !c.acc.ownTransfer);
+  const bankOps = active.filter((c) => c.acc.bankOperation && !c.acc.ownTransfer);
+  const ownTransfers = active.filter((c) => c.acc.ownTransfer);
   const topBySpend = [...inWindow].filter((c) => c.window.spend > 0).sort((a, b) => b.window.spend - a.window.spend).slice(0, limit);
   const topByCount = [...inWindow].sort((a, b) => b.window.count - a.window.count || b.window.spend - a.window.spend).slice(0, limit);
 
@@ -305,6 +323,7 @@ export async function computePayeeInsights(opts: {
       spend: round2(totalSpend),
       income: round2(totalIncome),
       bankOperations: { transactions: bankOps.reduce((n, c) => n + c.window.count, 0), spend: round2(bankOps.reduce((n, c) => n + c.window.spend, 0)) },
+      ownTransfers: { transactions: ownTransfers.reduce((n, c) => n + c.window.count, 0), spend: round2(ownTransfers.reduce((n, c) => n + c.window.spend, 0)) },
     },
     topBySpend: topBySpend.map(asCp),
     topByCount: topByCount.map(asCp),

@@ -20,7 +20,7 @@ type Cp = { id: string; name: string; entityId: number | null; count: number; to
 type Insights = {
   currency: string;
   window: { months: number; from: string };
-  totals: { counterparties: number; transactions: number; spend: number; income: number };
+  totals: { counterparties: number; transactions: number; spend: number; income: number; ownTransfers?: { transactions: number; spend: number } };
   topBySpend: Cp[];
   topByCount: Cp[];
   monthly: { months: string[]; series: Array<{ id: string; name: string; values: number[] }> };
@@ -90,6 +90,11 @@ export function InsightsPanel() {
         <span className="text-muted-foreground">
           {t("insights.totals", { counterparties: data.totals.counterparties, tx: data.totals.transactions, spent: formatCurrency(data.totals.spend, cur) })}
         </span>
+        {data.totals.ownTransfers && data.totals.ownTransfers.transactions > 0 && (
+          <span className="text-xs text-muted-foreground">
+            {t("insights.ownTransfers", { n: data.totals.ownTransfers.transactions, amount: formatCurrency(data.totals.ownTransfers.spend, cur) })}
+          </span>
+        )}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">

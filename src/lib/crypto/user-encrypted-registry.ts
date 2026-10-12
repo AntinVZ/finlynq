@@ -113,6 +113,10 @@ export const USER_ENCRYPTED_COLUMNS: ReadonlyArray<UserEncryptedColumn> = [
   { table: "payee_identifiers", column: "value", kind: "envelope" },
   { table: "payee_identifiers", column: "label", kind: "envelope" },
   { table: "payee_identifiers", column: "bank", kind: "envelope" },
+  { table: "payee_own_accounts", column: "iban", kind: "envelope" },
+  { table: "payee_own_accounts", column: "card_last4", kind: "envelope" },
+  { table: "payee_own_accounts", column: "bank", kind: "envelope" },
+  { table: "payee_own_accounts", column: "label", kind: "envelope" },
   { table: "payee_batches", column: "undo_data", kind: "envelope" },
   { table: "payee_proposals", column: "payload", kind: "envelope" },
 ];

@@ -65,6 +65,18 @@ import {
   type MerchantTypeRef,
 } from "./merchant-types";
 import { typeWordSynonymKeys } from "./type-words";
+import {
+  describeOwnAccount,
+  insertOwnAccount,
+  loadOwnAccounts,
+  normalizeOwnAccount,
+  OWN_ACCOUNTS_MAX,
+  updateOwnAccountRow,
+  buildOwnMatcher,
+  type OwnAccount,
+  type OwnAccountInput,
+  type OwnMatcher,
+} from "./own-accounts";
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import { isPersonsMerchantGroup, payeeTypeForMerchantType } from "./payee-type";
 
@@ -109,6 +121,8 @@ export type PayeeOp =
   | { op: "set_merchant_type"; merchantType: MerchantTypeInput; entityIds?: number[]; typeWord?: string; onlyUntyped?: boolean }
   /** P6.2 (83): mark entries as checked (they leave the "Перевірити" list), or clear the mark. */
   | { op: "mark_reviewed"; entityIds: number[]; reviewed?: boolean }
+  /** P6.2 (76): "Мої рахунки і картки" — add / edit / remove own accounts and cards (a full card number is refused). */
+  | { op: "own_accounts"; add?: OwnAccountInput[]; update?: Array<{ id: number } & OwnAccountInput>; remove?: number[] }
   | { op: "undo"; batchId: number }
   /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
   | { op: "bulk"; kind: string; ops: SingleOp[]; aliasSource?: string; labels?: string[] };
@@ -148,6 +162,8 @@ export type PayeeOpResult = {
   skipped: Array<{ id: number; name: string; reason: string }>;
   /** P6.2 (83): entries marked (true) or unmarked (false) as checked. */
   reviewed: Array<{ id: number; name: string; reviewed: boolean }>;
+  /** P6.2 (76): own accounts / cards added, changed, removed (masked one-line descriptions). */
+  ownAccounts: { added: string[]; updated: string[]; removed: string[] };
   /** P6 (B26): dictionary changes. */
   merchantTypes: { added: string[]; updated: string[]; removed: string[] };
   /** Binds an MCP confirmation token to exactly these rows. */
@@ -268,6 +284,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     typed: [],
     skipped: [],
     reviewed: [],
+    ownAccounts: { added: [], updated: [], removed: [] },
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: `undo:${batchId}`,
   };
@@ -300,6 +317,7 @@ async function runOp(
     typed: [],
     skipped: [],
     reviewed: [],
+    ownAccounts: { added: [], updated: [], removed: [] },
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: "",
   };
@@ -332,6 +350,9 @@ async function runOp(
         journal.count("aliases_added");
       }
     };
+    // P6.2 (76): own accounts / cards, loaded once per batch.
+    let ownMatcher: OwnMatcher | null = null;
+    const ownOf = async (kind: string, value: string) => (ownMatcher ??= buildOwnMatcher(await loadOwnAccounts(btx, userId, dek))).byValue(kind, value);
     const addIdentifiers = async (entityId: number, ids: IdentifierInput[], entityType?: PayeeType) => {
       const self = entities.find((e) => e.id === entityId);
       const type = entityType ?? self?.type ?? "other";
@@ -345,6 +366,8 @@ async function runOp(
         await insertIdentifier(btx, userId, dek, { entityId, kind: i.kind, value, ...details });
         out.identifiersAdded.push({ kind: i.kind, masked: maskIdentifier(i.kind, value) });
         for (const w of identifierWarnings(i.kind, value, type)) if (!out.warnings.includes(w)) out.warnings.push(w);
+        const mine = await ownOf(i.kind, value);
+        if (mine) out.warnings.push(`${maskIdentifier(i.kind, value)} схоже на ваш рахунок (${describeOwnAccount(mine)}): платежі на нього — перекази між своїми рахунками, а не витрати. Перевірте, чи це справді реквізит контрагента.`);
         journal.count("identifiers_added");
       }
     };
@@ -835,6 +858,56 @@ async function runOp(
             if (!out.reviewed.length) out.warnings.push(flag ? "Ці записи вже позначені як перевірені." : "Ці записи й так не позначені.");
             break;
           }
+          case "own_accounts": {
+            const current = await loadOwnAccounts(btx, userId, dek);
+            const same = (a: Omit<OwnAccount, "id">, b: Omit<OwnAccount, "id">) => (a.iban != null && a.iban === b.iban) || (a.cardLast4 != null && a.cardLast4 === b.cardLast4 && a.owner === b.owner);
+            const removeIds = new Set(op.remove ?? []);
+            for (const id of removeIds) {
+              const a = current.find((x) => x.id === id);
+              if (!a) throw new PayeeDirectoryError(`Немає рахунку #${id} у списку «Мої рахунки і картки».`, "not_found");
+              await journal.willModifyOwn([id]);
+              await btx.execute(sql`DELETE FROM payee_own_accounts WHERE user_id = ${userId} AND id = ${id}`);
+              out.ownAccounts.removed.push(describeOwnAccount(a));
+              journal.count("own_accounts_removed");
+            }
+            for (const u of op.update ?? []) {
+              const a = current.find((x) => x.id === u.id);
+              if (!a || removeIds.has(u.id)) throw new PayeeDirectoryError(`Немає рахунку #${u.id} у списку «Мої рахунки і картки».`, "not_found");
+              const pick = <K extends keyof OwnAccountInput>(k: K, fallback: OwnAccountInput[K]) => (k in u ? u[k] : fallback);
+              const { warnings, ...next } = normalizeOwnAccount({
+                iban: pick("iban", a.iban),
+                card: pick("card", a.cardLast4),
+                bank: pick("bank", a.bank),
+                label: pick("label", a.label),
+                currency: pick("currency", a.currency),
+                owner: pick("owner", a.owner),
+              });
+              out.warnings.push(...warnings);
+              if (JSON.stringify(next) === JSON.stringify({ iban: a.iban, cardLast4: a.cardLast4, bank: a.bank, label: a.label, currency: a.currency, owner: a.owner })) continue;
+              await journal.willModifyOwn([a.id]);
+              await updateOwnAccountRow(btx, userId, dek, a.id, next);
+              out.ownAccounts.updated.push(describeOwnAccount(next));
+              journal.count("own_accounts_updated");
+            }
+            const kept = current.filter((x) => !removeIds.has(x.id));
+            for (const input of op.add ?? []) {
+              const { warnings, ...next } = normalizeOwnAccount(input);
+              out.warnings.push(...warnings);
+              if (kept.some((x) => same(x, next))) {
+                out.warnings.push(`${describeOwnAccount(next)} уже є у списку — пропущено.`);
+                continue;
+              }
+              if (kept.length >= OWN_ACCOUNTS_MAX) throw new PayeeDirectoryError(`У списку може бути щонайбільше ${OWN_ACCOUNTS_MAX} рахунків і карток.`);
+              const id = await insertOwnAccount(btx, userId, dek, next);
+              journal.createdOwn(id);
+              kept.push({ id, ...next });
+              out.ownAccounts.added.push(describeOwnAccount(next));
+              journal.count("own_accounts_added");
+            }
+            const changed = out.ownAccounts.added.length + out.ownAccounts.updated.length + out.ownAccounts.removed.length;
+            if (!changed) out.warnings.push("Нічого не змінюється.");
+            break;
+          }
           case "delete": {
             const e = entityOf(entities, op.entityId);
             await journal.willModify([e.id]);
@@ -877,6 +950,8 @@ async function runOp(
     // rolled back but its serial ids are spent, so the commit gets new ids.
     const who = out.created ? `new:${out.entity?.name ?? ""}` : `${out.entity?.id ?? ""}`;
     if (!out.fingerprint) out.fingerprint = `${root.op}:${who}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
+    const own = out.ownAccounts;
+    if (own.added.length || own.updated.length || own.removed.length) out.fingerprint += `:o:${createHash("sha256").update(JSON.stringify(own)).digest("hex").slice(0, 16)}`;
     if (out.reviewed.length) out.fingerprint += `:r:${out.reviewed.map((r) => `${r.id}${r.reviewed ? "+" : "-"}`).join(",")}`;
     if (out.typed.length || out.merchantTypes.added.length || out.merchantTypes.updated.length || out.merchantTypes.removed.length) {
       const typed = out.typed.map((t) => [out.created && t.id === out.entity?.id ? `new:${t.name}` : t.id, t.from, t.to]);
