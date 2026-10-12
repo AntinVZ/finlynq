@@ -25,6 +25,7 @@ import { parseSaveError } from "@/lib/save-error";
 import { CspSafeBar } from "@/components/csp-safe-bar";
 import { isLoanCompleted } from "@/lib/loan-status";
 import { LoanInterestEntries } from "./_components/interest-entries";
+import { LoanScheduleEditor } from "./_components/schedule-editor";
 
 type Loan = {
   id: number; name: string; type: string; principal: number; annualRate: number;
@@ -36,6 +37,7 @@ type Loan = {
   principalPaid: number; interestPaid: number; periodsRemaining: number;
   accountName: string | null;
   accountId: number | null;
+  scheduleMode?: "calculated" | "manual";
   // FINLYNQ-123 dual basis. Every amount above is in `currency` (the loan's
   // own). The `*Display` companions are the server's current-rate conversion
   // into `displayCurrency` and are the ONLY figures safe to sum across loans.
@@ -44,9 +46,9 @@ type Loan = {
   remainingBalanceDisplay: number | null;
   monthlyEquivalentPaymentDisplay: number | null;
 };
-type AmortRow = { period: number; date: string; payment: number; principal: number; interest: number; balance: number };
+type AmortRow = { period: number; date: string; payment: number; principal: number; interest: number; balance: number; interestOverridden?: boolean };
 type AccrualRow = { month: string; interest: number };
-type AmortResult = { monthlyPayment: number; totalPayments: number; totalInterest: number; payoffDate: string; residualValue: number; schedule: AmortRow[]; monthlyAccrual: AccrualRow[] };
+type AmortResult = { monthlyPayment: number; totalPayments: number; totalInterest: number; payoffDate: string; residualValue: number; schedule: AmortRow[]; monthlyAccrual: AccrualRow[]; scheduleMode?: "calculated" | "manual" };
 
 const FREQUENCY_OPTIONS = [
   { value: "weekly", label: "Weekly" },
@@ -247,7 +249,7 @@ function LoansPageContent() {
   async function viewAmortization(loan: Loan) {
     setSelectedLoan(loan);
     const [amortRes, whatIfRes] = await Promise.all([
-      fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "amortization", principal: loan.principal, annualRate: loan.annualRate, termMonths: loan.termMonths, startDate: loan.startDate, paymentAmount: loan.paymentAmount, extraPayment: loan.extraPayment, paymentFrequency: loan.paymentFrequency, residualValue: loan.residualValue }) }).then((r) => r.json()),
+      fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "amortization", loanId: loan.id, principal: loan.principal, annualRate: loan.annualRate, termMonths: loan.termMonths, startDate: loan.startDate, paymentAmount: loan.paymentAmount, extraPayment: loan.extraPayment, paymentFrequency: loan.paymentFrequency, residualValue: loan.residualValue }) }).then((r) => r.json()),
       fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "what-if", principal: loan.principal, annualRate: loan.annualRate, termMonths: equivalentTermMonths(loan), startDate: loan.startDate, extraAmounts: [100, 200, 500, 1000] }) }).then((r) => r.json()),
     ]);
     setAmort(amortRes);
@@ -360,6 +362,7 @@ function LoansPageContent() {
                 <div className="flex items-center gap-2">
                   <CardTitle>{loan.name}</CardTitle>
                   <Badge variant="secondary" className={badgeClass}>{loan.type}</Badge>
+                  {loan.scheduleMode === "manual" && <Badge variant="outline" className="text-xs">Manual schedule</Badge>}
                   {loan.currency !== displayCurrency && (
                     <Badge variant="outline" className="font-mono text-xs">{loan.currency}</Badge>
                   )}
@@ -631,16 +634,13 @@ function LoansPageContent() {
                 </ResponsiveContainer>
               </TabsContent>
               <TabsContent value="table">
-                <div className="max-h-96 overflow-auto">
-                  <Table>
-                    <TableHeader><TableRow><TableHead>#</TableHead><TableHead>Date</TableHead><TableHead>Payment</TableHead><TableHead>Principal</TableHead><TableHead>Interest</TableHead><TableHead>Balance</TableHead></TableRow></TableHeader>
-                    <TableBody>
-                      {amort.schedule.map((r) => (
-                        <TableRow key={r.period}><TableCell>{r.period}</TableCell><TableCell>{r.date}</TableCell><TableCell>{formatCurrency(r.payment, selectedLoan.currency)}</TableCell><TableCell className="text-emerald-600">{formatCurrency(r.principal, selectedLoan.currency)}</TableCell><TableCell className="text-rose-600">{formatCurrency(r.interest, selectedLoan.currency)}</TableCell><TableCell className="font-mono">{formatCurrency(r.balance, selectedLoan.currency)}</TableCell></TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                <LoanScheduleEditor
+                  loan={selectedLoan}
+                  schedule={amort.schedule}
+                  mode={amort.scheduleMode ?? "calculated"}
+                  // Rebuild this panel from the saved schedule, and the cards above it.
+                  onChanged={() => { void viewAmortization(selectedLoan); void load(); }}
+                />
               </TabsContent>
               <TabsContent value="monthly">
                 <p className="text-sm text-muted-foreground mb-4">Interest accrued per calendar month — the reportable figure, day-weighted when payments straddle month boundaries.</p>
@@ -659,6 +659,8 @@ function LoansPageContent() {
                 <LoanInterestEntries
                   loan={selectedLoan}
                   schedule={amort.schedule}
+                  // A manual schedule is not driven by the rate, so no rate is suggested for it.
+                  rateDriven={amort.scheduleMode !== "manual"}
                   onPosted={load}
                   // Rebuild this panel's schedule at the new rate, and the cards above it.
                   onRateChanged={(annualRate) => { void viewAmortization({ ...selectedLoan, annualRate }); void load(); }}

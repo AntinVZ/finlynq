@@ -22,7 +22,7 @@ import { verifyOwnership } from "@/lib/verify-ownership";
 import { AppError } from "@/lib/validate";
 import { getDisplayCurrency } from "@/lib/fx-service";
 import { computeReportingFields } from "@/lib/fx/reporting-amount";
-import { buildLoanSchedule, LoanValidationError } from "@/lib/loan-calculator";
+import { buildLoanSchedule, LoanValidationError, loanScheduleExtras } from "@/lib/loan-calculator";
 import type { TransactionSource } from "@/lib/tx-source";
 import {
   interestLedgerAmount,
@@ -71,6 +71,7 @@ function scheduleFor(loan: LoanRow): InterestScheduleRow[] {
     paymentFrequency: loan.paymentFrequency,
     extraPayment: loan.extraPayment ?? 0,
     residualValue: loan.residualValue,
+    ...loanScheduleExtras(loan),
   }).schedule;
 }
 

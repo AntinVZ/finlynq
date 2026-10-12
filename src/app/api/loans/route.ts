@@ -7,6 +7,7 @@ import {
   calculateDebtPayoff,
   LoanValidationError,
   PAYMENT_FREQUENCIES,
+  loanScheduleExtras,
 } from "@/lib/loan-calculator";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { requireEncryption } from "@/lib/auth/require-encryption";
@@ -101,6 +102,8 @@ export async function GET(request: NextRequest) {
       extraPayment: schema.loans.extraPayment,
       residualValue: schema.loans.residualValue,
       note: schema.loans.note,
+      manualSchedule: schema.loans.manualSchedule,
+      interestOverrides: schema.loans.interestOverrides,
     })
     .from(schema.loans)
     .leftJoin(schema.accounts, eq(schema.loans.accountId, schema.accounts.id))
@@ -135,7 +138,14 @@ export async function GET(request: NextRequest) {
     amount == null ? null : convertWithRateMap(amount, from ?? displayCurrency, rateMap);
 
   // Add amortization summary for each loan
-  const withSummary = loans.map((loan) => {
+  const withSummary = loans.map((rawLoan) => {
+    // The stored schedule rows feed the calculator but are NOT part of the
+    // list response (a 30-year manual schedule is 360 rows per loan); the
+    // schedule panel fetches them from /api/loans/schedule.
+    const { manualSchedule: _manual, interestOverrides: _overrides, ...loan } = rawLoan;
+    void _manual;
+    void _overrides;
+    const extras = loanScheduleExtras(rawLoan);
     const integrityRow = (error: string, value: unknown) => ({
       ...loan,
       monthlyPayment: null,
@@ -168,6 +178,7 @@ export async function GET(request: NextRequest) {
         paymentFrequency: loan.paymentFrequency,
         extraPayment: loan.extraPayment ?? 0,
         residualValue: loan.residualValue,
+        ...extras,
       });
     } catch (e) {
       // A legacy row whose payment no longer amortizes shouldn't poison the list.
@@ -195,6 +206,9 @@ export async function GET(request: NextRequest) {
       if (remainingBalance <= residual + 0.01) {
         payoffDate = today;
         periodsRemaining = 0;
+      } else if (summary.scheduleMode === "manual") {
+        // The user supplied the dates themselves; re-projecting from today's
+        // balance with a calculated payment would overwrite them.
       } else {
         try {
           const anchored = buildLoanSchedule({
@@ -229,6 +243,8 @@ export async function GET(request: NextRequest) {
           : Math.round(principalPaid * 100) / 100,
       interestPaid: Math.round(interestPaid * 100) / 100,
       periodsRemaining,
+      scheduleMode: summary.scheduleMode,
+      interestOverrideCount: Object.keys(extras.interestOverrides ?? {}).length,
       // Additive reporting-currency companions — the native fields above are
       // untouched, so nothing that already read this response changes.
       displayCurrency,
@@ -255,7 +271,23 @@ export async function POST(request: NextRequest) {
     if (body.action === "amortization") {
       // FINLYNQ-136: honors paymentAmount (payment-driven) + residualValue
       // (lease) and returns the per-calendar-month interest accrual.
+      // With `loanId`, the loan's own manual schedule / interest overrides are
+      // applied, so the panel shows what every other surface computes.
+      let extras = {};
+      const loanId = Number(body.loanId);
+      if (Number.isInteger(loanId) && loanId > 0) {
+        const stored = await db
+          .select({
+            manualSchedule: schema.loans.manualSchedule,
+            interestOverrides: schema.loans.interestOverrides,
+          })
+          .from(schema.loans)
+          .where(and(eq(schema.loans.id, loanId), eq(schema.loans.userId, userId)))
+          .get();
+        if (stored) extras = loanScheduleExtras(stored);
+      }
       const result = buildLoanSchedule({
+        ...extras,
         principal: body.principal,
         annualRate: body.annualRate,
         termMonths: body.termMonths,
@@ -386,6 +418,7 @@ export async function PUT(request: NextRequest) {
         paymentFrequency: merged.paymentFrequency,
         extraPayment: merged.extraPayment ?? 0,
         residualValue: merged.residualValue,
+        ...loanScheduleExtras(existing[0]),
       });
     }
     const toEncrypt: Record<string, string | null | undefined> = {};

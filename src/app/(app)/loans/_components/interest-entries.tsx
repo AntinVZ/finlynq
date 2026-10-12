@@ -38,6 +38,7 @@ type Category = { id: number; name: string; type: string };
 export function LoanInterestEntries({
   loan,
   schedule,
+  rateDriven = true,
   onPosted,
   onRateChanged,
 }: {
@@ -49,6 +50,8 @@ export function LoanInterestEntries({
     accountName: string | null;
   };
   schedule: InterestScheduleRow[];
+  /** False for a manual schedule: its interest is not derived from the rate, so no rate is suggested. */
+  rateDriven?: boolean;
   /** Called after entries are created, so the page can refresh the loan's balance. */
   onPosted?: () => void;
   /** Called after the suggested rate is saved, so the page can rebuild the schedule. */
@@ -141,8 +144,8 @@ export function LoanInterestEntries({
     [schedule, booked, today],
   );
   const assessment = useMemo(
-    () => assessBookedInterest(schedule, booked, today, loan.annualRate),
-    [schedule, booked, today, loan.annualRate],
+    () => assessBookedInterest(schedule, booked, today, rateDriven ? loan.annualRate : 0),
+    [schedule, booked, today, loan.annualRate, rateDriven],
   );
   // Everything that has come due, newest first, plus the next upcoming payment
   // so a user booking slightly ahead of the due date can still do it.

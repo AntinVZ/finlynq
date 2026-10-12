@@ -165,6 +165,71 @@ second payload shape is how the two modes drift apart.
   (`/api/loans` has no idempotency key), a `try/catch` around the request, and
   `parseSaveError` on `!res.ok` with the dialog left open and input preserved.
 
+## The loan's own schedule (2026-10-12)
+
+A schedule is calculated from the loan's terms unless the user says otherwise.
+Two ways to say otherwise, both stored on the loan row:
+
+| Column | Shape | Effect |
+|---|---|---|
+| `loans.interest_overrides` | `{ "YYYY-MM-DD": amount }` | Replaces the calculated interest for that payment date only. The payment is unchanged, so the principal and every later balance follow. Ignored when a manual schedule exists. |
+| `loans.manual_schedule` | `[{ date, payment, interest }]` | REPLACES the calculation. Principal (`payment - interest`, negative when a payment did not cover its interest) and the running balance are derived, never stored. |
+
+Both are nullable and NULL means calculated, so existing loans are untouched.
+
+**One rule for readers.** `buildLoanSchedule` takes `interestOverrides` and
+`manualSchedule` as options, and the pure `loanScheduleExtras(row)`
+([loan-calculator.ts](../src/lib/loan-calculator.ts)) turns a stored loan row
+(Drizzle or raw-SQL shape, JSON as object or text) into those options. **Every
+caller that builds a schedule from a stored loan spreads it in**: `GET
+/api/loans`, the `amortization` action (which now takes `loanId`), `PUT
+/api/loans` validation, interest entries, the health score's debt service, the
+MCP HTTP tools (list, update validation, post_interest, amortization, payoff
+plan) and the stdio tools. A caller that forgets shows the calculated schedule
+while the Loans page shows the user's, and balances then disagree. The one
+deliberate exception is the re-projection from today's account balance, which
+is a fresh calculation; a manual schedule skips that re-projection and keeps
+its own dates. `tests/loan-manual-schedule.test.ts` pins the callers and the
+raw SELECT column lists.
+
+**One write path.** `saveLoanSchedule`
+([schedule-store.ts](../src/lib/loans/schedule-store.ts), SERVER ONLY) serves
+REST `GET/PUT /api/loans/schedule` and the MCP ops. It validates by BUILDING
+the resulting schedule, so nothing that cannot be scheduled is stored, and it
+refuses an interest override for a date that is not a payment date (it would
+be stored and never applied). Setting a manual schedule drops the overrides.
+
+Surfaces:
+
+- **UI** — the schedule panel's **Table** tab is now an editor
+  ([_components/schedule-editor.tsx](<../src/app/(app)/loans/_components/schedule-editor.tsx>)).
+  Calculated: edit or reset any row's interest, or "Switch to manual" (keeps
+  the current rows as the starting point). Manual: "Edit rows" (date, payment,
+  interest, add, remove), "Back to calculated". Both: **Download template** and
+  **Upload schedule**.
+- **CSV, fixed layout, no mapping** ([manual-schedule.ts](../src/lib/loans/manual-schedule.ts),
+  pure, parsed in the browser). The template is the format: `date, payment,
+  interest, principal, balance`, pre-filled with the loan's current schedule.
+  Only the first three are read back; principal and balance are reference.
+  The parser tolerates what a spreadsheet does on save (BOM, CRLF, quotes,
+  thousands separators, currency symbols, blank lines, reordered columns) and
+  reports every bad line with its number. **Dates:** ISO is taken as is. A
+  spreadsheet-reformatted column (9/7/2026) is read as a whole, and a reading
+  must be real dates at least 6 days apart, which is what tells day-first from
+  month-first on a monthly schedule. If both readings pass, the upload is
+  refused and asks for YYYY-MM-DD; it never guesses.
+- **MCP HTTP** — `manage_loans(op:"set_schedule", loan_id, rows, merge?)`
+  (replace, or lay rows over the current schedule by date),
+  `op:"set_interest", loan_id, overrides:[{date, interest|null}]`,
+  `op:"reset_schedule", loan_id`.
+
+The rate suggestion on the Interest entries tab is not offered for a manual
+schedule, since its interest is not derived from the rate.
+
+Known limit: a manual schedule built from a calculated one can end a few cents
+away from zero, because the rows carry amounts to the cent while the
+calculation keeps fractions of a cent.
+
 ## Interest entries (2026-10-12)
 
 How a payment with an interest component is recorded:
@@ -224,9 +289,8 @@ lookup can reach the network.
 
 Known limits:
 
-- The schedule still computes declining-balance interest only. A lender that
-  charges a fixed amount per payment is handled by editing the amount when
-  generating, or by entering the interest by hand.
+- The calculation is declining-balance only. A lender that charges something
+  else is modelled with interest overrides or a manual schedule (see above).
 - Nothing posts automatically on the due date; generation is one click.
 
 ### Booked versus calculated (2026-10-12)

@@ -474,6 +474,13 @@ export const loans = pgTable("loans", {
   // hand-entered and generated entries are the same. SET NULL: deleting the
   // category un-sets it, it never blocks the delete.
   interestCategoryId: integer("interest_category_id").references(() => categories.id, { onDelete: "set null" }),
+  // 2026-10-12 — the loan's own schedule. NULL on both = calculated. Read them
+  // ONLY through `loanScheduleExtras` (loan-calculator.ts), which every
+  // schedule-building caller spreads into `buildLoanSchedule`.
+  //   manualSchedule: a complete user-supplied schedule; REPLACES the calculation.
+  //   interestOverrides: { "YYYY-MM-DD": amount } for single calculated rows.
+  manualSchedule: jsonb("manual_schedule").$type<Array<{ date: string; payment: number; interest: number }> | null>(),
+  interestOverrides: jsonb("interest_overrides").$type<Record<string, number> | null>(),
   // Stream D (2026-04-24) — dual-write.
   nameCt: text("name_ct"),
   nameLookup: text("name_lookup"),

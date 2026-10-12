@@ -33,6 +33,7 @@ import {
   calculateDebtPayoff,
   LoanValidationError,
   PAYMENT_FREQUENCIES,
+  loanScheduleExtras,
   type Debt,
 } from "../../src/lib/loan-calculator";
 import {
@@ -50,6 +51,7 @@ import {
 import { registerManageTool } from "./_consolidate";
 import { postLoanInterest, readLoanInterest } from "../../src/lib/loans/interest-entries";
 import { dueUnpostedInterest, matchInterestToSchedule } from "../../src/lib/loans/interest-plan";
+import { saveLoanSchedule, type ScheduleChange } from "../../src/lib/loans/schedule-store";
 import { todayISO } from "../../src/lib/utils/date";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -71,7 +73,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const rawRows = await q(db, sql`
         SELECT l.id, l.name_ct, l.type, l.principal, l.annual_rate, l.term_months,
                l.start_date, l.payment_amount, l.payment_frequency, l.extra_payment,
-               l.residual_value, l.note, l.account_id, l.currency,
+               l.residual_value, l.manual_schedule, l.interest_overrides, l.note, l.account_id, l.currency,
                a.name_ct AS account_name_ct
         FROM loans l
         LEFT JOIN accounts a ON a.id = l.account_id
@@ -144,6 +146,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
             paymentFrequency: String(r.payment_frequency ?? "monthly"),
             extraPayment: Number(r.extra_payment ?? 0),
             residualValue: r.residual_value == null ? null : Number(r.residual_value),
+            ...loanScheduleExtras(r),
           });
         } catch (e) {
           if (e instanceof LoanValidationError) return integrityRow(e.message, null);
@@ -165,7 +168,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           if (remainingBalance <= residual + 0.01) {
             payoffDate = today;
             periodsRemaining = 0;
-          } else {
+          } else if (summary.scheduleMode !== "manual") {
+            // (a manual schedule keeps the user's own dates; no re-projection)
             try {
               const anchored = buildLoanSchedule({
                 principal: remainingBalance,
@@ -308,7 +312,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const { id, name, type, principal, annual_rate, term_months, start_date, payment_amount, payment_frequency, extra_payment, residual_value, account, account_id, currency, note } = args;
       const existing = await q(db, sql`
         SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
-               payment_frequency, extra_payment, residual_value
+               payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides
         FROM loans WHERE id = ${id} AND user_id = ${userId}
       `);
       if (!existing.length) return err(`Loan #${id} not found`);
@@ -324,6 +328,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         paymentFrequency: payment_frequency ?? String(cur.payment_frequency ?? "monthly"),
         extraPayment: extra_payment ?? Number(cur.extra_payment ?? 0),
         residualValue: residual_value ?? (cur.residual_value == null ? null : Number(cur.residual_value)),
+        ...loanScheduleExtras(cur),
       };
       if (parseYmdSafe(merged.startDate) !== null) {
         try {
@@ -424,7 +429,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
 
     const rows = await q(db, sql`
       SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
-             payment_frequency, extra_payment, residual_value, currency, interest_category_id
+             payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, currency, interest_category_id
       FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
     `);
     if (!rows.length) return err(`Loan #${loan_id} not found`);
@@ -473,6 +478,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         paymentFrequency: String(loan.payment_frequency ?? "monthly"),
         extraPayment: Number(loan.extra_payment ?? 0),
         residualValue: loan.residual_value == null ? null : Number(loan.residual_value),
+        ...loanScheduleExtras(loan),
       }).schedule;
     } catch (e) {
       if (e instanceof LoanValidationError) return err(e.message);
@@ -525,11 +531,41 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
     }
   }
 
+  // ── schedule ops: the loan's own schedule ────────────────────────────────
+  // set_schedule (complete rows that replace the calculation), set_interest
+  // (the interest of single calculated rows) and reset_schedule all go through
+  // saveLoanSchedule, shared with REST /api/loans/schedule: it validates by
+  // building the resulting schedule and stores nothing it cannot build.
+  async function opSchedule(loanId: number, change: ScheduleChange, done: string): Promise<ToolResult> {
+    try {
+      const state = await saveLoanSchedule(userId, loanId, change);
+      return text({
+        success: true,
+        data: {
+          loanId,
+          scheduleMode: state.mode,
+          rows: state.summary.schedule.length,
+          interestOverrides: Object.keys(state.interestOverrides).length,
+          firstPaymentDate: state.summary.schedule[0]?.date ?? null,
+          payoffDate: state.summary.payoffDate,
+          totalInterest: state.summary.totalInterest,
+          // What the rows leave unpaid: above 0 means the schedule stops short of payoff.
+          endingBalance: state.summary.schedule[state.summary.schedule.length - 1]?.balance ?? null,
+          message: done,
+        },
+      });
+    } catch (e) {
+      // AppError refusals carry a caller-safe message (bad row, unknown loan).
+      if (e instanceof Error && e.name === "AppError") return err(e.message);
+      throw e;
+    }
+  }
+
   // ── consolidated tool: manage_loans ───────────
   registerManageTool(
     server,
     "manage_loans",
-    "Manage loans & debt: `op` selects add / update / delete / list / post_interest. add: create a loan or lease (principal/rate + term_months OR payment_amount; residual_value for leases; `currency` defaults to the linked account's, else the user's display currency). update: change any loan field by id. delete: remove a loan by id. list: all loans with balance/rate/payment/payoff date/linked account — amounts are in each loan's own `currency`, with `*Reporting` companions converted to `reportingCurrency` for totalling across currencies. post_interest: book one schedule period's interest as an expense on the loan's linked account (refused if unlinked or already posted); record the payment separately as a plain transfer into that account (manage_transfers). For amortization schedules or payoff strategies use get_loan_amortization / get_debt_payoff_plan.",
+    "Manage loans & debt; `op`: add, update, delete, list, post_interest, set_schedule, set_interest, reset_schedule. add: create a loan or lease (principal/rate + term_months OR payment_amount; residual_value for leases; `currency` defaults to the linked account's, else the display currency). update / delete: by id. list: every loan with balance/rate/payment/payoff/linked account, in each loan's `currency` plus `*Reporting` companions for totals. post_interest: book one period's interest as an expense on the linked account (refused if unlinked or already booked); record the payment itself as a plain transfer (manage_transfers). set_schedule: give the loan your own rows instead of the calculated ones (`merge` to change a few). set_interest: override the interest of single calculated rows. reset_schedule: back to calculated. See get_loan_amortization for the rows.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("add"),
@@ -583,6 +619,38 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         category: z.string().optional().describe("Expense category name (exact match; mistyped/ambiguous is REFUSED). When both are omitted, the loan's saved interest category is used, else the single expense category with 'interest' in its name; refused if there is none or more than one. The category used is saved on the loan."),
         date: ymdDate.optional().describe("Transaction date (YYYY-MM-DD). Defaults to period_date."),
       }),
+      z.object({
+        op: z.literal("set_schedule"),
+        loan_id: z.number().int().positive().describe("Loan id"),
+        rows: z
+          .array(
+            z.object({
+              date: ymdDate.describe("Payment date (YYYY-MM-DD)"),
+              payment: z.number().nonnegative().describe("Total paid on that date"),
+              interest: z.number().nonnegative().describe("Interest part of that payment; principal and balance are derived"),
+            }),
+          )
+          .min(1)
+          .describe("The loan's own schedule rows, one per payment. They REPLACE the calculated schedule unless `merge` is true."),
+        merge: z.boolean().optional().describe("true: lay these rows over the current schedule by date (change or add a few payments) instead of replacing every row. Default false."),
+      }),
+      z.object({
+        op: z.literal("set_interest"),
+        loan_id: z.number().int().positive().describe("Loan id (calculated schedule only; a manual schedule is changed with set_schedule)"),
+        overrides: z
+          .array(
+            z.object({
+              date: ymdDate.describe("A payment date on the loan's schedule (YYYY-MM-DD)"),
+              interest: z.number().nonnegative().nullable().describe("Interest actually charged for that payment; null removes the override"),
+            }),
+          )
+          .min(1)
+          .describe("Per-payment interest that replaces the calculated figure. The payment is unchanged, so principal and later balances follow."),
+      }),
+      z.object({
+        op: z.literal("reset_schedule"),
+        loan_id: z.number().int().positive().describe("Loan id — drops the manual schedule and every interest override; the schedule is calculated again."),
+      }),
     ]),
     async (input) => {
       switch (input.op) {
@@ -596,6 +664,26 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           return opList();
         case "post_interest":
           return opPostInterest(input);
+        case "set_schedule":
+          return opSchedule(
+            input.loan_id,
+            { manualSchedule: input.rows, mergeRows: input.merge === true },
+            input.merge === true
+              ? `Merged ${input.rows.length} row(s) into the loan's schedule; it is now a manual schedule.`
+              : `Replaced the loan's schedule with ${input.rows.length} row(s).`,
+          );
+        case "set_interest":
+          return opSchedule(
+            input.loan_id,
+            { interestOverrides: Object.fromEntries(input.overrides.map((o) => [o.date, o.interest])) },
+            `Updated the interest of ${input.overrides.length} payment(s).`,
+          );
+        case "reset_schedule":
+          return opSchedule(
+            input.loan_id,
+            { manualSchedule: null, clearInterestOverrides: true },
+            "The schedule is calculated from the loan's terms again.",
+          );
       }
     },
   );
@@ -616,7 +704,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       // Stream D Phase 4: l.name dropped — read l.name_ct only.
       const rows = await q(db, sql`
         SELECT id, name_ct, principal, annual_rate, term_months, start_date,
-               payment_amount, payment_frequency, extra_payment, residual_value, currency
+               payment_amount, payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, currency
         FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
       `);
       if (!rows.length) return err(`Loan #${loan_id} not found`);
@@ -642,6 +730,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           paymentFrequency: String(loan.payment_frequency ?? "monthly"),
           extraPayment: Number(loan.extra_payment ?? 0),
           residualValue: loan.residual_value == null ? null : Number(loan.residual_value),
+          ...loanScheduleExtras(loan),
         });
       } catch (e) {
         if (e instanceof LoanValidationError) return err(e.message);
@@ -701,7 +790,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const loansRaw = await q(db, sql`
         SELECT id, name_ct, principal, annual_rate, term_months, start_date,
                payment_amount, payment_frequency, extra_payment, residual_value,
-               currency
+               manual_schedule, interest_overrides, currency
         FROM loans WHERE user_id = ${userId}
       `);
       if (!loansRaw.length) return text({ success: true, data: { message: "No loans found", strategies: {} } });
@@ -741,6 +830,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
             paymentFrequency: String(l.payment_frequency ?? "monthly"),
             extraPayment: Number(l.extra_payment ?? 0),
             residualValue: l.residual_value == null ? null : Number(l.residual_value),
+            ...loanScheduleExtras(l),
           });
         } catch (e) {
           if (e instanceof LoanValidationError) {
