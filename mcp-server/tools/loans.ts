@@ -48,6 +48,9 @@ import {
   parseYmdSafe,
 } from "../lib/date-validators";
 import { registerManageTool } from "./_consolidate";
+import { listInterestPostings, postLoanInterest } from "../../src/lib/loans/interest-postings";
+import { dueUnpostedInterest } from "../../src/lib/loans/interest-plan";
+import { todayISO } from "../../src/lib/utils/date";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
@@ -404,11 +407,122 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       });
   }
 
+  // ── post_interest: book one period's interest into the loan account ──────
+  // The payment itself stays a plain transfer (manage_transfers); this writes
+  // the SEPARATE interest expense on the loan's linked account. All rules live
+  // in postLoanInterest, shared with REST /api/loans/interest.
+  async function opPostInterest(args: {
+    loan_id: number;
+    period_date?: string;
+    amount?: number;
+    category_id?: number;
+    category?: string;
+    date?: string;
+  }): Promise<ToolResult> {
+    const { loan_id, period_date, amount, category_id, category, date } = args;
+    if (!dek) return err("Cannot post loan interest without an unlocked DEK (the entry's payee and note are encrypted).");
+
+    const rawCats = await q(db, sql`SELECT id, name_ct, type FROM categories WHERE user_id = ${userId}`);
+    const allCats = decryptNameish(rawCats, dek);
+    let categoryId: number;
+    if (category_id != null || category) {
+      const out = resolveOrReport(
+        "category",
+        resolveEntity({ entity: "category", id: category_id, name: category, options: allCats }),
+      );
+      if ("report" in out) return out.report;
+      categoryId = out.id;
+    } else {
+      // No category named: use the user's interest category only when it is
+      // unambiguous. Never guess between two, never auto-create one.
+      const candidates = allCats.filter(
+        (c) => String(c.type) === "E" && /interest/i.test(String(c.name ?? "")),
+      );
+      if (candidates.length !== 1) {
+        return err(
+          candidates.length === 0
+            ? "No expense category with 'interest' in its name exists. Pass category_id (see get_categories) or create one with manage_categories."
+            : `Several categories look like interest (${candidates.map((c) => `#${c.id} ${String(c.name)}`).join(", ")}). Pass category_id.`,
+        );
+      }
+      categoryId = Number(candidates[0].id);
+    }
+
+    const rows = await q(db, sql`
+      SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
+             payment_frequency, extra_payment, residual_value, currency
+      FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
+    `);
+    if (!rows.length) return err(`Loan #${loan_id} not found`);
+    const loan = rows[0];
+    if (parseYmdSafe(String(loan.start_date)) === null) {
+      return err(`Loan #${loan_id} has an invalid start_date; fix it with manage_loans(op:"update") first.`);
+    }
+    let schedule;
+    try {
+      schedule = buildLoanSchedule({
+        principal: Number(loan.principal),
+        annualRate: Number(loan.annual_rate),
+        termMonths: loan.term_months == null ? null : Number(loan.term_months),
+        startDate: String(loan.start_date),
+        paymentAmount: loan.payment_amount == null ? null : Number(loan.payment_amount),
+        paymentFrequency: String(loan.payment_frequency ?? "monthly"),
+        extraPayment: Number(loan.extra_payment ?? 0),
+        residualValue: loan.residual_value == null ? null : Number(loan.residual_value),
+      }).schedule;
+    } catch (e) {
+      if (e instanceof LoanValidationError) return err(e.message);
+      throw e;
+    }
+
+    const postedDates = new Set((await listInterestPostings(userId, loan_id)).map((p) => p.periodDate));
+    const due = dueUnpostedInterest(schedule, postedDates, todayISO());
+    const row = period_date ? schedule.find((r) => r.date === period_date) : due[0];
+    if (!row) {
+      return err(
+        period_date
+          ? `${period_date} is not a payment date on loan #${loan_id}'s schedule (see get_loan_amortization for the dates).`
+          : "No payment that has come due is waiting for an interest entry. Pass period_date to post a specific period.",
+      );
+    }
+
+    try {
+      const [created] = await postLoanInterest(userId, dek, {
+        loanId: loan_id,
+        categoryId,
+        entries: [{ periodDate: row.date, amount: amount ?? row.interest, date }],
+        source: "mcp_http",
+      });
+      const stillDue = due.filter((r) => r.date !== row.date).length;
+      return text({
+        success: true,
+        data: {
+          loanId: loan_id,
+          periodDate: created.periodDate,
+          transactionId: created.transactionId,
+          date: created.date,
+          amount: created.amount,
+          calculatedInterest: row.interest,
+          currency: String(loan.currency ?? ""),
+          categoryId,
+          duePeriodsStillUnposted: stillDue,
+          message: `Booked ${Math.abs(created.amount)} interest for the ${created.periodDate} payment on the loan account. The payment itself is a separate plain transfer.`,
+        },
+      });
+    } catch (e) {
+      // AppError (refusals) and OwnershipError both carry a caller-safe message.
+      if (e instanceof Error && (e.name === "AppError" || e.name === "OwnershipError")) {
+        return err(e.name === "OwnershipError" ? "Category not found" : e.message);
+      }
+      throw e;
+    }
+  }
+
   // ── consolidated tool: manage_loans ───────────
   registerManageTool(
     server,
     "manage_loans",
-    "Manage loans & debt: `op` selects add / update / delete / list. add: create a loan or lease (principal/rate + term_months OR payment_amount; residual_value for leases; `currency` defaults to the linked account's, else the user's display currency). update: change any loan field by id. delete: remove a loan by id. list: all loans with balance/rate/payment/payoff date/linked account — amounts are in each loan's own `currency`, with `*Reporting` companions converted to `reportingCurrency` for totalling across currencies. For amortization schedules or payoff strategies use get_loan_amortization / get_debt_payoff_plan.",
+    "Manage loans & debt: `op` selects add / update / delete / list / post_interest. add: create a loan or lease (principal/rate + term_months OR payment_amount; residual_value for leases; `currency` defaults to the linked account's, else the user's display currency). update: change any loan field by id. delete: remove a loan by id. list: all loans with balance/rate/payment/payoff date/linked account — amounts are in each loan's own `currency`, with `*Reporting` companions converted to `reportingCurrency` for totalling across currencies. post_interest: book one schedule period's interest as an expense on the loan's linked account (refused if unlinked or already posted); record the payment separately as a plain transfer into that account (manage_transfers). For amortization schedules or payoff strategies use get_loan_amortization / get_debt_payoff_plan.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("add"),
@@ -453,6 +567,15 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       z.object({
         op: z.literal("list").describe("List all loans with balance/payment/payoff."),
       }),
+      z.object({
+        op: z.literal("post_interest"),
+        loan_id: z.number().int().positive().describe("Loan id (must be linked to an account)"),
+        period_date: ymdDate.optional().describe("Payment date on the loan's schedule whose interest to book (YYYY-MM-DD). Omit to take the oldest payment that has come due and has no interest entry yet."),
+        amount: z.number().positive().optional().describe("Interest to book, as a positive number in the loan account's currency. Omit to use the schedule's calculated interest for that period; pass it when the lender charged a different amount."),
+        category_id: z.number().int().positive().optional().describe("Expense category FK for the entry — wins over `category`."),
+        category: z.string().optional().describe("Expense category name (exact match; mistyped/ambiguous is REFUSED). When both are omitted, the single expense category with 'interest' in its name is used, and the call is refused if there is none or more than one."),
+        date: ymdDate.optional().describe("Transaction date (YYYY-MM-DD). Defaults to period_date."),
+      }),
     ]),
     async (input) => {
       switch (input.op) {
@@ -464,6 +587,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           return opDelete(input);
         case "list":
           return opList();
+        case "post_interest":
+          return opPostInterest(input);
       }
     },
   );

@@ -24,6 +24,7 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { parseSaveError } from "@/lib/save-error";
 import { CspSafeBar } from "@/components/csp-safe-bar";
 import { isLoanCompleted } from "@/lib/loan-status";
+import { LoanInterestEntries } from "./_components/interest-entries";
 
 type Loan = {
   id: number; name: string; type: string; principal: number; annualRate: number;
@@ -613,7 +614,7 @@ function LoansPageContent() {
           <CardHeader><CardTitle>Amortization: {selectedLoan.name} <span className="text-sm font-normal text-muted-foreground font-mono">({selectedLoan.currency})</span></CardTitle></CardHeader>
           <CardContent>
             <Tabs defaultValue="chart">
-              <TabsList><TabsTrigger value="chart">Chart</TabsTrigger><TabsTrigger value="table">Table</TabsTrigger><TabsTrigger value="monthly">Monthly Interest</TabsTrigger><TabsTrigger value="whatif">What-If</TabsTrigger></TabsList>
+              <TabsList><TabsTrigger value="chart">Chart</TabsTrigger><TabsTrigger value="table">Table</TabsTrigger><TabsTrigger value="monthly">Monthly Interest</TabsTrigger><TabsTrigger value="entries">Interest entries</TabsTrigger><TabsTrigger value="whatif">What-If</TabsTrigger></TabsList>
               <TabsContent value="chart">
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={amort.schedule.filter((_, i) => i % Math.max(1, Math.floor(amort.schedule.length / 60)) === 0)}>
@@ -653,6 +654,9 @@ function LoansPageContent() {
                     </TableBody>
                   </Table>
                 </div>
+              </TabsContent>
+              <TabsContent value="entries">
+                <LoanInterestEntries loan={selectedLoan} schedule={amort.schedule} onPosted={load} />
               </TabsContent>
               <TabsContent value="whatif">
                 <p className="text-sm text-muted-foreground mb-4">What if you added extra monthly payments? Amounts are in {selectedLoan.currency}.</p>

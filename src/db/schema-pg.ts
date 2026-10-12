@@ -476,6 +476,24 @@ export const loans = pgTable("loans", {
   uniqueIndex("loans_user_name_lookup_uniq").on(t.userId, t.nameLookup),
 ]);
 
+// Loan interest postings (2026-10-12). One row per loan schedule period whose
+// interest was booked as an expense transaction on the loan's linked account.
+// Keyed on the schedule row's date, not its period number (editing the loan
+// renumbers periods). Both FKs cascade: deleting the transaction un-posts the
+// period, deleting the loan drops its postings and leaves the transactions.
+export const loanInterestPostings = pgTable("loan_interest_postings", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  loanId: integer("loan_id").notNull().references(() => loans.id, { onDelete: "cascade" }),
+  periodDate: text("period_date").notNull(),
+  transactionId: integer("transaction_id").notNull().references(() => transactions.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("loan_interest_postings_loan_period_uniq").on(t.loanId, t.periodDate),
+  index("idx_loan_interest_postings_user_id").on(t.userId),
+  index("idx_loan_interest_postings_transaction_id").on(t.transactionId),
+]);
+
 export const snapshots = pgTable("snapshots", {
   id: serial("id").primaryKey(),
   userId: text("user_id").notNull(),

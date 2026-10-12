@@ -165,10 +165,63 @@ second payload shape is how the two modes drift apart.
   (`/api/loans` has no idempotency key), a `try/catch` around the request, and
   `parseSaveError` on `!res.ok` with the dialog left open and input preserved.
 
+## Interest entries (2026-10-12)
+
+How a payment with an interest component is recorded:
+
+- **The payment is a plain transfer** from the paying account into the loan's
+  linked account. It is never split.
+- **The interest is a separate expense transaction on the loan account**
+  (negative amount, an expense category). It adds to what is owed; the payment
+  then takes the full amount off, so the balance falls by the principal only,
+  and the interest shows in the income statement.
+
+A user can type that expense in by hand. The schedule can also create it:
+
+- **UI** — the schedule panel's **Interest entries** tab
+  ([_components/interest-entries.tsx](<../src/app/(app)/loans/_components/interest-entries.tsx>))
+  lists every payment date that has come due (plus the next upcoming one) with
+  the calculated interest, an editable amount, a per-row Generate and a
+  "Generate N due entries" button. Posted rows link to the transaction.
+- **REST** — `GET /api/loans/interest?loanId=` and `POST /api/loans/interest`
+  `{ loanId, categoryId, entries: [{ periodDate, amount, date? }] }` (`apiHandler`,
+  enveloped).
+- **MCP HTTP** — `manage_loans(op:"post_interest", loan_id, period_date?, amount?,
+  category_id? | category?, date?)`. With no `period_date` it takes the oldest
+  due period without an entry; with no `amount` it uses the schedule's figure;
+  with no category it uses the single expense category with "interest" in its
+  name and refuses if there are none or several.
+
+All rules live in `postLoanInterest`
+([src/lib/loans/interest-postings.ts](../src/lib/loans/interest-postings.ts)),
+the one chokepoint both surfaces call. It refuses, before writing anything: a
+loan with no linked account, an investment account, a `periodDate` that is not
+on the loan's current schedule, and a period that is already posted. The
+transaction goes through `createTransaction` and is written together with its
+posting row inside one `withDbTransaction`; reporting amounts are resolved
+before the transaction opens (the FX lookup can reach the network).
+
+`loan_interest_postings (user_id, loan_id, period_date, transaction_id)` is
+keyed on the schedule row's **date**, unique per `(loan_id, period_date)`.
+Both FKs cascade: deleting the transaction un-posts the period, deleting the
+loan drops its postings and leaves the transactions. Pure helpers (which
+periods are due, the sign of the entry) are in
+[interest-plan.ts](../src/lib/loans/interest-plan.ts).
+
+Known limits:
+
+- The schedule still computes declining-balance interest only. A lender that
+  charges a fixed amount per payment is handled by editing the amount at
+  posting time, not by the schedule itself.
+- Postings are not part of the JSON backup, so after a restore the periods
+  read as un-posted even though their transactions came back. Check before
+  using "Generate N due entries" on a restored account.
+- Nothing posts automatically on the due date; generation is one click.
+
 ## Deferred (Phase 4 — tracked on FINLYNQ-136)
 
-- Posting the principal/interest split into `transactions` (principal =
-  balance movement, interest = expense), auto-generate (recurring-style) vs
+- Interest posting shipped 2026-10-12 as one-click entries (see "Interest
+  entries" above). Still deferred: auto-generate (recurring-style) vs
   import-and-reconcile modes, FI-sync duplicate matching, balance
   reconciliation surface (warn-but-allow), and the posting-trigger /
   categorization decisions that come with it.
