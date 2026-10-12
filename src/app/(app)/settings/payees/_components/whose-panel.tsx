@@ -20,6 +20,7 @@ import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import type { StudioTextKey } from "@/lib/payees/i18n";
 import { OpDialog, type OpPreview } from "./op-dialog";
 import { useStudioT } from "./i18n";
+import { identifierQueryRefusal } from "@/lib/payees/requisites";
 
 type Candidate = {
   entity: { id: number; name: string; type: string } | null;
@@ -57,6 +58,12 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
   async function find() {
     const typed = q.trim();
     if (!typed) return;
+    // P6.2: a full card number is refused here, so it never reaches the server (or a URL).
+    if (identifierQueryRefusal(typed)) {
+      setReport(null);
+      setError(t("whose.fullCard"));
+      return;
+    }
     setBusy(true);
     setError("");
     setStatus("");

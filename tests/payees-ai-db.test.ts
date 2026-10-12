@@ -73,7 +73,7 @@ describeDb("Payee Studio P3 AI layer (seeded DB)", () => {
       op: "propose",
       proposals: [
         { canonical: "Епіцентр", type: "retail", aliases: ["Epicentr", "EPITCENTR K10 KYIV 360616", "Епіцентр К"], reason: "Same store chain", confidence: 0.95 },
-        { canonical: "ATB", type: "retail", aliases: ["Атб Маркет", "ATB MARKET"], reason: "ATB supermarket", confidence: 0.92, identifiers: [{ kind: "card_last4", value: "5375 4141 0000 1234" }] },
+        { canonical: "ATB", type: "retail", aliases: ["Атб Маркет", "ATB MARKET"], reason: "ATB supermarket", confidence: 0.92, identifiers: [{ kind: "card_last4", value: "5375 **** **** 1234" }] },
         { canonical: "Деркач Олександр Петрович", type: "person", aliases: ["DERKACH OLEKSANDR PETROVYCH"], reason: "Same person", confidence: 0.97 },
         { canonical: "", reason: "broken" },
       ],

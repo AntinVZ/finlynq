@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import type { StudioT, StudioTextKey } from "@/lib/payees/i18n";
 import { useStudioT } from "./i18n";
+import { isFullCardNumber } from "@/lib/payees/requisites";
 
 export type Requisite = {
   id: number;
@@ -81,6 +82,8 @@ export function RequisitesCard({
   const [draft, setDraft] = useState({ kind: kinds[0] ?? "iban", value: "", label: "", bank: "", currency: "", isPrimary: false });
   const [editing, setEditing] = useState<{ id: number; label: string; bank: string; currency: string } | null>(null);
   const hint = codeTypeHint(draft.kind, draft.value, entityType, t);
+  // P6.2: a full card number is refused here, so it never reaches the server.
+  const fullCard = draft.kind === "card_last4" && isFullCardNumber(draft.value, { strict: true });
   const groups = [...new Set([...kinds, ...requisites.map((r) => r.kind)])].filter((k) => requisites.some((r) => r.kind === k));
 
   return (
@@ -175,7 +178,7 @@ export function RequisitesCard({
             </label>
             <Button
               size="sm"
-              disabled={!draft.value.trim()}
+              disabled={!draft.value.trim() || fullCard}
               onClick={() => {
                 onAction({
                   title: t("requisites.addTitle"),
@@ -192,6 +195,7 @@ export function RequisitesCard({
               {t("common.addEllipsis")}
             </Button>
           </div>
+          {fullCard && <p className="text-xs text-destructive">{t("whose.fullCard")}</p>}
           {hint && <p className="text-xs text-amber-700 dark:text-amber-300">{hint}</p>}
           <p className="text-xs text-muted-foreground">{t("requisites.footer")}</p>
         </div>

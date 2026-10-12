@@ -1,7 +1,7 @@
 /**
  * "Whose card did I pay?" (Payee Studio P5g) — find counterparties and
  * transactions by a requisite: an IBAN, a card in any written form
- * (`5168 **** 1234`, `****1234`, `1234`, a full number → its last 4 digits),
+ * (`5168 **** 1234`, `****1234`, `1234`; a full card number is refused),
  * an ІПН / РНОКПП or an ЄДРПОУ.
  *
  * A transaction matches through one of three routes (`matchedVia`):

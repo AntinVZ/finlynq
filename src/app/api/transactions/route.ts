@@ -35,7 +35,7 @@ import { securitiesReadEnabledForUser } from "@/lib/securities/flag";
 import { transferLegChanges } from "@/lib/transactions/transfer-leg-guard";
 import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 import { buildIdentifierMatcher } from "@/lib/payees/whose";
-import { maskSensitiveText } from "@/lib/payees/requisites";
+import { identifierQueryRefusal, maskSensitiveText } from "@/lib/payees/requisites";
 
 const postSchema = z.object({
   date: z.string(),
@@ -407,7 +407,7 @@ export async function GET(request: NextRequest) {
 
   if (identifier) {
     const requisite = await buildIdentifierMatcher(db, userId, dek, identifier);
-    if (!requisite) return NextResponse.json({ error: "Not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ." }, { status: 400 });
+    if (!requisite) return NextResponse.json({ error: identifierQueryRefusal(identifier) ?? "Not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ." }, { status: 400 });
     decrypted = decrypted
       .map((r) => {
         const via = requisite.match({ id: (r as { id?: number }).id ?? "", payee: r.payee, note: r.note });

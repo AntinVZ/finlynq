@@ -57,6 +57,7 @@ import { mineIdentifiers, proposeMined } from "../../src/lib/payees/mine";
 import { findWhose } from "../../src/lib/payees/whose";
 import { loadPayeeNameMaps } from "../../src/lib/payees/scan";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
+import { identifierQueryRefusal } from "../../src/lib/payees/requisites";
 import { describeOwnAccount, loadOwnAccounts, loadOwnMatcher } from "../../src/lib/payees/own-accounts";
 import { BULK_DEFAULT_THRESHOLD, BULK_MAX, buildBulkCandidates, commitBulkRegistry, type BulkItem, type BulkRow } from "../../src/lib/payees/bulk-registry";
 
@@ -396,7 +397,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   const identifierArg = z
     .array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string() }))
     .optional()
-    .describe("Requisites: iban | tax_id | edrpou | card_last4 (a full card number is cut to its last 4 digits) | crypto_wallet.");
+    .describe("Requisites: iban | tax_id | edrpou | card_last4 (last 4 digits or a mask; a full card number is refused) | crypto_wallet.");
   const applyArg = z.boolean().optional().describe("Also rename stored payees to the canonical name (default true).");
   const ownAccountArgs = {
     iban: z.string().max(40).nullable().optional(),
@@ -766,7 +767,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           case "whose": {
             const { accounts } = await loadPayeeNameMaps(db, userId, dek);
             const r = await findWhose({ executor: db, userId, dek, identifier: input.identifier, accountNames: accounts });
-            if (!r) return err("Not a requisite: pass an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
+            if (!r) return err(identifierQueryRefusal(input.identifier) ?? "Not a requisite: pass an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
             return dataResponse({
               query: r.query,
               candidates: r.candidates.map((c) => ({

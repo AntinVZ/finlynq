@@ -26,7 +26,7 @@ import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
-import { edrpouChecksumOk, ibanChecksumOk, parseIdentifierQuery, rnokppChecksumOk } from "./requisites";
+import { edrpouChecksumOk, FULL_CARD_REFUSAL, ibanChecksumOk, identifierQueryRefusal, isFullCardNumber, parseIdentifierQuery, rnokppChecksumOk } from "./requisites";
 import type { PayeeExecutor } from "./scan";
 
 export const ALIAS_MODES = ["exact", "contains", "regex"] as const;
@@ -233,12 +233,14 @@ export function buildPayeeMatcher(entities: PayeeEntity[], onlyIds?: ReadonlySet
 // ─── identifiers ────────────────────────────────────────────────────────────
 
 /**
- * Validate and normalize an identifier value. A full card number is cut to
- * its last 4 digits here — the full number is never stored.
+ * Validate and normalize an identifier value. A card is its last 4 digits or
+ * a mask; a full card number is refused (P6.2) — never cut down, never stored.
  */
 export function normalizeIdentifier(kind: IdentifierKind, raw: string): string {
   const v = raw.trim();
   if (kind === "card_last4") {
+    // P6.2: a full card number is refused, never cut down to its last 4 digits.
+    if (isFullCardNumber(v, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL);
     const digits = v.replace(/\D/g, "");
     if (digits.length < 4) throw new PayeeDirectoryError("A card identifier needs at least the last 4 digits.");
     return digits.slice(-4);
@@ -310,7 +312,8 @@ export function maskIdentifier(kind: IdentifierKind, value: string): string {
  * one, and never use a card match for automatic renames.
  */
 export function findByIdentifier(entities: PayeeEntity[], raw: string): PayeeEntity[] {
-  // A card in any written form (`5168 **** 1234`, `*1234`, a full number) → its last 4 digits.
+  // A card as a mask (`5168 **** 1234`, `*1234`) or its last 4 digits; a full card number finds nothing (P6.2).
+  if (identifierQueryRefusal(raw)) return [];
   const parsed = parseIdentifierQuery(raw);
   if (parsed?.kind === "card_last4") return entities.filter((e) => e.identifiers.some((i) => i.kind === "card_last4" && i.value === parsed.value));
   const q = raw.replace(/\s+/g, "").toUpperCase();

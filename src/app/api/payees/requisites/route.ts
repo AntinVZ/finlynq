@@ -32,12 +32,16 @@ import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { mineIdentifiers, mineReportOut, proposeMined } from "@/lib/payees/mine";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 import { findWhose } from "@/lib/payees/whose";
+import { identifierQueryRefusal } from "@/lib/payees/requisites";
 import { loadPayeeNameMaps, spellingOf } from "@/lib/payees/scan";
 
 export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to look for requisites" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   const action = params.get("action");
   if (action === "whose") {
+    // P6.2: a full card number is refused before anything is looked up.
+    const refusal = identifierQueryRefusal(params.get("q") ?? "");
+    if (refusal) return NextResponse.json({ error: refusal }, { status: 400 });
     const { accounts } = await loadPayeeNameMaps(db, userId, dek);
     const report = await findWhose({ executor: db, userId, dek, identifier: (params.get("q") ?? "").slice(0, 100), accountNames: accounts });
     if (!report) return NextResponse.json({ error: "Type an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ." }, { status: 400 });

@@ -150,9 +150,12 @@ describeDb("Payee Studio P2 MCP writes (seeded DB)", () => {
     const ents = await call({ op: "list", view: "entities" });
     expect(ents.entities[0]).toMatchObject({ name: "Епіцентр", count: 30 });
 
-    const idArgs = { op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "4149439312345678" }, { kind: "iban", value: "UA213223130000026007233566001" }] };
+    // P6.2: a full card number is refused (no token, nothing stored); the last 4 digits / a mask are fine.
+    const full = await call({ op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "4149439312345678" }] });
+    expect(full.error).toMatch(/Повний номер картки не приймається/);
+    expect(JSON.stringify(full)).not.toContain("4149439312345678");
+    const idArgs = { op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "**** 5678" }, { kind: "iban", value: "UA213223130000026007233566001" }] };
     const idDone = await call({ ...idArgs, confirmation_token: (await call(idArgs)).confirmationToken });
-    expect(JSON.stringify(idDone)).not.toContain("4149439312345678");
     const got = await call({ op: "get", entity_id: done.entity.entity_id });
     expect(got.entity.identifiers.map((i: { value: string }) => i.value)).toEqual(["•••• 5678", "UA21…6001"]);
     expect(got.history.length).toBe(2);

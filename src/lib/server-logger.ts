@@ -33,6 +33,8 @@ interface ErrorLogEntry {
 const SECRET_KEY_PATTERN = /\b(password|passphrase|pass|token|api[-_]?key|dek|pepper|mfa[-_]?secret|webhook[-_]?secret|authorization|cookie|session|jti)\b\s*[:=]\s*["']?([^"'\s,}\]]+)/gi;
 const PF_TOKEN_PATTERN = /\b(pf_(?:oauth_|refresh_)?[A-Za-z0-9]{32,})\b/g;
 const LONG_HEX_PATTERN = /\b[a-f0-9]{48,}\b/gi; // 48+ hex chars (sha256+)
+// P6.2: a full card number (13–19 digits, spaces / dashes allowed) never reaches a log line.
+const CARD_PAN_PATTERN = /(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g;
 const EMAIL_PATTERN = /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
 
 function scrubSensitive(value: string): string {
@@ -44,6 +46,8 @@ function scrubSensitive(value: string): string {
   out = out.replace(PF_TOKEN_PATTERN, "<redacted-pf-token>");
   // Redact long hex runs (likely secrets / hashes containing sensitive data).
   out = out.replace(LONG_HEX_PATTERN, "<redacted-hex>");
+  // Redact full card numbers (keep nothing of them).
+  out = out.replace(CARD_PAN_PATTERN, "<redacted-card>");
   // Redact emails — these are PII too.
   out = out.replace(EMAIL_PATTERN, "<redacted-email>");
   return out;

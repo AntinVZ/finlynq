@@ -8,6 +8,8 @@ import {
   edrpouChecksumOk,
   extractRequisites,
   ibanChecksumOk,
+  identifierQueryRefusal,
+  isFullCardNumber,
   maskSensitiveText,
   parseIdentifierQuery,
   rnokppChecksumOk,
@@ -70,7 +72,6 @@ describe("identifier queries and type hints", () => {
     expect(parseIdentifierQuery("5168 **** 1234")).toMatchObject({ kind: "card_last4", value: "1234", strong: false });
     expect(parseIdentifierQuery("****1234")).toMatchObject({ kind: "card_last4", value: "1234" });
     expect(parseIdentifierQuery("1234")).toMatchObject({ kind: "card_last4", value: "1234" });
-    expect(parseIdentifierQuery("4149 4999 1234 5678")).toMatchObject({ kind: "card_last4", value: "5678" });
     expect(parseIdentifierQuery("ua21 3223 1300 0002 6007 2335 6600 1")).toMatchObject({ kind: "iban", value: "UA213223130000026007233566001", strong: true });
     expect(parseIdentifierQuery("3123456789")).toMatchObject({ kind: "tax_id", masked: "••••••••89" });
     expect(parseIdentifierQuery("14360570")).toMatchObject({ kind: "edrpou" });
@@ -88,6 +89,25 @@ describe("identifier queries and type hints", () => {
     expect(normalizeIdentifier("tax_id", "312 345 6789")).toBe("3123456789");
     expect(() => normalizeIdentifier("tax_id", "14360570")).toThrow(/10 digits/);
     expect(() => normalizeIdentifier("edrpou", "3123456789")).toThrow(/8 digits/);
-    expect(normalizeIdentifier("card_last4", "4149 4999 1234 5678")).toBe("5678");
+  });
+});
+
+describe("a full card number is refused, never cut down to its last 4 (P6.2)", () => {
+  const FULL = ["4149 4999 1234 5678", "4149499912345678", "4149-4999-1234-5678", "4149 4999 1234 5678 901", "4149*4999*1234*5678"];
+  it("as a requisite of a payee (op identifiers, create, proposals, dictionary import)", () => {
+    for (const v of [...FULL, "41494999", "12345"]) expect(() => normalizeIdentifier("card_last4", v), v).toThrow(/Повний номер картки не приймається/);
+    expect(normalizeIdentifier("card_last4", "5678")).toBe("5678");
+    expect(normalizeIdentifier("card_last4", "**** 5678")).toBe("5678");
+    expect(normalizeIdentifier("card_last4", "5168 **** **** 5678")).toBe("5678");
+    expect(normalizeIdentifier("card_last4", "516874******5678")).toBe("5678");
+  });
+  it("as a search value (whose, search_transactions identifier / payee_resolve, the Transactions filter)", () => {
+    for (const v of FULL) {
+      expect(parseIdentifierQuery(v), v).toBeNull();
+      expect(identifierQueryRefusal(v), v).toMatch(/Повний номер картки не приймається/);
+    }
+    for (const v of ["5168 **** 1234", "1234", "3123456789", "14360570", "UA21 3223 1300 0002 6007 2335 6600 1", "Сільпо"]) expect(identifierQueryRefusal(v), v).toBeNull();
+    expect(isFullCardNumber("Переказ 4149 4999 1234 5678")).toBe(true);
+    expect(isFullCardNumber("5168 **** **** 1234", { strict: true })).toBe(false);
   });
 });

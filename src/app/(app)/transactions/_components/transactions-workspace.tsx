@@ -40,6 +40,7 @@ import useSWR from "swr";
 import { jsonFetcher } from "@/lib/swr";
 import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
+import { identifierQueryRefusal } from "@/lib/payees/requisites";
 import { exportCsv, type CsvColumn } from "@/lib/csv-export";
 import { localDateISO, todayISO } from "@/lib/utils/date";
 import { LotReallocationNotice } from "@/components/portfolio/lot-reallocation-notice";
@@ -92,6 +93,20 @@ export function TransactionsWorkspace({
   const [searchInput, setSearchInput] = useState("");
   // Payee Studio P5g: "Card / IBAN / tax id" — applied on Enter / blur.
   const [identifierInput, setIdentifierInput] = useState("");
+  const [identifierError, setIdentifierError] = useState("");
+  /** P6.2: a full card number never leaves the browser (not even in the URL) — refused here. */
+  const applyIdentifier = () => {
+    const v = identifierInput.trim();
+    if (identifierQueryRefusal(v)) {
+      setIdentifierError("A full card number is not accepted: type only the last 4 digits (or a mask “**** 1234”).");
+      return;
+    }
+    setIdentifierError("");
+    if (v !== filters.identifier) {
+      setFilters({ ...filters, identifier: v });
+      setPage(0);
+    }
+  };
   // Filter state is synced FROM the URL via the `useEffect` below (not a
   // `useState(urlParams.get(...))` initialiser). `useState` only runs on
   // mount, so client-side drill-through navigation while already on
@@ -884,11 +899,13 @@ export function TransactionsWorkspace({
               placeholder="Card / IBAN / tax id (e.g. **** 1234) — press Enter"
               value={identifierInput}
               onChange={(e) => setIdentifierInput(e.target.value)}
-              onBlur={() => { if (identifierInput.trim() !== filters.identifier) { setFilters({ ...filters, identifier: identifierInput.trim() }); setPage(0); } }}
-              onKeyDown={(e) => { if (e.key === "Enter") { setFilters({ ...filters, identifier: identifierInput.trim() }); setPage(0); } }}
+              onBlur={applyIdentifier}
+              onKeyDown={(e) => { if (e.key === "Enter") applyIdentifier(); }}
+              aria-invalid={identifierError ? true : undefined}
             />
+            {identifierError && <p className="mt-1 text-xs text-destructive">{identifierError}</p>}
             {identifierInput && (
-              <button aria-label="Clear card / IBAN / tax id" onClick={() => { setIdentifierInput(""); setFilters({ ...filters, identifier: "" }); setPage(0); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted transition-colors">
+              <button aria-label="Clear card / IBAN / tax id" onClick={() => { setIdentifierInput(""); setIdentifierError(""); setFilters({ ...filters, identifier: "" }); setPage(0); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted transition-colors">
                 <X className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
             )}

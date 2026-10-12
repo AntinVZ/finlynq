@@ -100,7 +100,7 @@ import {
 } from "../../src/lib/loan-calculator";
 import { resolveCounterparty, resolveMerchantTypeFilter } from "../../src/lib/payees/resolve";
 import { buildIdentifierMatcher } from "../../src/lib/payees/whose";
-import { maskSensitiveText } from "../../src/lib/payees/requisites";
+import { identifierQueryRefusal, maskSensitiveText } from "../../src/lib/payees/requisites";
 
 /**
  * search_transactions in-memory text-filter scan: rows read
@@ -323,7 +323,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       ...tagFilterArgs,
       business: businessArg,
       payee_resolve: z.string().optional().describe("A counterparty from the payee directory (manage_payees): canonical name, any alias or stored spelling, or a requisite (IBAN, EDRPOU, card last 4). Matches every transaction of that counterparty, however its payee is spelled. Not in the directory → same matching key (case, apostrophes, Latin/Cyrillic, card-terminal noise ignored)."),
-      identifier: z.string().optional().describe("A requisite: IBAN, a card in any form (\"5168 **** 1234\", \"****1234\", \"1234\"; a full number counts as its last 4), ІПН/РНОКПП (10 digits) or ЄДРПОУ (8). Matches rows whose payee resolves to a directory entry holding it, rows whose payee/note mention it, and rows created from a bank-statement row that mentions it; each row gets matched_via. Last 4 digits are weak: check filters.identifier.entities. Shown masked."),
+      identifier: z.string().optional().describe("A requisite: IBAN, a card in any form (\"5168 **** 1234\", \"****1234\", \"1234\"; a full card number is refused), ІПН/РНОКПП (10 digits) or ЄДРПОУ (8). Matches rows whose payee resolves to a directory entry holding it, rows whose payee/note mention it, and rows created from a bank-statement row that mentions it; each row gets matched_via. Last 4 digits are weak: check filters.identifier.entities. Shown masked."),
       merchant_type: z.string().optional().describe("Merchant type of the payee's directory entry (manage_payees): a group (all its positions, e.g. \"Кафе, ресторани, бари\"), a position (\"Ресторани\"), \"Group → Position\", or \"без типу\" for untyped / unknown payees."),
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
@@ -344,12 +344,15 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       const tagFilter = parseTagFilter({ tags_all, tags_any, tags_none, untagged });
       const textFilters = { payee, note, tags, search, tagExact: exactTag, tagFilter };
       // Payee Studio: every spelling of one counterparty (in memory, after decryption).
+      // P6.2: a full card number is never accepted, not even as a search value.
+      const refused = (identifier && identifierQueryRefusal(identifier)) || (payee_resolve && identifierQueryRefusal(payee_resolve));
+      if (refused) return err(refused);
       const counterparty = payee_resolve?.trim() ? await resolveCounterparty(db, userId, dek, payee_resolve) : null;
       // Payee Studio P6: by the merchant type of the payee's directory entry.
       const byType = merchant_type?.trim() ? await resolveMerchantTypeFilter(db, userId, dek, merchant_type) : null;
       // Payee Studio P5g: by requisite (directory → text → bank-statement row).
       const requisite = identifier?.trim() ? await buildIdentifierMatcher(db, userId, dek, identifier) : null;
-      if (identifier?.trim() && !requisite) return err("`identifier` is not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
+      if (identifier?.trim() && !requisite) return err(identifierQueryRefusal(identifier) ?? "`identifier` is not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
       const matchedVia = new Map<unknown, string>();
       const inMemory = hasTextFilter(textFilters) || counterparty != null || requisite != null || byType != null;
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The

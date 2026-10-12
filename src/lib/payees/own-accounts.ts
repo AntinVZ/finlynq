@@ -23,7 +23,7 @@ import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { PayeeDirectoryError } from "./directory";
-import { extractRequisites, ibanChecksumOk, maskIban } from "./requisites";
+import { extractRequisites, FULL_CARD_REFUSAL, ibanChecksumOk, isFullCardNumber, maskIban } from "./requisites";
 import type { PayeeExecutor } from "./scan";
 
 export const OWN_ACCOUNT_OWNERS = ["me", "spouse", "business"] as const;
@@ -65,12 +65,8 @@ export function normalizeOwnAccount(input: OwnAccountInput): Omit<OwnAccount, "i
   let cardLast4: string | null = null;
   if (input.card != null && input.card.trim()) {
     const raw = input.card.trim();
-    const runs = raw.match(/\d+/g) ?? [];
-    const digits = runs.join("");
     // A full card number — never accepted, never stored.
-    if (runs.some((r) => r.length >= 12) || (!/[*xX•]/.test(raw) && digits.length > 4)) {
-      throw new PayeeDirectoryError("Повний номер картки не приймається: вкажіть лише останні 4 цифри (або маску «**** 1234»).");
-    }
+    if (isFullCardNumber(raw, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL);
     const last = raw.match(/(\d{4})\s*$/);
     if (!last) throw new PayeeDirectoryError("Для картки потрібні останні 4 цифри.");
     cardLast4 = last[1];

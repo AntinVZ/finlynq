@@ -162,6 +162,32 @@ export function typeHintForCode(code: string): "company" | "person_or_sole_propr
   return null;
 }
 
+/** The one refusal for a full card number, wherever it is typed (P6.2: never accepted, never stored). */
+export const FULL_CARD_REFUSAL = "Повний номер картки не приймається: вкажіть лише останні 4 цифри (або маску «**** 1234»).";
+
+/**
+ * Is this card input a full card number? 13+ digits in all (a mask keeps at
+ * most 6 + 4), or a run of 12+ digits (spaces / dashes allowed between
+ * them). `strict` (a card field): also more than 4 digits with no mask
+ * character — only the last 4 or a mask is accepted there.
+ */
+export function isFullCardNumber(raw: string, opts: { strict?: boolean } = {}): boolean {
+  const s = String(raw ?? "");
+  const digits = digitsOf(s);
+  if (digits.length >= 13) return true;
+  if (/(?<!\d)(?:\d[ -]?){11,}\d(?!\d)/.test(s)) return true;
+  return Boolean(opts.strict) && !/[*xX•]/.test(s) && digits.length > 4;
+}
+
+/** Why a requisite query is refused (a full card number), or null. IBANs and codes are not cards. */
+export function identifierQueryRefusal(raw: string): string | null {
+  const t = String(raw ?? "").trim();
+  if (!t) return null;
+  const compact = t.replace(/[\s-]+/g, "").toUpperCase();
+  if (/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(compact)) return null; // an IBAN
+  return isFullCardNumber(t) ? FULL_CARD_REFUSAL : null;
+}
+
 export type IdentifierQuery =
   | { kind: "iban"; value: string; masked: string; strong: true }
   | { kind: "card_last4"; value: string; masked: string; strong: false }
@@ -170,15 +196,17 @@ export type IdentifierQuery =
 
 /**
  * Understand what someone typed as a requisite: an IBAN, a card in any form
- * (`5168 **** 1234`, `****1234`, `1234`, a full number → last 4), a 10-digit
- * ІПН / РНОКПП or an 8-digit ЄДРПОУ. Spaces, dashes and asterisks are
- * ignored. Null when it is none of these.
+ * (`5168 **** 1234`, `****1234`, `1234`), a 10-digit ІПН / РНОКПП or an
+ * 8-digit ЄДРПОУ. Spaces, dashes and asterisks are ignored. Null when it is
+ * none of these — and for a full card number, which is never accepted
+ * (P6.2; callers say why with `identifierQueryRefusal`).
  */
 export function parseIdentifierQuery(raw: string): IdentifierQuery | null {
   const t = raw.trim();
   if (!t) return null;
   const compact = t.replace(/[\s-]+/g, "").toUpperCase();
   if (/^UA\d{27}$/.test(compact) || /^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(compact)) return { kind: "iban", value: compact, masked: maskIban(compact), strong: true };
+  if (identifierQueryRefusal(t)) return null;
   if (/[*X•]/.test(compact) || /^\d{4}$/.test(compact)) {
     const last = compact.match(/(\d{4})$/);
     if (last) return { kind: "card_last4", value: last[1], masked: `•••• ${last[1]}`, strong: false };
@@ -188,6 +216,5 @@ export function parseIdentifierQuery(raw: string): IdentifierQuery | null {
   if (d.length !== compact.replace(/[^0-9]/g, "").length || !/^\d+$/.test(compact)) return null;
   if (d.length === 10) return { kind: "tax_id", value: d, masked: `••••••••${d.slice(-2)}`, strong: true };
   if (d.length === 8) return { kind: "edrpou", value: d, masked: d, strong: true };
-  if (d.length >= 13 && d.length <= 19) return { kind: "card_last4", value: d.slice(-4), masked: `•••• ${d.slice(-4)}`, strong: false };
   return null;
 }

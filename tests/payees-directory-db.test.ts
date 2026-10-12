@@ -146,11 +146,15 @@ describeDb("Payee Studio P2 directory (seeded DB)", () => {
     expect(p.warnings.join(" ")).toMatch(/private person/);
   });
 
-  it("stores only the last 4 card digits and validates identifiers", async () => {
+  it("stores only the last 4 card digits, refuses a full card number and validates identifiers", async () => {
     const { db } = await import("@/db");
+    // P6.2: a full card number is refused, never cut down to its last 4 digits.
+    await expect(
+      op({ op: "create", name: "FOP Davydzon", type: "sole_proprietor", apply: false, identifiers: [{ kind: "card_last4", value: "4149 4393 1234 5678" }] }),
+    ).rejects.toThrow(/Повний номер картки не приймається/);
     const res = await op({
       op: "create", name: "FOP Davydzon", type: "sole_proprietor", apply: false,
-      identifiers: [{ kind: "card_last4", value: "4149 4393 1234 5678" }, { kind: "iban", value: "ua21 3223 1300 0002 6007 2335 6600 1" }],
+      identifiers: [{ kind: "card_last4", value: "4149 **** **** 5678" }, { kind: "iban", value: "ua21 3223 1300 0002 6007 2335 6600 1" }],
     });
     expect(res.identifiersAdded).toEqual([{ kind: "card_last4", masked: "•••• 5678" }, { kind: "iban", masked: "UA21…6001" }]);
     const raw = (await db.execute(sql`SELECT value FROM payee_identifiers`)) as unknown as Rows<{ value: string }>;
