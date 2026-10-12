@@ -20,6 +20,7 @@
  */
 import { mergeSlices, scanPayees, type AmountSlice, type PayeeExecutor } from "./scan";
 import type { PayeeMatcher } from "./directory";
+import { bankOperationOf, type PayeeVocabulary } from "./type-words";
 
 export type Counterparty = {
   /** `e:<entityId>` or `k:<matching key>`. */
@@ -45,7 +46,8 @@ export type PayeeInsights = {
   asOf: string;
   window: { months: number; from: string };
   currency: string;
-  totals: { counterparties: number; transactions: number; spend: number; income: number };
+  /** `bankOperations`: the bank's own service rows (P6, B25) — counted here, kept out of the tops and concentration. */
+  totals: { counterparties: number; transactions: number; spend: number; income: number; bankOperations: { transactions: number; spend: number } };
   topBySpend: Counterparty[];
   topByCount: Counterparty[];
   monthly: { months: string[]; series: Array<{ id: string; name: string; values: number[] }> };
@@ -109,6 +111,8 @@ export async function computePayeeInsights(opts: {
   recentDays?: number;
   asOf?: string;
   limit?: number;
+  /** P6: type words / bank-operation patterns (default: built-in). */
+  vocab?: PayeeVocabulary;
 }): Promise<PayeeInsights> {
   const months = Math.min(Math.max(opts.months ?? 12, 1), 60);
   const recentDays = Math.min(Math.max(opts.recentDays ?? 90, 7), 730);
@@ -137,6 +141,8 @@ export async function computePayeeInsights(opts: {
     dates: string[];
     firstDate: string | null;
     lastDate: string | null;
+    /** The bank's own service row (fee, own transfer, interest…). */
+    bankOperation: boolean;
   };
   const accs = new Map<string, Acc>();
   for (const s of scan.spellings.values()) {
@@ -157,9 +163,11 @@ export async function computePayeeInsights(opts: {
         dates: [],
         firstDate: null,
         lastDate: null,
+        bankOperation: false,
       };
       accs.set(id, a);
     }
+    if (bankOperationOf(s.spelling, opts.vocab)) a.bankOperation = true;
     a.spellingCounts.set(s.spelling, s.counts.transactions);
     a.count += s.counts.transactions;
     mergeSlices(a.slices, s.slices);
@@ -202,7 +210,10 @@ export async function computePayeeInsights(opts: {
     firstDate: c.acc.firstDate,
     lastDate: c.acc.lastDate,
   });
-  const inWindow = cps.filter((c) => c.window.count > 0);
+  const active = cps.filter((c) => c.window.count > 0);
+  // B25: merchant tops, the monthly split and concentration leave the bank's own rows out.
+  const inWindow = active.filter((c) => !c.acc.bankOperation);
+  const bankOps = active.filter((c) => c.acc.bankOperation);
   const topBySpend = [...inWindow].filter((c) => c.window.spend > 0).sort((a, b) => b.window.spend - a.window.spend).slice(0, limit);
   const topByCount = [...inWindow].sort((a, b) => b.window.count - a.window.count || b.window.spend - a.window.spend).slice(0, limit);
 
@@ -258,7 +269,13 @@ export async function computePayeeInsights(opts: {
     asOf,
     window: { months, from: `${fromMonth}-01` },
     currency: opts.currency,
-    totals: { counterparties: inWindow.length, transactions: inWindow.reduce((n, c) => n + c.window.count, 0), spend: round2(totalSpend), income: round2(totalIncome) },
+    totals: {
+      counterparties: inWindow.length,
+      transactions: inWindow.reduce((n, c) => n + c.window.count, 0),
+      spend: round2(totalSpend),
+      income: round2(totalIncome),
+      bankOperations: { transactions: bankOps.reduce((n, c) => n + c.window.count, 0), spend: round2(bankOps.reduce((n, c) => n + c.window.spend, 0)) },
+    },
     topBySpend: topBySpend.map(asCp),
     topByCount: topByCount.map(asCp),
     monthly: { months: windowMonths, series },

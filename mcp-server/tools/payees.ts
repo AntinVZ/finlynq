@@ -44,6 +44,7 @@ import {
 } from "../../src/lib/payees/proposals";
 import { computePayeeInsights } from "../../src/lib/payees/insights";
 import { explainPayeePair } from "../../src/lib/payees/explain";
+import { getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "../../src/lib/payees/dictionary";
 import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
@@ -76,6 +77,9 @@ function groupOut(g: PayeeGroup, detail = false) {
     typeGuess: g.type.type,
     ...(g.type.isPerson ? { person: true } : {}),
     ...(g.noisy ? { noisy: true } : {}),
+    ...(g.brand.removed.length ? { typeWords: g.brand.removed } : {}),
+    ...(g.brand.typeOnly ? { noBrand: true } : {}),
+    ...(g.bankOperation ? { bankOperation: g.bankOperation } : {}),
     ...(detail ? { suggestedName: g.suggestedName, sources: g.sources, typeReason: g.type.reason } : {}),
     entity: g.entityId == null ? null : { id: g.entityId, name: g.entityName },
   };
@@ -683,6 +687,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               months: input.months,
               recentDays: input.recent_days,
               limit: input.limit,
+              vocab: vocabularyOf(await getPayeeSettings(db, userId)),
             });
             const wantMerchants = input.merchants === true || input.period_from != null || input.period_to != null || input.entity_id != null || input.name != null;
             const merchants = wantMerchants
@@ -799,8 +804,19 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           }
           case "explain": {
             const matcher = buildPayeeMatcher(dek ? await loadDirectory(db, userId, dek) : []);
-            const x = explainPayeePair(input.a, input.b, matcher);
-            const sideOut = (v: typeof x.a) => ({ payee: v.payee, key: v.key, core: v.core, block: v.block, typeGuess: v.type.type, typeReason: v.type.reason, ...(v.type.isPerson ? { person: true } : {}), entity: v.entity });
+            const x = explainPayeePair(input.a, input.b, matcher, vocabularyOf(await getPayeeSettings(db, userId)));
+            const sideOut = (v: typeof x.a) => ({
+              payee: v.payee,
+              key: v.key,
+              core: v.core,
+              block: v.block,
+              brand: v.brandLine,
+              ...(v.bankOperation ? { bankOperation: v.bankOperation } : {}),
+              typeGuess: v.type.type,
+              typeReason: v.type.reason,
+              ...(v.type.isPerson ? { person: true } : {}),
+              entity: v.entity,
+            });
             return dataResponse({ verdict: x.verdict, score: x.score, reasons: x.reasons, a: sideOut(x.a), b: sideOut(x.b) });
           }
           case "review": {

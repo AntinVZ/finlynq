@@ -17,6 +17,8 @@ type Side = {
   key: string;
   core: string;
   block: string;
+  brandLine?: string;
+  bankOperation?: string | null;
   type: { type: string; reason: string; isPerson: boolean };
   entity: { id: number; name: string } | null;
 };
@@ -54,6 +56,8 @@ export function ExplainDialog({ initialA = "", initialB = "", onClose }: { initi
       <p className="font-medium text-sm break-all">{label}: {s.payee}</p>
       <p>Key: <code className="break-all">{s.key || "—"}</code></p>
       <p>Core: <code className="break-all">{s.core || "—"}</code> · block <code>{s.block || "—"}</code></p>
+      {s.brandLine && <p className="break-words">{s.brandLine}</p>}
+      {s.bankOperation && <p>Банківська операція («{s.bankOperation}»)</p>}
       <p>Type: {typeLabel(s.type.type)} <span className="text-muted-foreground">({s.type.reason})</span></p>
       <p>Directory: {s.entity ? `${s.entity.name} (#${s.entity.id})` : "not in the directory"}</p>
     </div>

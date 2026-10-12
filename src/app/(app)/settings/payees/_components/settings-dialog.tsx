@@ -11,6 +11,28 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { DictionaryCard } from "./dictionary-card";
 import type { PayeeSettings } from "./payee-ui";
 
+/** A one-entry-per-line list that saves on blur. Remounts (via key) when the saved value changes. */
+function WordListField({ label, value, disabled, onSave, placeholder }: { label: string; value?: string[]; disabled: boolean; onSave: (v: string[]) => void; placeholder?: string }) {
+  const saved = (value ?? []).join("\n");
+  return (
+    <label className="block text-xs">
+      <span className="font-medium">{label}</span>
+      <textarea
+        key={saved}
+        aria-label={label}
+        className="mt-1 block w-full min-h-16 rounded-md border bg-background p-2 text-xs"
+        defaultValue={saved}
+        disabled={disabled}
+        placeholder={placeholder}
+        onBlur={(e) => {
+          const next = e.target.value.split("\n").map((w) => w.trim()).filter(Boolean);
+          if (next.join("\n") !== saved) onSave(next);
+        }}
+      />
+    </label>
+  );
+}
+
 export function StudioSettingsDialog({
   settings,
   onSave,
@@ -83,6 +105,18 @@ export function StudioSettingsDialog({
               </span>
             </span>
           </label>
+          <div className="border-t pt-3 space-y-3">
+            <h3 className="font-medium">Словник: слова-типи і банківські операції</h3>
+            <p className="text-xs text-muted-foreground">
+              Слова-типи (ресторан, АЗС, аптека, hotel…) не входять у ядро назви — платника визначає бренд: «Ресторан Дача» ≠ «Ресторан Липки».
+              Банківські операції (комісія, переказ власних коштів, відсотки…) не є мерчантами і не потрапляють у топи витрат. По одному на рядок;
+              зберігається, коли поле втрачає фокус. Вбудований список доповнюється вашими словами; вбудовані можна вимкнути.
+            </p>
+            <WordListField label="Мої слова-типи" value={settings?.typeWordsExtra} disabled={disabled} onSave={(v) => onSave({ typeWordsExtra: v })} placeholder={"шиномонтаж\nкальянна"} />
+            <WordListField label="Вимкнути вбудовані слова-типи" value={settings?.typeWordsOff} disabled={disabled} onSave={(v) => onSave({ typeWordsOff: v })} placeholder="салон" />
+            <WordListField label="Мої банківські операції (* в кінці — префікс)" value={settings?.bankOpsExtra} disabled={disabled} onSave={(v) => onSave({ bankOpsExtra: v })} placeholder={"плата за SMS\nстрахування картк*"} />
+            <WordListField label="Вимкнути вбудовані банківські операції" value={settings?.bankOpsOff} disabled={disabled} onSave={(v) => onSave({ bankOpsOff: v })} placeholder="кешбек" />
+          </div>
           <div className="border-t pt-3">
             <h3 className="font-medium mb-2">Dictionary file</h3>
             <DictionaryCard onImported={onImported} />

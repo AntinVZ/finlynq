@@ -200,6 +200,16 @@ export default function PayeesSettingsPage() {
         {typeLabel(g.type.type)}
       </span>
       {g.type.isPerson && g.entityId == null && needsDecisionBadge(g.type.reason)}
+      {g.bankOperation && (
+        <Badge variant="outline" className="text-[10px]" title={`Службовий рядок банку («${g.bankOperation}»): не мерчант, не входить у топи витрат`}>
+          Банківські операції
+        </Badge>
+      )}
+      {g.brand?.typeOnly && !g.bankOperation && (
+        <Badge variant="outline" className="text-[10px]" title={`Лише слова-типи (${g.brand.removed.join(", ")}): без бренду не кластеризується і не пропонується як мерчант`}>
+          без бренду
+        </Badge>
+      )}
     </span>
   );
   const rowAction = (g: PayeeGroupRow) =>

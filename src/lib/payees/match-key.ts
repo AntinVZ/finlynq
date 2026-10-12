@@ -22,6 +22,7 @@
  * and must never be used for it.
  */
 import { normalizeForMatch } from "@/lib/text-normalize";
+import { brandCoreOfKey, type PayeeVocabulary } from "./type-words";
 
 // ─── transliteration ───────────────────────────────────────────────────────
 
@@ -195,13 +196,14 @@ function keyFromTokens(tokens: readonly string[]): string {
 }
 
 /**
- * The key without one-letter tokens (`epikentr k` → `epikentr`,
- * `davidzon o m` → `davidzon`). Used to pair near-identical names in
+ * The key's brand core: without one-letter tokens (`epikentr k` →
+ * `epikentr`, `davidzon o m` → `davidzon`) and, P6, without type words
+ * (`restoran dacha` → `dacha`, `azs oko` → `oko`) as long as a specific
+ * token is left (see ./type-words.ts). Used to pair near-identical names in
  * clustering; never for exact matching.
  */
-export function coreOfKey(key: string): string {
-  const toks = key.split(" ").filter((t) => t.length > 1);
-  return toks.length ? toks.join(" ") : key;
+export function coreOfKey(key: string, vocab?: PayeeVocabulary): string {
+  return brandCoreOfKey(key, vocab).core;
 }
 
 /**
@@ -258,6 +260,8 @@ export type TypeGuess = {
 
 const PATRONYMIC_RE = /(?:ович|евич|йович|івна|ївна|овна|евна|ічна|ична)$/;
 const PATRONYMIC_LAT_RE = /(?:ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
+/** One normalized token that is a patronymic (Cyrillic or Latin). */
+export const PATRONYMIC_TOKEN_RE = /(?:ович|евич|йович|івна|ївна|овна|евна|ічна|ична|ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
 const SOLE_PROP_RE = /^(?:фоп|флп|спд|fop|flp|spd|фізична особа[- ]підприємець|fizychna osoba[- ]pidpryiemets)\b/;
 const INITIALS_RE = /^[\p{L}'’-]{2,}\s+\p{L}\.\s*\p{L}\.?$/u;
 const BANK_RE = /\b(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)\b/;

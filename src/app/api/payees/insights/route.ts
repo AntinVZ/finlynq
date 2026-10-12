@@ -21,6 +21,7 @@ import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
 import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { computePayeeInsights } from "@/lib/payees/insights";
+import { getPayeeSettings, vocabularyOf } from "@/lib/payees/settings";
 import { loadMerchantAnalytics, makeSliceConverter } from "@/lib/payees/service";
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -66,6 +67,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     currency,
     months: intParam(params.get("months"), 12),
     recentDays: intParam(params.get("recentDays"), 90),
+    vocab: vocabularyOf(await getPayeeSettings(db, userId)),
   });
   return NextResponse.json(insights);
 });

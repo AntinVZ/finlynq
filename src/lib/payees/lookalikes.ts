@@ -31,7 +31,8 @@ import { createHmac } from "crypto";
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { payeeMatchKey, type PayeeType } from "./match-key";
-import { blockKeyOf, MIN_EDGE_CONFIDENCE, scoreKeys, type PayeeGroup } from "./overview";
+import { blockKeyOf, clusterable, MIN_EDGE_CONFIDENCE, scoreKeys, type PayeeGroup } from "./overview";
+import type { PayeeVocabulary } from "./type-words";
 import type { PayeeEntity } from "./directory";
 import type { PayeeExecutor } from "./scan";
 
@@ -107,7 +108,7 @@ export function payeeRemainder(spelling: string, entityNames: string[]): string 
 export function computeLookalikes(
   groups: readonly PayeeGroup[],
   directory: readonly PayeeEntity[],
-  opts: { rejected?: (key: string, entityId: number) => boolean; minConfidence?: number; limit?: number } = {},
+  opts: { rejected?: (key: string, entityId: number) => boolean; minConfidence?: number; limit?: number; vocab?: PayeeVocabulary } = {},
 ): LookalikeReport {
   const min = Math.max(opts.minConfidence ?? MIN_EDGE_CONFIDENCE, MIN_EDGE_CONFIDENCE);
   // Exact alias keys (incl. canonical names) by block.
@@ -119,7 +120,7 @@ export function computeLookalikes(
       const key = payeeMatchKey(a.pattern);
       if (!key || seen.has(key)) continue;
       seen.add(key);
-      const b = blockKeyOf(key);
+      const b = blockKeyOf(key, opts.vocab);
       let list = byBlock.get(b);
       if (!list) byBlock.set(b, (list = []));
       list.push({ entity: e, key, pattern: a.pattern });
@@ -128,15 +129,15 @@ export function computeLookalikes(
   const candidates: LookalikeCandidate[] = [];
   let rejectedHidden = 0;
   for (const g of groups) {
-    if (!g.key || g.entityId != null) continue;
-    const pool = byBlock.get(blockKeyOf(g.key));
+    if (!g.key || g.entityId != null || !clusterable(g)) continue;
+    const pool = byBlock.get(blockKeyOf(g.key, opts.vocab));
     if (!pool) continue;
     const best = new Map<number, { confidence: number; reason: string; pattern: string; entity: PayeeEntity }>();
     for (const p of pool) {
       const entityPerson = PERSON_TYPES.has(p.entity.type);
       if (g.type.isPerson && !entityPerson && p.entity.type !== "other") continue; // a person's name never goes to a merchant
       if (entityPerson && !g.type.isPerson && g.type.type !== "other") continue; // nor a clearly-typed merchant to a person
-      const s = p.key === g.key ? { confidence: 1, reason: "same name" } : scoreKeys(g.key, p.key);
+      const s = p.key === g.key ? { confidence: 1, reason: "same name" } : scoreKeys(g.key, p.key, opts.vocab);
       if (!s || s.confidence < min) continue;
       const cur = best.get(p.entity.id);
       if (!cur || s.confidence > cur.confidence) best.set(p.entity.id, { ...s, pattern: p.pattern, entity: p.entity });

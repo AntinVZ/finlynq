@@ -24,7 +24,8 @@ import { guessPayeeType, payeeMatchKey } from "./match-key";
 import { buildPayeeMatcher, insertAlias, loadDirectory, type PayeeEntity } from "./directory";
 import { runPayeeBatch, writeStoredPayees } from "./batches";
 import { scoreKeys } from "./overview";
-import { getPayeeSettings } from "./settings";
+import { bankOperationOf, type PayeeVocabulary } from "./type-words";
+import { getPayeeSettings, vocabularyOf } from "./settings";
 import { invalidatePayeeSuggest } from "./suggest";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 
@@ -40,17 +41,19 @@ export function autopilotMatch(
   payee: string,
   entities: PayeeEntity[],
   threshold: number,
+  vocab?: PayeeVocabulary,
 ): { entity: PayeeEntity; confidence: number; reason: string } | null {
   const key = payeeMatchKey(payee);
-  if (!key || guessPayeeType(payee).isPerson) return null;
+  if (!key || guessPayeeType(payee).isPerson || bankOperationOf(payee, vocab)) return null;
   const hits: Array<{ entity: PayeeEntity; confidence: number; reason: string }> = [];
   for (const e of entities) {
     if (e.type === "person" || e.type === "sole_proprietor") continue;
     let best: { confidence: number; reason: string } | null = null;
     for (const a of e.aliases) {
       if (a.mode !== "exact") continue;
-      const s = scoreKeys(key, payeeMatchKey(a.pattern));
-      if (s && (!best || s.confidence > best.confidence)) best = s;
+      const s = scoreKeys(key, payeeMatchKey(a.pattern), vocab);
+      // P6: different brand tokens are never joined automatically.
+      if (s && s.sameBrand && (!best || s.confidence > best.confidence)) best = { confidence: s.confidence, reason: s.reason };
     }
     if (best && best.confidence >= threshold) hits.push({ entity: e, ...best });
   }
@@ -100,7 +103,7 @@ export async function applyPayeeImportAssist(opts: {
       known.rows.push({ id: String(r.id), stored, tier });
       continue;
     }
-    const hit = autopilotMatch(spelling, directory, settings.autopilotThreshold);
+    const hit = autopilotMatch(spelling, directory, settings.autopilotThreshold, vocabularyOf(settings));
     if (!hit) continue;
     auto.set(key, { spelling, entity: hit.entity, rows: [{ id: String(r.id), stored, tier }] });
   }

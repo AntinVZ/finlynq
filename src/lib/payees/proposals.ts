@@ -37,6 +37,7 @@ import { executePayeeOp, type PayeeOpResult, type SingleOp } from "./ops";
 import { normalizeWebsite } from "./profile";
 import type { BatchActor } from "./batches";
 import type { PayeeOverview } from "./service";
+import type { PayeeGroup } from "./overview";
 import type { PayeeExecutor } from "./scan";
 
 export const MAX_PROPOSALS_PER_CALL = 100;
@@ -297,8 +298,10 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     for (const a of d.aliases) if (a.mode === "exact") proposedKeys.add(payeeMatchKey(a.pattern));
   }
   const fmt = (n: number) => Math.round(n * 100) / 100;
+  // P6: no brand (only type words) or the bank's own rows → never proposed as a merchant.
+  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null;
   const unrecognized = o.groups
-    .filter((g) => g.key && g.entityId == null)
+    .filter(proposable)
     .slice(0, limit)
     .map((g) => ({
       key: g.key,
@@ -333,6 +336,8 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     stats: {
       payees: o.groups.filter((g) => g.key).length,
       unrecognized: o.groups.filter((g) => g.key && g.entityId == null).length,
+      noBrand: o.groups.filter((g) => g.key && g.entityId == null && g.brand.typeOnly).length,
+      bankOperations: o.groups.filter((g) => g.key && g.bankOperation != null).length,
       clusters: o.clusters.length,
       directory: o.directory.length,
       pendingDrafts: drafts.length,

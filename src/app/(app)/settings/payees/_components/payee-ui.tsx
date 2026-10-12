@@ -23,6 +23,10 @@ export type PayeeGroupRow = {
   type: TypeGuess;
   entityId: number | null;
   entityName: string | null;
+  /** P6: type words stripped from the core; `typeOnly` = no brand. */
+  brand?: { core: string; removed: string[]; typeOnly: boolean };
+  /** P6: the bank's own service row (matched pattern). */
+  bankOperation?: string | null;
 };
 
 export type PayeeClusterRow = {
@@ -71,6 +75,10 @@ export type PayeeSettings = {
   importHint: boolean;
   autopilotEnabled: boolean;
   autopilotThreshold: number;
+  typeWordsExtra?: string[];
+  typeWordsOff?: string[];
+  bankOpsExtra?: string[];
+  bankOpsOff?: string[];
 };
 
 export type PayeesResponse = {

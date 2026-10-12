@@ -13,11 +13,16 @@
  *                       is renamed and its spelling added as an alias —
  *                       journaled as an undoable batch; never for people
  *   autopilotThreshold  0.75–0.99, default 0.9
+ *   typeWordsExtra      (P6) the user's own type words (`кальянна`, `шиномонтаж`)
+ *   typeWordsOff        (P6) built-in type words switched off
+ *   bankOpsExtra        (P6) the user's own bank-operation patterns
+ *   bankOpsOff          (P6) built-in bank-operation patterns switched off
  */
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { IDENTIFIER_KINDS, type IdentifierKind } from "./directory";
 import type { PayeeExecutor } from "./scan";
+import { buildVocabulary, type PayeeVocabulary } from "./type-words";
 
 export const PAYEE_SETTINGS_KEY = "payee_studio";
 
@@ -27,7 +32,14 @@ export type PayeeStudioSettings = {
   importHint: boolean;
   autopilotEnabled: boolean;
   autopilotThreshold: number;
+  typeWordsExtra: string[];
+  typeWordsOff: string[];
+  bankOpsExtra: string[];
+  bankOpsOff: string[];
 };
+
+/** Most entries one vocabulary list may hold; each ≤ 60 characters. */
+export const VOCAB_LIST_MAX = 200;
 
 export const AUTOPILOT_MIN_THRESHOLD = 0.75;
 export const AUTOPILOT_MAX_THRESHOLD = 0.99;
@@ -38,7 +50,30 @@ export const DEFAULT_PAYEE_SETTINGS: PayeeStudioSettings = {
   importHint: false,
   autopilotEnabled: false,
   autopilotThreshold: 0.9,
+  typeWordsExtra: [],
+  typeWordsOff: [],
+  bankOpsExtra: [],
+  bankOpsOff: [],
 };
+
+/** A list of short words / phrases: trimmed, deduplicated, ≤ 60 chars each, ≤ VOCAB_LIST_MAX. */
+function wordList(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out: string[] = [];
+  for (const x of v) {
+    if (typeof x !== "string") continue;
+    const w = x.replace(/\s+/g, " ").trim();
+    if (!w || w.length > 60 || out.some((o) => o.toLowerCase() === w.toLowerCase())) continue;
+    out.push(w);
+    if (out.length >= VOCAB_LIST_MAX) break;
+  }
+  return out;
+}
+
+/** The type words and bank-operation patterns these settings describe. */
+export function vocabularyOf(s: Pick<PayeeStudioSettings, "typeWordsExtra" | "typeWordsOff" | "bankOpsExtra" | "bankOpsOff">): PayeeVocabulary {
+  return buildVocabulary(s);
+}
 
 /** Merge a partial / untrusted value over the defaults. */
 export function coercePayeeSettings(raw: unknown): PayeeStudioSettings {
@@ -53,6 +88,10 @@ export function coercePayeeSettings(raw: unknown): PayeeStudioSettings {
     importHint: typeof v.importHint === "boolean" ? v.importHint : DEFAULT_PAYEE_SETTINGS.importHint,
     autopilotEnabled: typeof v.autopilotEnabled === "boolean" ? v.autopilotEnabled : DEFAULT_PAYEE_SETTINGS.autopilotEnabled,
     autopilotThreshold: Math.round(Math.min(AUTOPILOT_MAX_THRESHOLD, Math.max(AUTOPILOT_MIN_THRESHOLD, threshold)) * 100) / 100,
+    typeWordsExtra: wordList(v.typeWordsExtra),
+    typeWordsOff: wordList(v.typeWordsOff),
+    bankOpsExtra: wordList(v.bankOpsExtra),
+    bankOpsOff: wordList(v.bankOpsOff),
   };
 }
 

@@ -2,7 +2,8 @@
  * /api/payees/settings — Payee Studio settings.
  *
  * GET → PayeeStudioSettings. PUT { advancedMode?, identifierKinds?,
- * importHint?, autopilotEnabled?, autopilotThreshold? } → the saved settings.
+ * importHint?, autopilotEnabled?, autopilotThreshold?, typeWordsExtra?,
+ * typeWordsOff?, bankOpsExtra?, bankOpsOff? } → the saved settings.
  * Every field optional; unknown values fall back to defaults (import hint and
  * autopilot are OFF unless switched on here).
  */
@@ -10,7 +11,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
-import { AUTOPILOT_MAX_THRESHOLD, AUTOPILOT_MIN_THRESHOLD, getPayeeSettings, savePayeeSettings } from "@/lib/payees/settings";
+import { AUTOPILOT_MAX_THRESHOLD, AUTOPILOT_MIN_THRESHOLD, getPayeeSettings, savePayeeSettings, VOCAB_LIST_MAX } from "@/lib/payees/settings";
 import { IDENTIFIER_KINDS } from "@/lib/payees/directory";
 
 export const GET = apiHandler({ auth: "auth", raw: true, fallbackMessage: "Failed to load settings" }, async ({ userId }) =>
@@ -23,6 +24,10 @@ const putSchema = z.object({
   importHint: z.boolean().optional(),
   autopilotEnabled: z.boolean().optional(),
   autopilotThreshold: z.number().min(AUTOPILOT_MIN_THRESHOLD).max(AUTOPILOT_MAX_THRESHOLD).optional(),
+  typeWordsExtra: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
+  typeWordsOff: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
+  bankOpsExtra: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
+  bankOpsOff: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
 });
 
 export const PUT = apiHandler({ auth: "auth", raw: true, body: putSchema, fallbackMessage: "Failed to save settings" }, async ({ userId, body }) =>

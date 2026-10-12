@@ -11,7 +11,15 @@
  * Private persons and sole proprietors (ФОП) are never paired with merchants:
  * an edge between a person-like and a merchant-like group is not drawn, and
  * any cluster that contains a person is flagged `needsDecision` (never
- * applied by the autopilot).
+ * applied by the autopilot). P6 (B24): one person's name in another word
+ * order or with a patronymic (`Пасічник Олександр` / `Олександр Володимирович
+ * Пасічник`) pairs up by its sorted name tokens — always `needsDecision`.
+ *
+ * P6 (B21 / B25): the BRAND decides. Type words (`ресторан`, `АЗС`, `аптека`
+ * — ./type-words.ts) are not part of the core that clusters compare, a payee
+ * that is nothing but type words is never clustered, different brand tokens
+ * are only ever joined by a person's decision, and the bank's own service
+ * rows (`комісія`, `переказ власних коштів`, …) are never merchants.
  *
  * Pure: no DB, no network. Amount totals come from a caller-supplied
  * `convert` (display-currency conversion lives in ./convert.ts).
@@ -22,9 +30,11 @@ import {
   coreOfKey,
   guessPayeeType,
   keySimilarity,
+  payeeTokens,
   spellingDifferenceReason,
   type TypeGuess,
 } from "./match-key";
+import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
 
 export type NamedCount = { id: number; name: string; count: number };
@@ -57,6 +67,10 @@ export type PayeeGroup = {
   /** Directory entity this group resolves to (P2), if any. */
   entityId: number | null;
   entityName: string | null;
+  /** P6: the brand core of the key — type words removed; `typeOnly` = no brand at all. */
+  brand: { core: string; removed: string[]; typeOnly: boolean; hint: MerchantTypeHint | null };
+  /** P6 (B25): the bank's own service row (fee, own transfer, interest…): the matched pattern. */
+  bankOperation: string | null;
   /** Most recent transactions (when the scan kept samples). */
   samples?: Array<{ date: string; amount: number; currency: string | null; category: string | null }>;
 };
@@ -69,7 +83,7 @@ export type PayeeCluster = {
   confidence: number;
   /** Why these were put together, in plain words. */
   reasons: string[];
-  /** Contains a private person / sole proprietor: a human must decide. */
+  /** Contains a private person / sole proprietor, or joins different brand tokens: a human must decide. */
   needsDecision: boolean;
   decisionReason: string | null;
   suggestedName: string;
@@ -89,6 +103,8 @@ export type BuildGroupsOptions = {
   convert?: (slices: AmountSlice[]) => number;
   /** Directory lookup (P2). */
   resolveEntity?: EntityResolver;
+  /** P6: type words and bank-operation patterns (default: the built-in vocabulary). */
+  vocab?: PayeeVocabulary;
 };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -135,6 +151,9 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
     const suggestedName = clean ? clean.spelling : cleanPayeeDisplay(name);
     const sliceList = [...slices.values()];
     const entity = opts.resolveEntity ? opts.resolveEntity(name, acc.key) : null;
+    const vocab = opts.vocab ?? defaultVocabulary();
+    const bc = brandCoreOfKey(acc.key, vocab);
+    const bankOperation = spellings.map((s) => bankOperationOf(s.spelling, vocab)).find((x) => x != null) ?? null;
     const samples = spellings.some((s) => s.samples)
       ? spellings
           .flatMap((s) => s.samples ?? [])
@@ -160,6 +179,8 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       type: guessPayeeType(suggestedName || name),
       entityId: entity?.id ?? null,
       entityName: entity?.name ?? null,
+      brand: { core: bc.core, removed: bc.removed, typeOnly: bc.typeOnly, hint: bc.hint },
+      bankOperation,
       ...(samples ? { samples } : {}),
     });
   }
@@ -173,30 +194,47 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
 export const MAX_PAIRWISE_BLOCK = 300;
 export const MIN_EDGE_CONFIDENCE = 0.6;
 
-type Edge = { a: number; b: number; confidence: number; reason: string };
+type Edge = { a: number; b: number; confidence: number; reason: string; sameBrand: boolean };
+
+/** A pair score. `sameBrand` = the brand cores agree (equal, or one continues the other); false = only spelled alike. */
+export type KeyScore = { confidence: number; reason: string; sameBrand: boolean };
+
+/** Groups that never take part in merchant clustering: no brand (only type words) or a bank service row. */
+export function clusterable(g: PayeeGroup): boolean {
+  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null;
+}
 
 /** Score a pair of groups; null when they should not be clustered. */
-export function scorePair(a: PayeeGroup, b: PayeeGroup): { confidence: number; reason: string } | null {
-  if (!a.key || !b.key) return null;
+export function scorePair(a: PayeeGroup, b: PayeeGroup, vocab?: PayeeVocabulary): KeyScore | null {
+  if (!clusterable(a) || !clusterable(b)) return null;
   if (a.type.isPerson !== b.type.isPerson) return null; // never pair a person with a merchant
-  return scoreKeys(a.key, b.key);
+  return scoreKeys(a.key, b.key, vocab);
 }
 
 /**
- * How alike two DIFFERENT matching keys are: same core (one-letter suffix /
- * legal form) 0.9, one continues the other 0.75, small edit distance
- * 0.6–0.88. Null below that. Identical keys are the caller's business.
+ * How alike two DIFFERENT matching keys are, compared on their brand cores
+ * (one-letter tokens and type words removed): same core 0.9, one continues
+ * the other 0.75, small edit distance 0.6–0.88 (then `sameBrand` is false:
+ * different brand tokens are only ever joined by a person). Null below that,
+ * and null when either key is nothing but type words. Identical keys are the
+ * caller's business.
  */
-export function scoreKeys(keyA: string, keyB: string): { confidence: number; reason: string } | null {
+export function scoreKeys(keyA: string, keyB: string, vocab?: PayeeVocabulary): KeyScore | null {
   if (!keyA || !keyB) return null;
-  const ca = coreOfKey(keyA);
-  const cb = coreOfKey(keyB);
-  if (ca === cb) return { confidence: 0.9, reason: "same name apart from a one-letter suffix or legal form" };
+  const A = brandCoreOfKey(keyA, vocab);
+  const B = brandCoreOfKey(keyB, vocab);
+  if (A.typeOnly || B.typeOnly) return null;
+  const ca = A.core;
+  const cb = B.core;
+  if (ca === cb) {
+    const typeWord = A.removed.length || B.removed.length ? ", legal form or type word" : " or legal form";
+    return { confidence: 0.9, reason: `same name apart from a one-letter suffix${typeWord}`, sameBrand: true };
+  }
   const ta = ca.split(" ");
   const tb = cb.split(" ");
   const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
   if (short.join(" ").length >= 5 && short.every((t, i) => long[i] === t)) {
-    return { confidence: 0.75, reason: "one name continues the other" };
+    return { confidence: 0.75, reason: "one name continues the other", sameBrand: true };
   }
   if (Math.min(ca.length, cb.length) >= 5) {
     const sim = keySimilarity(ca, cb);
@@ -205,19 +243,16 @@ export function scoreKeys(keyA: string, keyB: string): { confidence: number; rea
       return {
         confidence: Math.min(0.88, round2(0.6 + (sim - 0.85) * 2)),
         reason: `spellings differ by ${letters} letter${letters === 1 ? "" : "s"}`,
+        sameBrand: false,
       };
     }
   }
   return null;
 }
 
-/** Clustering only compares groups whose key core starts with the same 4 characters. */
-export function blockKeyOf(key: string): string {
-  return coreOfKey(key).slice(0, 4);
-}
-
-function blockKey(g: PayeeGroup): string {
-  return blockKeyOf(g.key);
+/** Clustering only compares groups whose brand core starts with the same 4 characters. */
+export function blockKeyOf(key: string, vocab?: PayeeVocabulary): string {
+  return coreOfKey(key, vocab).slice(0, 4);
 }
 
 function clusterId(keys: string[]): string {
@@ -229,15 +264,24 @@ function clusterId(keys: string[]): string {
  * groups stored under several spellings. Sorted: needs-decision last,
  * then by transactions count.
  */
-export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[] {
+export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?: PayeeVocabulary } = {}): PayeeCluster[] {
+  const { vocab } = opts;
   const parent = groups.map((_, i) => i);
   const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i])));
   const edges: Edge[] = [];
 
   const blocks = new Map<string, number[]>();
+  // B24: person names by their sorted name tokens (word order / patronymic ignored).
+  const people = new Map<string, number[]>();
   groups.forEach((g, i) => {
-    if (!g.key) return;
-    const k = blockKey(g);
+    if (!clusterable(g)) return;
+    const pk = personNameKey(payeeTokens(g.name).kept);
+    if (pk) {
+      let l = people.get(pk);
+      if (!l) people.set(pk, (l = []));
+      l.push(i);
+    }
+    const k = blockKeyOf(g.key, vocab);
     let list = blocks.get(k);
     if (!list) blocks.set(k, (list = []));
     list.push(i);
@@ -248,14 +292,14 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[
       // Large block: only identical cores pair up.
       const byCore = new Map<string, number[]>();
       for (const i of members) {
-        const c = coreOfKey(groups[i].key);
+        const c = coreOfKey(groups[i].key, vocab);
         let l = byCore.get(c);
         if (!l) byCore.set(c, (l = []));
         l.push(i);
       }
       for (const l of byCore.values()) {
         for (let x = 1; x < l.length; x++) {
-          const s = scorePair(groups[l[0]], groups[l[x]]);
+          const s = scorePair(groups[l[0]], groups[l[x]], vocab);
           if (s) edges.push({ a: l[0], b: l[x], ...s });
         }
       }
@@ -263,9 +307,18 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[
     }
     for (let x = 0; x < members.length; x++) {
       for (let y = x + 1; y < members.length; y++) {
-        const s = scorePair(groups[members[x]], groups[members[y]]);
+        const s = scorePair(groups[members[x]], groups[members[y]], vocab);
         if (s && s.confidence >= MIN_EDGE_CONFIDENCE) edges.push({ a: members[x], b: members[y], ...s });
       }
+    }
+  }
+  for (const l of people.values()) {
+    if (l.length < 2 || l.length > MAX_PAIRWISE_BLOCK) continue;
+    // Only when one of them reads as a person: two shop names in another word order stay apart.
+    if (!l.some((i) => groups[i].type.isPerson)) continue;
+    for (let x = 1; x < l.length; x++) {
+      if (groups[l[0]].key === groups[l[x]].key) continue;
+      edges.push({ a: l[0], b: l[x], confidence: 0.7, reason: "same person's name (word order or patronymic differ)", sameBrand: false });
     }
   }
   // Strongest edges first so a component's weakest link is its confidence.
@@ -293,7 +346,7 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[
     const members = idxs.map((i) => groups[i]).sort((a, b) => b.count - a.count || b.rows - a.rows);
     const spellingCount = members.reduce((n, g) => n + g.spellings.length, 0);
     if (members.length < 2 && spellingCount < 2) continue;
-    if (members.every((g) => !g.key)) continue;
+    if (members.every((g) => !clusterable(g))) continue;
     // Already settled: every member resolves to the same directory entity.
     if (members[0].entityId != null && members.every((g) => g.entityId === members[0].entityId)) continue;
     const reasons = new Set<string>();
@@ -306,16 +359,19 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[]): PayeeCluster[
       confidence = Math.min(confidence, e.confidence);
     }
     const person = members.find((g) => g.type.isPerson);
+    const brandEdge = (compEdges.get(root) ?? []).find((e) => !e.sameBrand && !groups[e.a].type.isPerson && !groups[e.b].type.isPerson);
     const lead = members[0];
     out.push({
       id: clusterId(members.map((g) => g.key)),
       keys: members.map((g) => g.key),
       confidence: round2(confidence),
       reasons: [...reasons],
-      needsDecision: Boolean(person),
+      needsDecision: Boolean(person || brandEdge),
       decisionReason: person
         ? `Looks like a ${person.type.type === "sole_proprietor" ? "sole proprietor (ФОП)" : "private person"} (${person.type.reason}); people are never merged automatically.`
-        : null,
+        : brandEdge
+          ? `Різні бренд-токени («${groups[brandEdge.a].brand.core}» / «${groups[brandEdge.b].brand.core}»): назви лише схожі, автоматично не зливаються.`
+          : null,
       suggestedName: lead.suggestedName,
       suggestedType: lead.type,
       count: members.reduce((n, g) => n + g.count, 0),

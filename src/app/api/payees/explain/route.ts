@@ -2,7 +2,8 @@
  * /api/payees/explain — "Why (not) clustered?" for two payees.
  *
  * GET ?a=<payee>&b=<payee>
- *   → { a, b: { payee, key, core, block, tokens, legalWords, type, entity,
+ *   → { a, b: { payee, key, core, block, typeWordsRemoved, brandTokens,
+ *       typeOnly, brandLine, bankOperation, tokens, legalWords, type, entity,
  *       ambiguous }, sameKey, score: { confidence, reason } | null,
  *       verdict: same_name | clustered | separate | settled, reasons[] }
  *   Pure explanation of the clustering rules (lib/payees/explain.ts) plus
@@ -13,6 +14,7 @@ import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
 import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { explainPayeePair } from "@/lib/payees/explain";
+import { getPayeeSettings, vocabularyOf } from "@/lib/payees/settings";
 
 export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to explain" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
@@ -20,5 +22,5 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
   const b = (params.get("b") ?? "").trim().slice(0, 500);
   if (!a || !b) return NextResponse.json({ error: "Pass two payees: ?a=…&b=…" }, { status: 400 });
   const matcher = buildPayeeMatcher(dek ? await loadDirectory(db, userId, dek) : []);
-  return NextResponse.json(explainPayeePair(a, b, matcher));
+  return NextResponse.json(explainPayeePair(a, b, matcher, vocabularyOf(await getPayeeSettings(db, userId))));
 });
