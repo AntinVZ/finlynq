@@ -34,6 +34,8 @@ import { verifyOwnership, OwnershipError } from "@/lib/verify-ownership";
 import { securitiesReadEnabledForUser } from "@/lib/securities/flag";
 import { transferLegChanges } from "@/lib/transactions/transfer-leg-guard";
 import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
+import { buildIdentifierMatcher } from "@/lib/payees/whose";
+import { maskSensitiveText } from "@/lib/payees/requisites";
 
 const postSchema = z.object({
   date: z.string(),
@@ -106,6 +108,8 @@ export async function GET(request: NextRequest) {
 
   const params = request.nextUrl.searchParams;
   const search = params.get("search") ?? undefined;
+  // Payee Studio P5g: a requisite (IBAN / card / ІПН / ЄДРПОУ), matched after decryption.
+  const identifier = params.get("identifier")?.trim() || undefined;
   // `portfolioHolding` (name) is resolved server-side to a holding id and
   // applied as a SQL `WHERE portfolio_holding_id = ?` filter. Phase 5
   // (2026-04-29) eliminated the in-memory ciphertext scan — the FK is the
@@ -285,7 +289,7 @@ export async function GET(request: NextRequest) {
   }
 
   // FK filter is SQL-side, so it's NOT a postDecryptFilter — paginate normally.
-  const postDecryptFilter = search || tag || hasMultiTagFilter || hasEncryptedSubstringFilter;
+  const postDecryptFilter = search || tag || hasMultiTagFilter || hasEncryptedSubstringFilter || identifier;
   const filters: TxSortFilter = {
     id: idFilter,
     startDate: params.get("startDate") ?? undefined,
@@ -399,6 +403,18 @@ export async function GET(request: NextRequest) {
 
   if (search) {
     decrypted = filterDecryptedBySearch(decrypted, search);
+  }
+
+  if (identifier) {
+    const requisite = await buildIdentifierMatcher(db, userId, dek, identifier);
+    if (!requisite) return NextResponse.json({ error: "Not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ." }, { status: 400 });
+    decrypted = decrypted
+      .map((r) => {
+        const via = requisite.match({ id: (r as { id?: number }).id ?? "", payee: r.payee, note: r.note });
+        // Never echo a full card number / IBAN / ІПН from the text in an identifier search.
+        return via ? { ...r, payee: maskSensitiveText(r.payee), note: maskSensitiveText(r.note), matchedVia: via } : null;
+      })
+      .filter((r): r is NonNullable<typeof r> => r != null);
   }
 
   if (tag) {

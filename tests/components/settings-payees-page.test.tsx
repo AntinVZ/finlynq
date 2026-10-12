@@ -62,6 +62,19 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url.startsWith("/api/payees/requisites?action=whose")) {
+      return {
+        ok: true,
+        json: async () => ({
+          query: { kind: "card_last4", masked: "•••• 1234", strength: "weak" }, bankRows: 0,
+          hints: ["The last 4 digits 1234 belong to 2 payees; tell them apart by the typical amount, the dates and the account you paid from:"],
+          candidates: [
+            { entity: { id: 5, name: "Степаненко", type: "person" }, payee: "Степаненко", evidence: ["directory"], holdsRequisite: true, transactions: 2, firstDate: "2026-07-01", lastDate: "2026-08-01", totals: [{ currency: "UAH", paid: 24000, received: 0 }], typicalAmount: 12000, accounts: [{ id: 1, name: "Mono", count: 2 }], examples: [] },
+            { entity: { id: 6, name: "Коваль Петро", type: "person" }, payee: "Коваль Петро", evidence: ["text"], holdsRequisite: false, transactions: 1, firstDate: "2026-08-15", lastDate: "2026-08-15", totals: [{ currency: "UAH", paid: 350, received: 0 }], typicalAmount: 350, accounts: [{ id: 2, name: "Privat", count: 1 }], examples: [{ date: "2026-08-15", amount: -350, currency: "UAH", account: "Privat", text: "Коваль Петро · •••• 1234", matchedVia: "text" }] },
+          ],
+        }),
+      };
+    }
     if (url === "/api/payees/requisites" && body) return { ok: true, json: async () => ({ saved: [{ id: 9 }], rejected: [], missing: [] }) };
     if (url.startsWith("/api/payees/requisites?action=mine")) {
       return {
@@ -318,6 +331,22 @@ describe("Settings → Payees requisites tab (P5f)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save 1 as drafts for review" }));
     expect(await screen.findByText(/Saved 1 draft/)).toBeTruthy();
     expect(calls.find((c) => c.url === "/api/payees/requisites" && c.body)?.body).toEqual({ action: "propose", refs: ["r_card000000000000"] });
+  });
+});
+
+describe("Settings → Payees find by card (P5g)", () => {
+  it("lists every candidate for 4 digits with hints and offers Add to payee for one that lacks it", async () => {
+    const calls = setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Requisites/ }));
+    fireEvent.change(screen.getByLabelText("Card, IBAN or tax id"), { target: { value: "5168 **** 1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Find" }));
+    expect(await screen.findByText(/belong to 2 payees/)).toBeTruthy();
+    expect(screen.getByText(/the last 4 digits of a card only hint/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Show transactions" }).getAttribute("href")).toBe("/transactions?identifier=5168+****+1234");
+    expect(screen.queryByRole("button", { name: "Add to payee Степаненко" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add to payee Коваль Петро" }));
+    await waitFor(() => expect(calls.some((c) => c.body?.op === "identifiers" && JSON.stringify(c.body.add) === JSON.stringify([{ kind: "card_last4", value: "1234" }]))).toBe(true));
   });
 });
 

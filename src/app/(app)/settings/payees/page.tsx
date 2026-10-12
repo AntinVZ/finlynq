@@ -60,6 +60,7 @@ import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
 import { LookalikesPanel } from "./_components/lookalikes-panel";
 import { MinePanel } from "./_components/mine-panel";
+import { WhosePanel } from "./_components/whose-panel";
 
 const PAGE_SIZES = [25, 50] as const;
 
@@ -365,6 +366,7 @@ export default function PayeesSettingsPage() {
             <LookalikesPanel onChanged={() => mutate()} />
           ) : tab === "requisites" ? (
             <div className="space-y-6">
+              <WhosePanel onChanged={() => mutate()} />
               <MinePanel onSaved={() => mutate()} />
             </div>
           ) : tab === "clusters" ? (

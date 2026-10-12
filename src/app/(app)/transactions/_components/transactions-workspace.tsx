@@ -90,6 +90,8 @@ export function TransactionsWorkspace({
   const sortCategory = useDropdownOrder("category");
   const sortHolding = useDropdownOrder("holding");
   const [searchInput, setSearchInput] = useState("");
+  // Payee Studio P5g: "Card / IBAN / tax id" — applied on Enter / blur.
+  const [identifierInput, setIdentifierInput] = useState("");
   // Filter state is synced FROM the URL via the `useEffect` below (not a
   // `useState(urlParams.get(...))` initialiser). `useState` only runs on
   // mount, so client-side drill-through navigation while already on
@@ -111,6 +113,7 @@ export function TransactionsWorkspace({
     accountId: locked ? String(lockedAccountId) : "",
     categoryId: "",
     search: "",
+    identifier: "",
     portfolioHolding: "",
     tag: "",
     tags_all: "",
@@ -207,6 +210,7 @@ export function TransactionsWorkspace({
       accountId: urlParams.get("accountId") ?? "",
       categoryId: urlParams.get("categoryId") ?? "",
       search: urlParams.get("search") ?? "",
+      identifier: urlParams.get("identifier") ?? "",
       portfolioHolding: urlParams.get("portfolioHolding") ?? "",
       tag: urlParams.get("tag") ?? "",
       tags_all: urlParams.get("tags_all") ?? "",
@@ -215,6 +219,7 @@ export function TransactionsWorkspace({
       untagged: urlParams.get("untagged") === "true" ? "true" : "",
     });
     setSearchInput(urlParams.get("search") ?? "");
+    setIdentifierInput(urlParams.get("identifier") ?? "");
     setPage(0);
   }, [urlParams, locked]);
 
@@ -342,8 +347,9 @@ export function TransactionsWorkspace({
 
   function clearFilters() {
     setSearchInput("");
+    setIdentifierInput("");
     // When locked, keep the account scope — only the OTHER filters clear.
-    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", portfolioHolding: "", tag: "", tags_all: "", tags_any: "", tags_none: "", untagged: "" });
+    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", identifier: "", portfolioHolding: "", tag: "", tags_all: "", tags_any: "", tags_none: "", untagged: "" });
     // Issue #59 — also wipe the per-column filters + sort. The chip row
     // below the top-bar shows both, so "Clear all" should drop both.
     setColFilters([]);
@@ -373,6 +379,7 @@ export function TransactionsWorkspace({
   const hasMultiTagFilter = multiTagChips.length > 0;
   const hasTextSearchFilter =
     !!filters.search ||
+    !!filters.identifier ||
     !!filters.tag ||
     hasMultiTagFilter ||
     colFilters.some((f) => f.type === "text");
@@ -870,6 +877,22 @@ export function TransactionsWorkspace({
               </button>
             )}
           </div>
+          <div className="relative">
+            <Input
+              className="h-8 text-xs pr-8 sm:max-w-sm"
+              aria-label="Card / IBAN / tax id"
+              placeholder="Card / IBAN / tax id (e.g. **** 1234) — press Enter"
+              value={identifierInput}
+              onChange={(e) => setIdentifierInput(e.target.value)}
+              onBlur={() => { if (identifierInput.trim() !== filters.identifier) { setFilters({ ...filters, identifier: identifierInput.trim() }); setPage(0); } }}
+              onKeyDown={(e) => { if (e.key === "Enter") { setFilters({ ...filters, identifier: identifierInput.trim() }); setPage(0); } }}
+            />
+            {identifierInput && (
+              <button aria-label="Clear card / IBAN / tax id" onClick={() => { setIdentifierInput(""); setFilters({ ...filters, identifier: "" }); setPage(0); }} className="absolute right-2.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-muted transition-colors">
+                <X className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+            )}
+          </div>
           <div className="flex flex-wrap gap-2 items-center">
             <SlidersHorizontal className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
             {/* In calendar view the calendar sets the dates (see listFilters). */}
@@ -958,7 +981,7 @@ export function TransactionsWorkspace({
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.portfolioHolding || filters.tag || hasMultiTagFilter || colFilters.length > 0 || sortPref.columnId) && (
+            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.identifier || filters.portfolioHolding || filters.tag || hasMultiTagFilter || colFilters.length > 0 || sortPref.columnId) && (
               <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors ml-1">
                 <X className="h-3 w-3" /> Clear all
               </button>

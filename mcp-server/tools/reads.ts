@@ -99,6 +99,8 @@ import {
 import {
 } from "../../src/lib/loan-calculator";
 import { resolveCounterparty } from "../../src/lib/payees/resolve";
+import { buildIdentifierMatcher } from "../../src/lib/payees/whose";
+import { maskSensitiveText } from "../../src/lib/payees/requisites";
 
 /**
  * search_transactions in-memory text-filter scan: rows read
@@ -321,12 +323,13 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       ...tagFilterArgs,
       business: businessArg,
       payee_resolve: z.string().optional().describe("A counterparty from the payee directory (manage_payees): canonical name, any alias or stored spelling, or a requisite (IBAN, EDRPOU, card last 4). Matches every transaction of that counterparty, however its payee is spelled. Not in the directory → same matching key (case, apostrophes, Latin/Cyrillic, card-terminal noise ignored)."),
+      identifier: z.string().optional().describe("A requisite: IBAN, a card in any form (\"5168 **** 1234\", \"****1234\", \"1234\"; a full number counts as its last 4), ІПН/РНОКПП (10 digits) or ЄДРПОУ (8). Matches rows whose payee resolves to a directory entry holding it, rows whose payee/note mention it, and rows created from a bank-statement row that mentions it; each row gets matched_via. Last 4 digits are weak: check filters.identifier.entities. Shown masked."),
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, payee_resolve, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, payee_resolve, identifier, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
       const businessFilter = parseBusinessParam(business);
       const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
@@ -341,7 +344,11 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       const textFilters = { payee, note, tags, search, tagExact: exactTag, tagFilter };
       // Payee Studio: every spelling of one counterparty (in memory, after decryption).
       const counterparty = payee_resolve?.trim() ? await resolveCounterparty(db, userId, dek, payee_resolve) : null;
-      const inMemory = hasTextFilter(textFilters) || counterparty != null;
+      // Payee Studio P5g: by requisite (directory → text → bank-statement row).
+      const requisite = identifier?.trim() ? await buildIdentifierMatcher(db, userId, dek, identifier) : null;
+      if (identifier?.trim() && !requisite) return err("`identifier` is not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
+      const matchedVia = new Map<unknown, string>();
+      const inMemory = hasTextFilter(textFilters) || counterparty != null || requisite != null;
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
@@ -393,7 +400,16 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           fetchPage: async (offset, size) => (await fetchPage(offset, size)).map(toRow),
           match: (() => {
             const text = compileTextFilters(textFilters);
-            return counterparty ? (row: Record<string, unknown>) => text(row) && counterparty.match(row.payee, row.note) : text;
+            return (row: Record<string, unknown>) => {
+              if (!text(row)) return false;
+              if (counterparty && !counterparty.match(row.payee, row.note)) return false;
+              if (requisite) {
+                const via = requisite.match({ id: row.id as number, payee: row.payee, note: row.note });
+                if (!via) return false;
+                matchedVia.set(row.id, via);
+              }
+              return true;
+            };
           })(),
           limit: lim,
           batchSize: Math.max(lim * 10, SEARCH_BATCH_SIZE),
@@ -431,6 +447,10 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           createdAt: r.created_at,
           updatedAt: r.updated_at,
           source: r.source,
+          // An identifier search never echoes a full card number / IBAN / ІПН from the text.
+          ...(requisite
+            ? { payee: maskSensitiveText(r.payee == null ? "" : String(r.payee)), note: maskSensitiveText(r.note == null ? "" : String(r.note)), matched_via: matchedVia.get(r.id) ?? null }
+            : {}),
         };
       });
 
@@ -449,6 +469,17 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           note: note || null,
           search: search || null,
           ...(counterparty ? { payee_resolve: counterparty.resolvedTo } : {}),
+          ...(requisite
+            ? {
+                identifier: {
+                  kind: requisite.query.kind,
+                  masked: requisite.query.masked,
+                  strength: requisite.query.strong ? "strong" : "weak",
+                  entities: requisite.entities.map((e) => ({ entity_id: e.id, name: e.name, active: e.active })),
+                  bankRowsMentioning: requisite.bankRows,
+                },
+              }
+            : {}),
         },
       });
     }
@@ -1700,7 +1731,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       if (t === "tools") {
         return dataResponse({
           read_tools: ["get_account_balances", "search_transactions", "get_budget_summary", "get_spending_trends", "get_income_statement", "get_net_worth", "get_categories", "get_recurring_transactions", "get_financial_health_score", "get_spending_anomalies", "get_spotlight_items", "get_weekly_recap", "get_cash_flow_forecast"],
-          write_tools: ["manage_transactions (op: record | update | delete; record takes one row OR transactions[])", "manage_transfers (op: record | update | delete)", "manage_splits (op: list | add | update | delete | replace)", "manage_budgets (op: set | delete)", "manage_accounts (op: add | update | delete | set_mode)", "manage_goals (op: add | update | delete | list)", "manage_categories (op: create | rename | merge | delete)", "manage_tags (op: list | rename | merge | delete; rename/merge/delete preview → confirmation_token)", "manage_payees (op: list | clusters | get | batches | review | explain | lookalikes | propose | proposals | approve | reject | create | update | alias_add | alias_remove | identifiers | set_profile | merge | split | apply | move_remainder | reject_lookalike | mine_identifiers | propose_identifiers | dictionary_export | dictionary_import | undo; writes + approve preview → confirmation_token; topic=payees)", "manage_rules (op: create | update | delete | list | reorder)", "manage_subscriptions (op: add | update | delete | list)", "manage_loans (op: add | update | delete | list)", "manage_fx_overrides (op: set | delete | list)", "add_snapshot", "apply_rules_to_uncategorized"],
+          write_tools: ["manage_transactions (op: record | update | delete; record takes one row OR transactions[])", "manage_transfers (op: record | update | delete)", "manage_splits (op: list | add | update | delete | replace)", "manage_budgets (op: set | delete)", "manage_accounts (op: add | update | delete | set_mode)", "manage_goals (op: add | update | delete | list)", "manage_categories (op: create | rename | merge | delete)", "manage_tags (op: list | rename | merge | delete; rename/merge/delete preview → confirmation_token)", "manage_payees (op: list | clusters | get | batches | review | explain | lookalikes | propose | proposals | approve | reject | create | update | alias_add | alias_remove | identifiers | set_profile | merge | split | apply | move_remainder | reject_lookalike | whose | mine_identifiers | propose_identifiers | dictionary_export | dictionary_import | undo; writes + approve preview → confirmation_token; topic=payees)", "manage_rules (op: create | update | delete | list | reorder)", "manage_subscriptions (op: add | update | delete | list)", "manage_loans (op: add | update | delete | list)", "manage_fx_overrides (op: set | delete | list)", "add_snapshot", "apply_rules_to_uncategorized"],
           portfolio_tools: ["get_portfolio_analysis", "get_portfolio_performance", "analyze_holding", "trace_holding_quantity", "get_investment_insights"],
           portfolio_write_tools: ["portfolio_record_entry (entry_type: buy | sell | swap | transfer | income_expense | fx_conversion | deposit | withdrawal)", "manage_holdings (op: add | update | delete)"],
           reconcile_tools: ["get_reconciliation_summary", "reconcile (op: suggest | accept | unlink | materialize | apply_rules)", "manage_statement_import (op: upload | list | get | list_rows | update_row | link_transfer_pair | approve | send_to_bank_ledger | apply_rules | reject)", "manage_bank_ledger (op: list_anchors | upsert_anchor | find_duplicates | delete_row)"],
@@ -1851,6 +1882,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           merchant_analyses: "op=insights merchants=true (or with period_from / period_to / entity_id / name) adds `merchants`: receipt (average / median / max, quartiles, histogram), receiptTrend (average payment per month, trend % first vs last third), change (period2 vs period1: countEffect = (n2−n1)·avg1, receiptEffect = n2·(avg2−avg1), they sum to the total), lifecycle (new / quiet = ≥3 of the 6 months before the last 2 with payments and none since / returned / churned), regular (≥3 payments, interval CV < 0.35, yearlyCost, nextExpected), multiCategory (≥2 categories ≥10% each → suggest a rule), businessPersonal, people (paid vs received, by purpose). Display currency; `truncated` when the scan bound is hit.",
           dictionary: "op=dictionary_export format=json|yaml → the shareable directory file as `content` (names, aliases, types, websites, EDRPOU / company IBAN; never amounts, dates, notes, logos, people, tax ids or cards). op=dictionary_import content=<file> → preview per entry (create / merge / unchanged / conflict, masked identifiers) + confirmationToken; conflicts need resolutions {\"<index>\": \"skip\" | \"merge:<entity_id>\"} first; commit = same call + token, one undoable batch, stored payees not renamed.",
           requisites: "A payee can have several cards / accounts: op=identifiers add=[{kind, value, label?, bank?, currency?, is_primary?}] / update=[{identifier_id, …}] / deactivate=[ids] (two-step). tax_id = ІПН/РНОКПП, exactly 10 digits, for people / ФОП; edrpou = exactly 8 digits, legal entities only (a ФОП has none); a failed check digit or a code that doesn't fit the type is a WARNING. IBAN, ІПН and ЄДРПОУ are strong evidence; a card's last 4 digits are weak (several payees can share them — never use them alone, never for automatic renames). op=mine_identifiers scans payee / note / bank-statement text for IBANs, card masks (last 4 only) and SIGNED codes (\"ЄДРПОУ 12345678\", \"ІПН 1234567890\"; bare numbers are ignored) and returns masked suggestions + `links` (a known IBAN / code found under another payee spelling); op=propose_identifiers refs=[…] stores them as drafts for the user to approve. Full card numbers are never stored or shown; people's tax ids are masked and never exported.",
+          whose: "\"Whose card did I pay?\" op=whose identifier=<IBAN | card in any form | ІПН | ЄДРПОУ> → candidate payees with evidence (directory = the entry holds it; text = payee/note mention it; bank = the bank-statement row mentions it), transactions, first / last date, totals per currency, typical amount, accounts paid from, masked examples. A card's last 4 digits are weak: show ALL candidates and the hints to tell them apart, never pick one yourself. search_transactions identifier=… lists the matching rows with matched_via.",
           diagnose: "op=explain a=<payee> b=<payee> → both matching keys, cores, the 4-letter block clustering compares within, type guesses, the score and the rule that joined or kept them apart (e.g. a person never pairs with a merchant).",
           matching: "Alias mode exact = same matching key: letter case, apostrophes, Latin/Cyrillic transliteration and card-terminal noise (store codes, city, long numbers) are ignored. contains / regex are for families of spellings.",
           never_changed: "bank_transactions (the bank statement journal), import_hash, staged rows' encryption tier.",

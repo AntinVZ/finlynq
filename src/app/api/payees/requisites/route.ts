@@ -8,6 +8,17 @@
  *   asked (a button), never on a schedule. `links` = a strong requisite of a
  *   directory entry found in rows of another payee.
  *
+ * GET ?action=whose&q=<IBAN | card in any form | ІПН | ЄДРПОУ>  (P5g)
+ *   → { query: { kind, masked, strength }, candidates: [{ entity, payee,
+ *       evidence: directory|text|bank, holdsRequisite, transactions,
+ *       firstDate, lastDate, totals (per currency), typicalAmount, accounts,
+ *       examples (masked) }], hints, bankRows }  — 400 when q is not a
+ *   requisite. A card's last 4 digits are weak: every candidate is listed.
+ *
+ * GET ?action=resolve&payee=<spelling> → { entity: { id, name, type } | null }
+ *   Which directory entry a payee resolves to ("Add to payee" on a
+ *   transaction).
+ *
  * POST { action: "propose", refs: string[] } → { saved, rejected, missing }
  *   Stores the chosen suggestions / links as DRAFT proposals (encrypted),
  *   which a person approves on Settings → Payees → AI review. Nothing in the
@@ -20,10 +31,25 @@ import { db } from "@/db";
 import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { mineIdentifiers, mineReportOut, proposeMined } from "@/lib/payees/mine";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
+import { findWhose } from "@/lib/payees/whose";
+import { loadPayeeNameMaps, spellingOf } from "@/lib/payees/scan";
 
 export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to look for requisites" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
-  if (params.get("action") !== "mine") return NextResponse.json({ error: "Pass action=mine." }, { status: 400 });
+  const action = params.get("action");
+  if (action === "whose") {
+    const { accounts } = await loadPayeeNameMaps(db, userId, dek);
+    const report = await findWhose({ executor: db, userId, dek, identifier: (params.get("q") ?? "").slice(0, 100), accountNames: accounts });
+    if (!report) return NextResponse.json({ error: "Type an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ." }, { status: 400 });
+    return NextResponse.json(report);
+  }
+  if (action === "resolve") {
+    const directory = await loadDirectory(db, userId, dek);
+    const m = buildPayeeMatcher(directory).match(spellingOf(params.get("payee") ?? ""));
+    const e = m.kind === "match" ? directory.find((x) => x.id === m.entityId) : undefined;
+    return NextResponse.json({ entity: e ? { id: e.id, name: e.name, type: e.type } : null });
+  }
+  if (action !== "mine") return NextResponse.json({ error: "Pass action=mine, whose or resolve." }, { status: 400 });
   const raw = Number(params.get("limit") ?? "");
   const directory = await loadDirectory(db, userId, dek);
   const report = await mineIdentifiers({ executor: db, userId, dek, matcher: buildPayeeMatcher(directory), directory, limit: Number.isInteger(raw) && raw > 0 ? Math.min(raw, 1000) : 200 });

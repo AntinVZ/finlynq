@@ -45,6 +45,18 @@ export async function resolveCounterparty(executor: PayeeExecutor, userId: strin
     };
   }
 
+  if (ids.length > 1) {
+    // Several entries share the requisite (typically a card's last 4 digits — weak): every one is a candidate.
+    const set = new Set(ids.map((e) => e.id));
+    return {
+      resolvedTo: { kind: "ambiguous", candidates: ids.map((e) => e.name), via: "requisite shared by several payees" },
+      match: (payee) => {
+        const r = matcher.match(spellingOf(payee == null ? "" : String(payee)));
+        return r.kind === "match" && set.has(r.entityId);
+      },
+    };
+  }
+
   const m = matcher.match(spellingOf(q));
   if (m.kind === "match") return { resolvedTo: { kind: "entity", entityId: m.entityId, name: m.name, via: m.via }, match: byEntity(m.entityId) };
   if (m.kind === "ambiguous") {

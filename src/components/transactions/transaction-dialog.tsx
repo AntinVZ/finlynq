@@ -71,6 +71,7 @@ import {
 } from "@/components/rules/rule-editor-dialog";
 import { buildPayeeCategoryRule } from "@/lib/rules/build-payee-category-rule";
 import { PayeeCombobox } from "@/components/payees/payee-combobox";
+import { CounterpartyRequisites } from "@/components/payees/counterparty-requisites";
 import { parseSaveError } from "@/lib/save-error";
 import type { Condition, Action } from "@/lib/rules/schema";
 import { LotReallocationNotice } from "@/components/portfolio/lot-reallocation-notice";
@@ -1343,6 +1344,7 @@ export function TransactionDialog({
               <Label>Note</Label>
               <Input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
             </div>
+            <CounterpartyRequisites payee={form.payee} note={form.note} />
             <div className="space-y-1.5">
               <Label>Tags (comma-separated)</Label>
               <Input value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} />

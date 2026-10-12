@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { formatCurrency } from "@/lib/currency";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { needsDecisionBadge, typeLabel, type PayeeGroupRow } from "./payee-ui";
+import { CounterpartyRequisites } from "@/components/payees/counterparty-requisites";
 
 export function PayeeDrawer({
   group,
@@ -93,6 +94,7 @@ export function PayeeDrawer({
               ))}
             </div>
           </section>
+          <CounterpartyRequisites payee={g.name} note={g.spellings.slice(1).map((x) => x.spelling).join(" ")} />
           <div className="flex flex-wrap gap-2 pt-2">
             <Button size="sm" onClick={() => onAdd(g)}>
               Add to directory

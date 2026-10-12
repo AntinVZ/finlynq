@@ -52,6 +52,8 @@ import { payeeMatchKey } from "../../src/lib/payees/match-key";
 import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
 import { mineIdentifiers, proposeMined } from "../../src/lib/payees/mine";
+import { findWhose } from "../../src/lib/payees/whose";
+import { loadPayeeNameMaps } from "../../src/lib/payees/scan";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
 
 const ymdArg = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
@@ -328,7 +330,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, mine_identifiers, dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, mine_identifiers, whose (who has this card / IBAN / code), dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -464,6 +466,10 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         confirmation_token: tokenArg,
       }),
       z.object({
+        op: z.literal("whose"),
+        identifier: z.string().min(1).describe("IBAN, card (\"5168 **** 1234\", \"****1234\", \"1234\"), ІПН (10 digits) or ЄДРПОУ (8)."),
+      }),
+      z.object({
         op: z.literal("mine_identifiers"),
         limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 100)."),
       }),
@@ -584,6 +590,31 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               },
               input.confirmation_token,
             );
+          }
+          case "whose": {
+            const { accounts } = await loadPayeeNameMaps(db, userId, dek);
+            const r = await findWhose({ executor: db, userId, dek, identifier: input.identifier, accountNames: accounts });
+            if (!r) return err("Not a requisite: pass an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
+            return dataResponse({
+              query: r.query,
+              candidates: r.candidates.map((c) => ({
+                ...(c.entity ? { entity_id: c.entity.id, type: c.entity.type } : {}),
+                payee: c.payee,
+                evidence: c.evidence,
+                ...(c.holdsRequisite ? { inDirectory: true } : {}),
+                transactions: c.transactions,
+                firstDate: c.firstDate,
+                lastDate: c.lastDate,
+                totals: c.totals,
+                typicalAmount: c.typicalAmount,
+                accounts: c.accounts.map((a) => a.name),
+                examples: c.examples,
+              })),
+              ...(r.hints.length ? { hints: r.hints } : {}),
+              bankRowsMentioning: r.bankRows,
+              ...(r.truncated ? { truncated: true } : {}),
+              ...(dek ? {} : { note: NO_DEK_NOTE }),
+            });
           }
           case "mine_identifiers": {
             if (!dek) return err("Unlock required: payees and notes are encrypted.");
