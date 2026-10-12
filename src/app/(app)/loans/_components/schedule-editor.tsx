@@ -258,6 +258,14 @@ export function LoanScheduleEditor({
         To work in a spreadsheet, download the template, change it, and upload it back as CSV. Keep its first line; only date, payment and interest are read.
       </p>
 
+      {mode === "manual" && !draft && schedule.length > 0 && schedule[schedule.length - 1].balance > 0.5 && (
+        <p className="rounded-lg border border-amber-500/40 p-3 text-sm">
+          These rows stop on {schedule[schedule.length - 1].date} with{" "}
+          <span className="font-mono">{fmt(schedule[schedule.length - 1].balance)}</span> still owed. Add the
+          remaining payments, or leave it if that amount is paid another way.
+        </p>
+      )}
+
       {error && <p className="text-sm text-destructive">{error}</p>}
       {problems.length > 0 && (
         <div className="rounded-lg border border-destructive/40 p-3 text-sm">
