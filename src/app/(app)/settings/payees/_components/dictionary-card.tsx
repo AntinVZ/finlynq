@@ -10,7 +10,7 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { typeLabel } from "./payee-ui";
+import { PayeeTypeLabel } from "./merchant-type-ui";
 
 type PlanItem = {
   index: number;
@@ -22,6 +22,7 @@ type PlanItem = {
   newAliases: Array<{ pattern: string; mode: string }>;
   newIdentifiers: Array<{ kind: string; value: string }>;
   newWebsite?: string | null;
+  newMerchantType?: { group: string; name: string } | null;
   note: string | null;
 };
 type PlanResponse = { plan: PlanItem[]; errors: Array<{ index: number; error: string }>; counts: Record<string, number>; batchId?: number | null; error?: string };
@@ -129,7 +130,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
               .map((p) => (
                 <li key={p.index} className="flex flex-wrap items-center gap-2 py-1.5">
                   <span className="font-medium break-all">{p.name}</span>
-                  <span className="text-muted-foreground">{typeLabel(p.type)}</span>
+                  <PayeeTypeLabel className="text-muted-foreground" merchantType={p.newMerchantType} type={p.type} />
                   <span className={p.action === "conflict" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}>
                     {ACTION_LABEL[p.action]}
                     {p.target ? ` “${p.target.name}”` : ""}

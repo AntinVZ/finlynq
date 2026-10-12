@@ -12,7 +12,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency } from "@/lib/currency";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
-import { needsDecisionBadge, typeLabel, type PayeeGroupRow } from "./payee-ui";
+import { needsDecisionBadge, type PayeeGroupRow } from "./payee-ui";
+import { PayeeTypeLabel } from "./merchant-type-ui";
 import { CounterpartyRequisites } from "@/components/payees/counterparty-requisites";
 
 export function PayeeDrawer({
@@ -35,7 +36,7 @@ export function PayeeDrawer({
         <SheetHeader>
           <SheetTitle className="break-all pr-6">{g.name}</SheetTitle>
           <SheetDescription>
-            {typeLabel(g.type.type)}
+            <PayeeTypeLabel type={g.type.type} />
             {g.type.isPerson ? " · " : ""}
             {g.type.isPerson && needsDecisionBadge(g.type.reason)}
             {" · not in the directory"}

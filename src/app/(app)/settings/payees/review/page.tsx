@@ -20,7 +20,8 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft } from "lucide-react";
-import { confidenceBadge, needsDecisionBadge, typeLabel } from "../_components/payee-ui";
+import { confidenceBadge, needsDecisionBadge } from "../_components/payee-ui";
+import { PayeeTypeLabel } from "../_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
 
 type Proposal = {
@@ -125,7 +126,7 @@ export default function PayeeReviewPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <input type="checkbox" aria-label={`Select proposal ${p.canonical}`} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                     <span className="font-medium break-all">{p.canonical}</span>
-                    <span className="text-xs text-muted-foreground">{typeLabel(p.type)}</span>
+                    <PayeeTypeLabel className="text-xs text-muted-foreground" type={p.type} />
                     {confidenceBadge(p.confidence)}
                     {p.needsDecision && needsDecisionBadge("Involves a private person or sole proprietor")}
                     {p.entityId != null && (

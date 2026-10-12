@@ -25,7 +25,8 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/currency";
-import { confidenceBadge, needsDecisionBadge, typeLabel } from "./payee-ui";
+import { confidenceBadge, needsDecisionBadge } from "./payee-ui";
+import { PayeeTypeLabel } from "./merchant-type-ui";
 import { OpDialog, type OpPreview } from "./op-dialog";
 
 export type LookalikeCandidate = {
@@ -35,7 +36,7 @@ export type LookalikeCandidate = {
   count: number;
   total: number;
   lastDate: string | null;
-  entity: { id: number; name: string; type: string };
+  entity: { id: number; name: string; type: string; merchantType?: { group: string; name: string } | null };
   confidence: number;
   reason: string;
   matchedAlias: string;
@@ -127,7 +128,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                       <span className="font-medium break-all">{c.name}</span>
                       <span className="text-muted-foreground">looks like</span>
                       <Link href={`/settings/payees/${c.entity.id}`} className="font-medium hover:underline break-all">{c.entity.name}</Link>
-                      <span className="text-xs text-muted-foreground">{typeLabel(c.entity.type)}</span>
+                      <PayeeTypeLabel className="text-xs text-muted-foreground" merchantType={c.entity.merchantType} type={c.entity.type} />
                       {confidenceBadge(c.confidence)}
                       {c.needsDecision && needsDecisionBadge(c.decisionReason)}
                       <span className="ml-auto text-xs text-muted-foreground tabular-nums">

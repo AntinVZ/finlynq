@@ -137,7 +137,7 @@ const postSchema = z.discriminatedUnion("op", [
   }),
   z.object({
     op: z.literal("merge"),
-    into: z.union([z.object({ entityId: id }), z.object({ name, type })]),
+    into: z.union([z.object({ entityId: id }), z.object({ name, type, merchantType: merchantType.optional() })]),
     entityIds: z.array(id).max(200).optional(),
     payees: z.array(z.string().min(1).max(500)).max(500).optional(),
     apply,

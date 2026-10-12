@@ -262,7 +262,8 @@ const PATRONYMIC_RE = /(?:ович|евич|йович|івна|ївна|овн�
 const PATRONYMIC_LAT_RE = /(?:ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
 /** One normalized token that is a patronymic (Cyrillic or Latin). */
 export const PATRONYMIC_TOKEN_RE = /(?:ович|евич|йович|івна|ївна|овна|евна|ічна|ична|ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
-const SOLE_PROP_RE = /^(?:фоп|флп|спд|fop|flp|spd|фізична особа[- ]підприємець|fizychna osoba[- ]pidpryiemets)\b/;
+// A Unicode-aware end of word: `\b` is ASCII-only, so it never matched after `фоп`.
+const SOLE_PROP_RE = /^(?:фоп|флп|спд|fop|flp|spd|фізична особа[- ]підприємець|fizychna osoba[- ]pidpryiemets)(?![\p{L}\p{N}])/u;
 const INITIALS_RE = /^[\p{L}'’-]{2,}\s+\p{L}\.\s*\p{L}\.?$/u;
 const BANK_RE = /\b(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)\b/;
 const GOV_RE = /(?:податков|казначей|treasury|\bдпс\b|\bпфу\b|пенсійн|\bdps\b|tax office|держ|gov\.ua|\bдія\b|\bdiia\b|митн|customs|суд\b)/;

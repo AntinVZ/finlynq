@@ -2,16 +2,28 @@
 
 /**
  * "Merge into one payee": pick the target — a new directory entry (name +
- * type) or an existing one — and preview what changes before confirming.
- * Used for clusters, selected payees and "Add to directory".
+ * merchant type) or an existing one (searchable picker) — and preview what
+ * changes before confirming. Used for clusters, selected payees and "Add to
+ * directory".
+ *
+ * P6.1: the merchant type (group → position) is the main type field; the old
+ * entity type sits under "Додатково" and follows the merchant type unless
+ * picked by hand («Особи і ФОП» → person; a person-looking name stays a person).
  */
 
 import { useState } from "react";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { PAYEE_TYPES, type PayeeType } from "@/lib/payees/match-key";
+import { payeeTypeForMerchantType } from "@/lib/payees/payee-type";
 import { OpDialog, type OpPreview } from "./op-dialog";
 import { PAYEE_TYPE_OPTIONS, typeLabel } from "./payee-ui";
+import { EntityPicker, type EntityOption } from "./entity-picker";
+import { MerchantTypeSelect, merchantTypeLabel, type MerchantTypeOption, type MerchantTypeRef } from "./merchant-type-ui";
 
-export type EntityOption = { id: number; name: string; type: string };
+export type { EntityOption } from "./entity-picker";
+
+const asPayeeType = (t: string): PayeeType => ((PAYEE_TYPES as readonly string[]).includes(t) ? (t as PayeeType) : "other");
 
 export function MergeDialog({
   title,
@@ -20,6 +32,9 @@ export function MergeDialog({
   suggestedName,
   suggestedType,
   entities,
+  merchantTypes = [],
+  typeHint,
+  clusterKeys,
   warning,
   onClose,
   onDone,
@@ -30,21 +45,33 @@ export function MergeDialog({
   /** Directory entries folded into the target. */
   entityIds?: number[];
   suggestedName: string;
+  /** The entity-type guess for the payees (retail / person / …). */
   suggestedType: string;
   entities: EntityOption[];
+  merchantTypes?: readonly MerchantTypeOption[];
+  /** A merchant-type suggestion; applied only when the user clicks it. */
+  typeHint?: (MerchantTypeRef & { reason: string }) | null;
+  /** Matching keys of the payees being merged (orders the picker). */
+  clusterKeys?: string[];
   warning?: string | null;
   onClose: () => void;
   onDone: (r: OpPreview) => void;
 }) {
   const [mode, setMode] = useState<"new" | "existing">(entityIds.length === 1 && payees.length > 0 ? "existing" : "new");
   const [name, setName] = useState(suggestedName);
-  const [type, setType] = useState(suggestedType);
-  const [targetId, setTargetId] = useState<number | null>(entityIds[0] ?? entities[0]?.id ?? null);
+  const [merchantType, setMerchantType] = useState<MerchantTypeRef | null>(null);
+  /** "" = follow the merchant type. */
+  const [manualType, setManualType] = useState("");
+  const [targetId, setTargetId] = useState<number | null>(entityIds[0] ?? null);
+
+  const autoType = payeeTypeForMerchantType(merchantType?.group, asPayeeType(suggestedType));
+  const type = manualType || autoType;
+  const hint = typeHint && !(merchantType && merchantTypeLabel(merchantType) === merchantTypeLabel(typeHint)) ? typeHint : null;
 
   const body =
     mode === "new"
       ? name.trim()
-        ? { op: "merge", into: { name: name.trim(), type }, entityIds, payees }
+        ? { op: "merge", into: { name: name.trim(), type, ...(merchantType ? { merchantType } : {}) }, entityIds, payees }
         : null
       : targetId
         ? { op: "merge", into: { entityId: targetId }, entityIds: entityIds.filter((id) => id !== targetId), payees }
@@ -66,29 +93,41 @@ export function MergeDialog({
         </label>
       </div>
       {mode === "new" ? (
-        <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
+        <div className="space-y-2">
           <Input aria-label="Canonical name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Canonical name" />
-          <select aria-label="Type" className="h-9 rounded-md border bg-background px-2 text-sm" value={type} onChange={(e) => setType(e.target.value)}>
-            {PAYEE_TYPE_OPTIONS.map((t) => (
-              <option key={t} value={t}>
-                {typeLabel(t)}
-              </option>
-            ))}
-          </select>
+          <MerchantTypeSelect types={merchantTypes} value={merchantType} onChange={setMerchantType} className="h-9 w-full rounded-md border bg-background px-2 text-sm" />
+          {hint && (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-auto min-h-7 max-w-full whitespace-normal break-words text-left text-xs"
+              title={`Підказка: ${hint.reason}. Призначається лише після підтвердження.`}
+              onClick={() => setMerchantType({ group: hint.group, name: hint.name })}
+            >
+              Підказка: {merchantTypeLabel(hint)}
+            </Button>
+          )}
+          <details className="text-xs">
+            <summary className="cursor-pointer text-muted-foreground">
+              Додатково · тип запису: {typeLabel(type)}
+              {manualType ? "" : " (автоматично)"}
+            </summary>
+            <label className="mt-2 flex flex-wrap items-center gap-2">
+              <span className="text-muted-foreground">Тип запису</span>
+              <select aria-label="Type" className="h-8 rounded-md border bg-background px-2 text-sm" value={manualType} onChange={(e) => setManualType(e.target.value)}>
+                <option value="">Автоматично ({typeLabel(autoType)})</option>
+                {PAYEE_TYPE_OPTIONS.map((t) => (
+                  <option key={t} value={t}>
+                    {typeLabel(t)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <p className="mt-1 text-muted-foreground">«Особи і ФОП» робить запис особою; людей ніколи не зливають автоматично.</p>
+          </details>
         </div>
       ) : (
-        <select
-          aria-label="Existing payee"
-          className="h-9 w-full rounded-md border bg-background px-2 text-sm"
-          value={targetId ?? ""}
-          onChange={(e) => setTargetId(Number(e.target.value) || null)}
-        >
-          {entities.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.name} ({typeLabel(e.type)})
-            </option>
-          ))}
-        </select>
+        <EntityPicker entities={entities} value={targetId} onChange={setTargetId} clusterKeys={clusterKeys} />
       )}
     </OpDialog>
   );

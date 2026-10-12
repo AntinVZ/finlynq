@@ -29,12 +29,12 @@ import {
   cleanPayeeDisplay,
   coreOfKey,
   guessPayeeType,
-  keySimilarity,
   payeeTokens,
   spellingDifferenceReason,
   type TypeGuess,
 } from "./match-key";
 import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
+import { scoreKeys, type KeyScore } from "./score-keys";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
 
 export type NamedCount = { id: number; name: string; count: number };
@@ -196,8 +196,8 @@ export const MIN_EDGE_CONFIDENCE = 0.6;
 
 type Edge = { a: number; b: number; confidence: number; reason: string; sameBrand: boolean };
 
-/** A pair score. `sameBrand` = the brand cores agree (equal, or one continues the other); false = only spelled alike. */
-export type KeyScore = { confidence: number; reason: string; sameBrand: boolean };
+// Pair scoring lives in ./score-keys.ts (pure, also used by the web picker).
+export { scoreKeys, type KeyScore };
 
 /** Groups that never take part in merchant clustering: no brand (only type words) or a bank service row. */
 export function clusterable(g: PayeeGroup): boolean {
@@ -209,45 +209,6 @@ export function scorePair(a: PayeeGroup, b: PayeeGroup, vocab?: PayeeVocabulary)
   if (!clusterable(a) || !clusterable(b)) return null;
   if (a.type.isPerson !== b.type.isPerson) return null; // never pair a person with a merchant
   return scoreKeys(a.key, b.key, vocab);
-}
-
-/**
- * How alike two DIFFERENT matching keys are, compared on their brand cores
- * (one-letter tokens and type words removed): same core 0.9, one continues
- * the other 0.75, small edit distance 0.6–0.88 (then `sameBrand` is false:
- * different brand tokens are only ever joined by a person). Null below that,
- * and null when either key is nothing but type words. Identical keys are the
- * caller's business.
- */
-export function scoreKeys(keyA: string, keyB: string, vocab?: PayeeVocabulary): KeyScore | null {
-  if (!keyA || !keyB) return null;
-  const A = brandCoreOfKey(keyA, vocab);
-  const B = brandCoreOfKey(keyB, vocab);
-  if (A.typeOnly || B.typeOnly) return null;
-  const ca = A.core;
-  const cb = B.core;
-  if (ca === cb) {
-    const typeWord = A.removed.length || B.removed.length ? ", legal form or type word" : " or legal form";
-    return { confidence: 0.9, reason: `same name apart from a one-letter suffix${typeWord}`, sameBrand: true };
-  }
-  const ta = ca.split(" ");
-  const tb = cb.split(" ");
-  const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
-  if (short.join(" ").length >= 5 && short.every((t, i) => long[i] === t)) {
-    return { confidence: 0.75, reason: "one name continues the other", sameBrand: true };
-  }
-  if (Math.min(ca.length, cb.length) >= 5) {
-    const sim = keySimilarity(ca, cb);
-    if (sim >= 0.85) {
-      const letters = Math.round((1 - sim) * Math.max(ca.length, cb.length));
-      return {
-        confidence: Math.min(0.88, round2(0.6 + (sim - 0.85) * 2)),
-        reason: `spellings differ by ${letters} letter${letters === 1 ? "" : "s"}`,
-        sameBrand: false,
-      };
-    }
-  }
-  return null;
 }
 
 /** Clustering only compares groups whose brand core starts with the same 4 characters. */

@@ -345,7 +345,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     .optional()
     .describe("Merchant type (one per payee): merchant_type_id, \"Group → Position\" (created if missing), or a unique position / group name from op=merchant_types; null clears. Never set it without the user's OK.");
   const merchantTypeFilterArg = z.string().optional().describe("Only payees whose directory entry has this merchant type: a group (all positions), a position, \"Group → Position\", or \"без типу\".");
-  const typeArg = z.enum(PAYEE_TYPES).optional().describe("retail | service | bank | government | person | sole_proprietor | company | other. Omit to guess from the name.");
+  const typeArg = z.enum(PAYEE_TYPES).optional().describe("Entity type, secondary to merchant_type: retail | service | bank | government | person | sole_proprietor | company | other. Omit it: it is derived from the name and the merchant type (\"Особи і ФОП\" → person / sole_proprietor; a person-looking name stays a person).");
   const aliasArg = z
     .array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.enum(ALIAS_MODES).optional() })]))
     .optional()
@@ -462,6 +462,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         into_entity_id: z.number().int().positive().optional().describe("Merge into this existing entity…"),
         into_name: z.string().optional().describe("…or into a new entity with this canonical name."),
         into_type: typeArg,
+        into_merchant_type: merchantTypeArg.describe("Merchant type of the NEW entity (with into_name): merchant_type_id, \"Group → Position\" (created if missing), or a unique position / group name. Never set it without the user's OK."),
         entity_ids: z.array(z.number().int().positive()).optional().describe("Entities folded into the target (deleted; their aliases and identifiers move)."),
         payees: z.array(z.string()).optional().describe("Spellings added as exact aliases of the target."),
         cluster_ids: z.array(z.string()).optional().describe("Every spelling of these clusters becomes an alias of the target."),
@@ -739,7 +740,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               if (typeof fromClusters === "string") return err(fromClusters);
               payees = [...payees, ...fromClusters];
             }
-            const into = input.into_entity_id != null ? { entityId: input.into_entity_id } : input.into_name ? { name: input.into_name, type: input.into_type } : null;
+            const into = input.into_entity_id != null ? { entityId: input.into_entity_id } : input.into_name ? { name: input.into_name, type: input.into_type, merchantType: input.into_merchant_type ?? undefined } : null;
             if (!into) return err("Pass into_entity_id or into_name.");
             return await writeOp({ op: "merge", into, entityIds: input.entity_ids, payees, apply: input.apply }, input.confirmation_token);
           }

@@ -64,6 +64,7 @@ import {
   type MerchantTypeRef,
 } from "./merchant-types";
 import { brandCoreOfKey } from "./type-words";
+import { isPersonsMerchantGroup, payeeTypeForMerchantType } from "./payee-type";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
 export type IdentifierInput = { kind: IdentifierKind; value: string } & IdentifierDetails;
@@ -84,7 +85,7 @@ export type PayeeOp =
   | { op: "alias_remove"; entityId: number; aliasIds?: number[]; patterns?: string[] }
   | { op: "alias_from_rule"; ruleId: number; entityId?: number; apply?: boolean }
   | { op: "identifiers"; entityId: number; add?: IdentifierInput[]; update?: IdentifierUpdate[]; deactivate?: number[]; remove?: number[] }
-  | { op: "merge"; into: { entityId: number } | { name: string; type?: PayeeType }; entityIds?: number[]; payees?: string[]; apply?: boolean }
+  | { op: "merge"; into: { entityId: number } | { name: string; type?: PayeeType; merchantType?: MerchantTypeInput }; entityIds?: number[]; payees?: string[]; apply?: boolean }
   | { op: "split"; entityId: number; aliasIds: number[]; name: string; type?: PayeeType; apply?: boolean }
   | { op: "apply"; entityIds?: number[] }
   /**
@@ -373,10 +374,15 @@ async function runOp(
       await storedTypes();
       return id;
     };
+    const groupOfType = (id: number | null) => (id == null ? null : (typeList?.find((x) => x.id === id)?.group ?? null));
+    /** P6.1: an explicit entity type wins; otherwise it follows the merchant type (people stay people). */
+    const entityTypeFor = (explicit: string | undefined, name: string, typeId: number | null): PayeeType =>
+      explicit && (PAYEE_TYPES as readonly string[]).includes(explicit) ? (explicit as PayeeType) : payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(name).type);
     const setEntityType = async (e: PayeeEntity, typeId: number | null) => {
       if (e.merchantTypeId === typeId) return;
       await journal.willModify([e.id]);
-      await updateEntityRow(btx, userId, dek, e.id, { merchantTypeId: typeId });
+      const toPerson = isPersonsMerchantGroup(groupOfType(typeId)) && !PERSON_ENTITY_TYPES.has(e.type);
+      await updateEntityRow(btx, userId, dek, e.id, { merchantTypeId: typeId, ...(toPerson ? { type: payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(e.name).type) } : {}) });
       out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
       journal.count("merchant_type_set");
     };
@@ -402,11 +408,11 @@ async function runOp(
       try {
         switch (op.op) {
           case "create": {
-            const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId, website: op.website });
+            const typeId = op.merchantType != null ? await resolveMerchantType(op.merchantType) : null;
+            const id = await createEntity(op.name, entityTypeFor(op.type, op.name, typeId), { note: op.note, defaultCategoryId: op.defaultCategoryId, website: op.website });
             await addAliases(id, op.aliases ?? [], src("manual"));
             await addIdentifiers(id, op.identifiers ?? [], out.entity!.type);
-            if (op.merchantType != null) {
-              const typeId = await resolveMerchantType(op.merchantType);
+            if (typeId != null) {
               await updateEntityRow(btx, userId, dek, id, { merchantTypeId: typeId });
               out.typed.push({ id, name: out.entity!.name, from: null, to: typeLabel(typeId) });
             }
@@ -455,6 +461,10 @@ async function runOp(
                 patch.merchantTypeId = typeId;
                 out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
                 journal.count("merchant_type_set");
+                // P6.1: «Особи і ФОП» makes the entry a person unless the type is given.
+                if (op.type === undefined && isPersonsMerchantGroup(groupOfType(typeId)) && !PERSON_ENTITY_TYPES.has(e.type)) {
+                  patch.type = payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(patch.name ?? e.name).type);
+                }
               }
             }
             if (patch.website !== undefined) journal.count("website_set");
@@ -582,10 +592,15 @@ async function runOp(
               targetId = target.id;
               out.entity = { id: target.id, name: target.name, type: target.type };
             } else {
-              const into = op.into as { name: string; type?: PayeeType };
+              const into = op.into as { name: string; type?: PayeeType; merchantType?: MerchantTypeInput };
               await journal.willModify(merged.map((s) => s.id));
               const keep = merged[0];
-              targetId = await createEntity(into.name, asType(into.type, into.name), { note: keep?.note ?? null, defaultCategoryId: keep?.defaultCategoryId ?? null }, allowed);
+              const typeId = into.merchantType != null ? await resolveMerchantType(into.merchantType) : null;
+              targetId = await createEntity(into.name, entityTypeFor(into.type, into.name, typeId), { note: keep?.note ?? null, defaultCategoryId: keep?.defaultCategoryId ?? null }, allowed);
+              if (typeId != null) {
+                await updateEntityRow(btx, userId, dek, targetId, { merchantTypeId: typeId });
+                out.typed.push({ id: targetId, name: out.entity!.name, from: null, to: typeLabel(typeId) });
+              }
             }
             for (const s of merged) {
               // Move every alias; a merged entity's canonical name becomes an ordinary exact alias.

@@ -33,6 +33,8 @@ export type EntitySummary = {
   name: string;
   type: PayeeType;
   aliasCount: number;
+  /** P6.1: exact / contains alias spellings (not the canonical name, not regexes), for the web picker's search. */
+  aliasNames: string[];
   identifierCount: number;
   defaultCategoryId: number | null;
   /** P5c: has a website / a logo (the logo itself is served by /api/payees/[id]/logo). */
@@ -111,6 +113,7 @@ export async function loadPayeeOverview(opts: {
       name: e.name,
       type: e.type,
       aliasCount: e.aliases.length,
+      aliasNames: e.aliases.filter((a) => a.mode !== "regex" && a.source !== "canonical").map((a) => a.pattern),
       identifierCount: e.identifiers.length,
       defaultCategoryId: e.defaultCategoryId,
       website: e.website,
@@ -170,7 +173,10 @@ export async function loadLookalikes(opts: { executor: PayeeExecutor; userId: st
     limit: opts.limit,
     vocab: overview.vocab,
   });
-  return { ...report, rejections: dek ? describeRejections(rows, dek, overview.groups, overview.directory) : [] };
+  // P6.1: lists show the entry's merchant type next to its name.
+  const typeOf = new Map(overview.entities.map((e) => [e.id, e.merchantType ? { group: e.merchantType.group, name: e.merchantType.name } : null]));
+  const candidates = report.candidates.map((c) => ({ ...c, entity: { ...c.entity, merchantType: typeOf.get(c.entity.id) ?? null } }));
+  return { ...report, candidates, rejections: dek ? describeRejections(rows, dek, overview.groups, overview.directory) : [] };
 }
 
 /** The eight merchant analyses (P5d) in the display currency. Read only. */
