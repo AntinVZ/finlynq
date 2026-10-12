@@ -44,6 +44,7 @@ import { exportCsv, type CsvColumn } from "@/lib/csv-export";
 import { localDateISO, todayISO } from "@/lib/utils/date";
 import { LotReallocationNotice } from "@/components/portfolio/lot-reallocation-notice";
 import type { LotReallocationPreview } from "@/lib/portfolio/lots/types";
+import { PayeeCombobox } from "@/components/payees/payee-combobox";
 
 /**
  * TransactionsWorkspace — the full transactions surface (filters, per-column
@@ -1197,7 +1198,7 @@ export function TransactionsWorkspace({
               <Input type="date" className="h-7 text-xs w-36" value={bulkDate} onChange={(e) => setBulkDate(e.target.value)} />
             )}
             {bulkAction === "update_payee" && (
-              <Input className="h-7 text-xs w-44" placeholder="New payee" value={bulkPayee} onChange={(e) => setBulkPayee(e.target.value)} />
+              <PayeeCombobox className="w-44" inputClassName="h-7 text-xs" ariaLabel="New payee" placeholder="New payee" value={bulkPayee} onChange={setBulkPayee} />
             )}
             {bulkAction === "update_note" && (
               <Input className="h-7 text-xs w-44" placeholder="New note" value={bulkNote} onChange={(e) => setBulkNote(e.target.value)} />

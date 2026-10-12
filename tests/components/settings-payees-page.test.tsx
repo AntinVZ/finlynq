@@ -62,6 +62,9 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url.startsWith("/api/payees/explain")) {
+      return { ok: true, json: async () => ({ verdict: "separate", score: null, sameKey: false, reasons: ["Different first letters of the core"], a: { payee: "Rozetka", key: "rozetka", core: "rozetka", block: "roze", type: { type: "retail", reason: "", isPerson: false }, entity: null }, b: { payee: "Comfy", key: "komfi", core: "komfi", block: "komf", type: { type: "retail", reason: "", isPerson: false }, entity: null } }) };
+    }
     if (url.startsWith("/api/payees/insights")) {
       const cp = { id: "e:1", name: "Епіцентр", entityId: 1, count: 28, total: -10860, spend: 10860, firstDate: "2026-01-01", lastDate: "2026-09-01" };
       return {
@@ -105,6 +108,7 @@ describe("Settings → Payees", () => {
   it("lists payees with their spellings and flags people", async () => {
     setup();
     expect((await screen.findAllByText("Епіцентр")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("tab", { name: /^All/ }));
     expect(screen.getAllByText("3 spellings").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Needs decision").length).toBeGreaterThan(0);
   });
@@ -121,6 +125,7 @@ describe("Settings → Payees", () => {
   it("filters by search across spellings", async () => {
     setup();
     await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /^All/ }));
     fireEvent.change(screen.getByPlaceholderText("Search payees…"), { target: { value: "derkach" } });
     expect(screen.queryAllByText("Епіцентр К")).toHaveLength(0);
     expect(screen.getAllByText("Деркач Олександр Петрович").length).toBeGreaterThan(0);
@@ -154,5 +159,72 @@ describe("Settings → Payees", () => {
     expect(await screen.findByText("91%")).toBeTruthy();
     expect(screen.getByRole("img", { name: /Spend per month/ })).toBeTruthy();
     expect(screen.getByText(/monthly · ~30 days/)).toBeTruthy();
+  });
+
+  it("P5a: opens on Clusters, shows the summary strip and keeps settings behind the gear", async () => {
+    setup();
+    await screen.findAllByText("Епіцентр");
+    expect(screen.getByRole("tab", { name: /Clusters/ }).getAttribute("aria-selected")).toBe("true");
+    const strip = screen.getByLabelText("Summary");
+    expect(strip.textContent).toMatch(/Payees3/);
+    expect(strip.textContent).toMatch(/Not in directory3/);
+    expect(strip.textContent).toMatch(/Merge candidates2/);
+    expect(strip.textContent).toMatch(/Auto-replaceOFF/);
+    expect(screen.getByRole("link", { name: /Review with AI/ }).getAttribute("href")).toBe("/settings/payees/review");
+    expect(screen.queryByText("Auto-replace known spellings on import")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Studio settings" }));
+    expect(await screen.findByText("Auto-replace known spellings on import")).toBeTruthy();
+    expect(screen.getByText("Auto-merge close new spellings")).toBeTruthy();
+    expect(screen.getByText("Dictionary file")).toBeTruthy();
+  });
+
+  it("P5a: a payee outside the directory opens a side panel with Add to directory / Show transactions", async () => {
+    setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /^Unrecognized/ }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Епіцентр К" })[0]);
+    expect(await screen.findByText("Top categories")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Show transactions" }).getAttribute("href")).toContain("search=");
+    fireEvent.click(screen.getByRole("button", { name: "Add to directory" }));
+    expect(await screen.findByText(/Renames 12 rows/)).toBeTruthy();
+  });
+
+  it("P5a: Explain asks the server why two payees are (not) clustered", async () => {
+    const calls = setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("button", { name: "Explain…" }));
+    fireEvent.change(screen.getByLabelText("First payee"), { target: { value: "Rozetka" } });
+    fireEvent.change(screen.getByLabelText("Second payee"), { target: { value: "Comfy" } });
+    fireEvent.click(screen.getByRole("button", { name: "Explain" }));
+    expect(await screen.findByText("Kept apart")).toBeTruthy();
+    expect(calls.some((c) => c.url.startsWith("/api/payees/explain?a=Rozetka&b=Comfy"))).toBe(true);
+  });
+});
+
+describe("Settings → Payees paging", () => {
+  it("pages long lists by 25 / 50", async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({
+      ...base, key: `p${i}`, name: `Payee ${String(i).padStart(2, "0")}`, suggestedName: `Payee ${i}`, count: 100 - i, rows: 100 - i, total: -1,
+      spellings: [{ spelling: `Payee ${String(i).padStart(2, "0")}`, count: 1 }], type: { type: "other", confidence: 0.2, isPerson: false, reason: "" },
+    }));
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ groups: many, totalGroups: 60, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities: [], batches: [], settings: { advancedMode: false, identifierKinds: [], importHint: true } }),
+    })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <PayeesSettingsPage />
+      </SWRConfig>,
+    );
+    // No clusters → opens on Unrecognized.
+    expect((await screen.findAllByText("Payee 00")).length).toBeGreaterThan(0);
+    expect(screen.getByRole("tab", { name: /^Unrecognized/ }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.queryAllByText("Payee 30")).toHaveLength(0);
+    expect(screen.getByText("1–25 of 60")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getAllByText("Payee 30").length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByLabelText("Rows per page"), { target: { value: "50" } });
+    expect(screen.getByText("1–50 of 60")).toBeTruthy();
+    expect(screen.getByLabelText("Summary").textContent).toMatch(/Auto-replaceON/);
   });
 });

@@ -70,6 +70,7 @@ import {
   type Holding as RuleEditorHolding,
 } from "@/components/rules/rule-editor-dialog";
 import { buildPayeeCategoryRule } from "@/lib/rules/build-payee-category-rule";
+import { PayeeCombobox } from "@/components/payees/payee-combobox";
 import { parseSaveError } from "@/lib/save-error";
 import type { Condition, Action } from "@/lib/rules/schema";
 import { LotReallocationNotice } from "@/components/portfolio/lot-reallocation-notice";
@@ -1320,7 +1321,7 @@ export function TransactionDialog({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Payee</Label>
-                <Input value={form.payee} onChange={(e) => setForm({ ...form, payee: e.target.value })} />
+                <PayeeCombobox value={form.payee} onChange={(v) => setForm((f) => ({ ...f, payee: v }))} />
               </div>
               <div className="space-y-1.5">
                 <Label>Currency</Label>

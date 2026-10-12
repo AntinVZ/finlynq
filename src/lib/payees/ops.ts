@@ -42,6 +42,7 @@ import {
 import { inTransaction, PayeeBatchError, runPayeeBatch, undoPayeeBatch, type BatchActor, type RewriteTable, type UndoResult } from "./batches";
 import { PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
 import type { PayeeExecutor } from "./scan";
+import { invalidatePayeeSuggest } from "./suggest";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
 export type IdentifierInput = { kind: IdentifierKind; value: string };
@@ -148,6 +149,7 @@ export async function executePayeeOp(opts: {
       return out;
     });
     if (result.rows.byTable.transactions > 0 || (result.undo?.restoredRows ?? 0) > 0) invalidateUserTxCache(userId);
+    invalidatePayeeSuggest(userId);
     return result;
   } catch (e) {
     if (e instanceof DryRunRollback) return e.result;

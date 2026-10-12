@@ -8,6 +8,7 @@ import { buildPayeeClusters, buildPayeeGroups, type EntityResolver, type PayeeCl
 import { loadPayeeNameMaps, scanPayees, type AmountSlice, type PayeeExecutor, type PayeeScan, type PayeeSource } from "./scan";
 import { buildPayeeMatcher, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
 import type { PayeeType } from "./match-key";
+import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
 export async function makeSliceConverter(
@@ -109,4 +110,21 @@ export async function loadPayeeOverview(opts: {
     truncated: scan.truncated,
     undecryptable: scan.undecryptable,
   };
+}
+
+/**
+ * Payee suggestions for the payee boxes (P5a). The index is built from the
+ * directory + the decrypted per-user transaction cache and kept for a minute
+ * (lib/payees/suggest.ts); a cache hit costs no query.
+ */
+export async function suggestPayees(opts: { executor: PayeeExecutor; userId: string; dek: Buffer | null; q: string; limit?: number }): Promise<PayeeSuggestion[]> {
+  let index = getCachedSuggestIndex(opts.userId);
+  if (!index) {
+    const directory = opts.dek ? await loadDirectory(opts.executor, opts.userId, opts.dek) : [];
+    const { getUserTransactions } = await import("@/lib/mcp/user-tx-cache");
+    const rows = opts.dek ? await getUserTransactions(opts.userId, opts.dek) : [];
+    index = buildSuggestIndex(directory, rows.map((r) => ({ payee: r.payee, date: r.date })));
+    setCachedSuggestIndex(opts.userId, index);
+  }
+  return querySuggestIndex(index, opts.q, opts.limit ?? 10);
 }

@@ -7,7 +7,8 @@
  * memory. The server never calls an LLM: the AI client looks at the compact
  * structured answers and proposes; the human approves.
  *
- * Read ops: list, clusters, get, batches.
+ * Read ops: list, clusters, get, batches, insights, review, proposals,
+ * explain (P5a: why two payees are / aren't clustered).
  * Write ops (directory + payee rewrite, each ONE undoable batch): create,
  * update, alias_add, alias_remove, identifiers, merge, split, apply, undo.
  * Every write is TWO-STEP: without `confirmation_token` it runs as a dry run
@@ -42,6 +43,7 @@ import {
   saveProposals,
 } from "../../src/lib/payees/proposals";
 import { computePayeeInsights } from "../../src/lib/payees/insights";
+import { explainPayeePair } from "../../src/lib/payees/explain";
 import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
@@ -303,7 +305,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters (look-alike spellings, confidence, reasons, needsDecision for people), get, batches, insights (top, monthly, new / gone, recurring, concentration), review (compact pack for you to analyse), proposals. AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Direct writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters, get, batches, insights, review (compact pack for you to analyse), proposals, explain (why two payees are or are not clustered). AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -403,6 +405,11 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         months: z.number().int().min(1).max(60).optional().describe("Window for top lists and monthly series (default 12)."),
         recent_days: z.number().int().min(7).max(730).optional().describe("\"New\" = first seen within this many days (default 90)."),
         limit: z.number().int().min(1).max(50).optional().describe("Rows per list (default 10)."),
+      }),
+      z.object({
+        op: z.literal("explain"),
+        a: z.string().min(1).describe("First payee (any spelling)."),
+        b: z.string().min(1).describe("Second payee."),
       }),
       z.object({
         op: z.literal("review"),
@@ -513,6 +520,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               limit: input.limit,
             });
             return dataResponse({ ...ins, ...(dek ? {} : { note: NO_DEK_NOTE }) });
+          }
+          case "explain": {
+            const matcher = buildPayeeMatcher(dek ? await loadDirectory(db, userId, dek) : []);
+            const x = explainPayeePair(input.a, input.b, matcher);
+            const sideOut = (v: typeof x.a) => ({ payee: v.payee, key: v.key, core: v.core, block: v.block, typeGuess: v.type.type, typeReason: v.type.reason, ...(v.type.isPerson ? { person: true } : {}), entity: v.entity });
+            return dataResponse({ verdict: x.verdict, score: x.score, reasons: x.reasons, a: sideOut(x.a), b: sideOut(x.b) });
           }
           case "review": {
             const o = await loadPayeeOverview({ executor: db, userId, dek, samples: 3 });

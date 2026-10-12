@@ -78,4 +78,28 @@ describeDb("/api/payees (seeded DB)", () => {
     expect(saved.data).toMatchObject({ advancedMode: true });
     expect((await parseResponse(await settingsRoute.GET(createMockRequest("http://localhost:3000/api/payees/settings")))).data).toMatchObject({ advancedMode: true });
   });
+
+  it("P5a: GET /api/payees/suggest and /api/payees/explain", async () => {
+    await resetTestDb();
+    const { db } = await import("@/db");
+    await db.execute(sql`TRUNCATE payee_entities, payee_aliases, payee_identifiers, payee_batches RESTART IDENTITY CASCADE`);
+    const { __clearAll } = await import("@/lib/mcp/user-tx-cache");
+    __clearAll();
+    authedUser = (await seedPayeeLedger()).userId;
+    const route = await import("@/app/api/payees/route");
+    const suggest = await import("@/app/api/payees/suggest/route");
+    const explain = await import("@/app/api/payees/explain/route");
+    await route.POST(createMockRequest("http://localhost:3000/api/payees", { method: "POST", body: { op: "create", name: "Епіцентр", payees: [] } }));
+    const get = async (url: string) => parseResponse(await suggest.GET(createMockRequest(url)));
+    const res = (await get("http://localhost:3000/api/payees/suggest?q=epit&limit=5")).data as { suggestions: Array<{ value: string; kind: string }> };
+    expect(res.suggestions[0]).toMatchObject({ value: "Епіцентр", kind: "entity" });
+    const recent = (await get("http://localhost:3000/api/payees/suggest?q=bulo")).data as { suggestions: Array<{ value: string; kind: string; count?: number }> };
+    expect(recent.suggestions).toEqual([expect.objectContaining({ value: "BULOCHKA SHOP", kind: "recent", count: 2 })]);
+
+    const ex = await parseResponse(await explain.GET(createMockRequest("http://localhost:3000/api/payees/explain?a=Epicentr&b=" + encodeURIComponent("Епіцентр К"))));
+    expect(ex.status).toBe(200);
+    expect(ex.data).toMatchObject({ verdict: "clustered", score: { confidence: 0.9 }, a: { entity: { name: "Епіцентр" } }, b: { entity: null } });
+    const bad = await parseResponse(await explain.GET(createMockRequest("http://localhost:3000/api/payees/explain?a=x")));
+    expect(bad.status).toBe(400);
+  });
 });

@@ -170,8 +170,8 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
 // ─── clustering ─────────────────────────────────────────────────────────────
 
 /** Past this many groups in one block only exact-core pairs are compared (keeps it ~linear). */
-const MAX_PAIRWISE_BLOCK = 300;
-const MIN_EDGE_CONFIDENCE = 0.6;
+export const MAX_PAIRWISE_BLOCK = 300;
+export const MIN_EDGE_CONFIDENCE = 0.6;
 
 type Edge = { a: number; b: number; confidence: number; reason: string };
 
@@ -211,9 +211,13 @@ export function scoreKeys(keyA: string, keyB: string): { confidence: number; rea
   return null;
 }
 
+/** Clustering only compares groups whose key core starts with the same 4 characters. */
+export function blockKeyOf(key: string): string {
+  return coreOfKey(key).slice(0, 4);
+}
+
 function blockKey(g: PayeeGroup): string {
-  const core = coreOfKey(g.key);
-  return core.slice(0, 4);
+  return blockKeyOf(g.key);
 }
 
 function clusterId(keys: string[]): string {

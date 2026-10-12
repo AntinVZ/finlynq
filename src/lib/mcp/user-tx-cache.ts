@@ -33,6 +33,7 @@
 import { db, schema } from "@/db";
 import { eq } from "drizzle-orm";
 import { decryptTxRows } from "@/lib/crypto/encrypted-columns";
+import { invalidatePayeeSuggest } from "@/lib/payees/suggest";
 
 export interface CachedTx {
   id: number;
@@ -167,6 +168,8 @@ export async function getUserTransactions(
 export function invalidateUser(userId: string): void {
   const store = getStore();
   store.delete(userId);
+  // Payee Studio suggestions are built from these rows (lib/payees/suggest.ts).
+  invalidatePayeeSuggest(userId);
 }
 
 /** Test/debug helper — nukes the whole cache. Not for production use. */

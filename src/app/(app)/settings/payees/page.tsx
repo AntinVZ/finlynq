@@ -20,9 +20,17 @@
  * P3/P4: link to AI review, import-hint / autopilot switches, an Insights
  * tab (top counterparties, monthly spend, new / gone, regular ones,
  * concentration) and dictionary export / import.
+ *
+ * P5a: the settings (and the dictionary file) live behind the gear at the
+ * top; a summary strip shows payees / not in the directory / merge
+ * candidates / auto-replace state with "Review with AI"; the page opens on
+ * Clusters when there are any, else Unrecognized; long lists page by 25 / 50;
+ * a payee that is not in the directory opens a side panel (totals, dates,
+ * categories, spellings, "Add to directory", "Show transactions");
+ * "Explain" says why two payees are (not) clustered.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
@@ -30,7 +38,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowDown, ArrowUp, Search } from "lucide-react";
+import { ArrowDown, ArrowUp, Search, Settings2 } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
 import { containsNormalized } from "@/lib/text-normalize";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
@@ -47,7 +55,11 @@ import {
 import { MergeDialog } from "./_components/merge-dialog";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
-import { DictionaryCard } from "./_components/dictionary-card";
+import { StudioSettingsDialog } from "./_components/settings-dialog";
+import { PayeeDrawer } from "./_components/payee-drawer";
+import { ExplainDialog } from "./_components/explain-dialog";
+
+const PAGE_SIZES = [25, 50] as const;
 
 type Tab = "all" | "clusters" | "unrecognized" | "directory" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
@@ -58,7 +70,12 @@ type Action =
   | { kind: "applyAll" };
 
 export default function PayeesSettingsPage() {
-  const [tab, setTab] = useState<Tab>("all");
+  const [tabChoice, setTab] = useState<Tab | null>(null);
+  const [page, setPage] = useState(0);
+  const [pageSize, setPageSize] = useState<number>(25);
+  const [drawer, setDrawer] = useState<PayeeGroupRow | null>(null);
+  const [explain, setExplain] = useState<{ a: string; b: string } | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "count", dir: "desc" });
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -67,6 +84,9 @@ export default function PayeesSettingsPage() {
 
   const { data, error: loadErr, mutate } = useSWR<PayeesResponse>("/api/payees", jsonFetcher, { revalidateOnFocus: false });
   const loadError = loadErr ? "Couldn't load payees." : "";
+  // Open on Clusters when there are merge candidates, else on Unrecognized.
+  const tab: Tab = tabChoice ?? (data && data.clusters.length === 0 ? "unrecognized" : "clusters");
+  useEffect(() => setPage(0), [tab, query, pageSize]);
   const currency = data?.currency ?? "USD";
   const entities = useMemo(() => data?.entities ?? [], [data]);
   const entityOptions = useMemo(() => entities.map((e) => ({ id: e.id, name: e.name, type: e.type })), [entities]);
@@ -98,6 +118,9 @@ export default function PayeesSettingsPage() {
   );
 
   const unrecognizedCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key && g.entityId == null).length, [data]);
+  const payeeCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key).length, [data]);
+  const pageRows = useMemo(() => rows.slice(page * pageSize, (page + 1) * pageSize), [rows, page, pageSize]);
+  const pageEntities = useMemo(() => entityRows.slice(page * pageSize, (page + 1) * pageSize), [entityRows, page, pageSize]);
   const blank = data?.groups.find((g) => !g.key);
   const selectedGroups = useMemo(() => (data?.groups ?? []).filter((g) => selected.has(g.key)), [data, selected]);
 
@@ -161,9 +184,9 @@ export default function PayeesSettingsPage() {
         {g.entityName ?? g.name}
       </Link>
     ) : (
-      <Link href={buildTxDrillUrl({ search: g.name })} className="font-medium hover:underline break-all">
+      <button type="button" className="font-medium hover:underline break-all text-left" onClick={() => setDrawer(g)}>
         {g.name}
-      </Link>
+      </button>
     );
   const typeCell = (g: PayeeGroupRow) => (
     <span className="inline-flex flex-wrap items-center gap-1">
@@ -183,6 +206,29 @@ export default function PayeesSettingsPage() {
     <input type="checkbox" aria-label={`Select ${g.name}`} checked={selected.has(g.key)} onChange={() => toggle(g.key)} />
   );
 
+  const pager = (total: number) =>
+    total > PAGE_SIZES[0] ? (
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="Pages">
+        <span className="tabular-nums">
+          {page * pageSize + 1}–{Math.min(total, (page + 1) * pageSize)} of {total}
+        </span>
+        <Button variant="outline" size="sm" className="h-7 text-xs" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+          Previous
+        </Button>
+        <Button variant="outline" size="sm" className="h-7 text-xs" disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>
+          Next
+        </Button>
+        <label className="ml-auto inline-flex items-center gap-1">
+          Per page
+          <select aria-label="Rows per page" className="h-7 rounded-md border bg-background px-1" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+            {PAGE_SIZES.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+    ) : null;
+
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "all", label: `All${data ? ` (${data.groups.filter((g) => g.key).length})` : ""}` },
     { id: "clusters", label: `Clusters${data ? ` (${data.clusters.length})` : ""}` },
@@ -194,18 +240,37 @@ export default function PayeesSettingsPage() {
 
   return (
     <div className="max-w-6xl space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight">Payees</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Every merchant, service and person you pay or get paid by, with the spellings they come in
-        </p>
-        <Link href="/settings/payees/review" className="inline-flex items-center gap-1 text-sm mt-2 hover:underline">
-          AI review
-          {data?.draftCount ? (
-            <Badge variant="secondary">{data.draftCount} waiting</Badge>
-          ) : (
-            <span className="text-xs text-muted-foreground">(proposals from your AI assistant)</span>
-          )}
+      <div className="flex flex-wrap items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-2xl font-bold tracking-tight">Payees</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Every merchant, service and person you pay or get paid by, with the spellings they come in
+          </p>
+        </div>
+        <Button variant="outline" size="sm" aria-label="Studio settings" title="Studio settings" onClick={() => setSettingsOpen(true)}>
+          <Settings2 className="h-4 w-4" />
+          <span className="ml-1 hidden sm:inline">Settings</span>
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" aria-label="Summary">
+        {[
+          { label: "Payees", value: data ? String(payeeCount) : "…", onClick: () => setTab("all") },
+          { label: "Not in directory", value: data ? String(unrecognizedCount) : "…", onClick: () => setTab("unrecognized") },
+          { label: "Merge candidates", value: data ? String(data.clusters.length) : "…", onClick: () => setTab("clusters") },
+          { label: "Auto-replace", value: data ? (data.settings.importHint ? "ON" : "OFF") : "…", onClick: () => setSettingsOpen(true) },
+        ].map((c) => (
+          <button key={c.label} type="button" onClick={c.onClick} className="rounded-lg border p-2 text-left hover:bg-accent/50">
+            <span className="block text-xs text-muted-foreground">{c.label}</span>
+            <span className="block text-lg font-semibold tabular-nums">{c.value}</span>
+          </button>
+        ))}
+        <Link href="/settings/payees/review" className="rounded-lg border p-2 hover:bg-accent/50">
+          <span className="block text-xs text-muted-foreground">AI assistant</span>
+          <span className="flex items-center gap-1 text-sm font-medium">
+            Review with AI
+            {data?.draftCount ? <Badge variant="secondary">{data.draftCount} waiting</Badge> : null}
+          </span>
         </Link>
       </div>
 
@@ -249,6 +314,16 @@ export default function PayeesSettingsPage() {
                 onClick={() => mergeGroups(`Merge ${selectedGroups.length} payees`, selectedGroups)}
               >
                 Merge selected{selectedGroups.length >= 2 ? ` (${selectedGroups.length})` : ""}
+              </Button>
+            )}
+            {(tab === "all" || tab === "unrecognized" || tab === "clusters") && (
+              <Button
+                variant="ghost"
+                size="sm"
+                title="Why are two payees (not) clustered?"
+                onClick={() => setExplain({ a: selectedGroups[0]?.name ?? "", b: selectedGroups[1]?.name ?? "" })}
+              >
+                Explain…
               </Button>
             )}
             {tab === "directory" && entities.length > 0 && (
@@ -335,8 +410,9 @@ export default function PayeesSettingsPage() {
                 {query ? "No directory entries match." : "The directory is empty. Add payees from All, Unrecognized or Clusters."}
               </p>
             ) : (
+              <>
               <ul className="divide-y rounded-lg border">
-                {entityRows.map((e) => (
+                {pageEntities.map((e) => (
                   <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
                     <Link href={`/settings/payees/${e.id}`} className="font-medium hover:underline break-all">
                       {e.name}
@@ -353,6 +429,8 @@ export default function PayeesSettingsPage() {
                   </li>
                 ))}
               </ul>
+              {pager(entityRows.length)}
+              </>
             )
           ) : tab === "changes" ? (
             (data?.batches ?? []).length === 0 ? (
@@ -385,7 +463,7 @@ export default function PayeesSettingsPage() {
             <>
               {/* Phones: one card per payee */}
               <ul className="space-y-2 sm:hidden">
-                {rows.map((g) => (
+                {pageRows.map((g) => (
                   <li key={g.key} className="rounded-lg border p-3 text-sm">
                     <div className="flex items-start gap-2">
                       <span className="mt-1">{checkbox(g)}</span>
@@ -440,7 +518,7 @@ export default function PayeesSettingsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map((g) => (
+                    {pageRows.map((g) => (
                       <tr key={g.key} className="border-b last:border-0 align-top">
                         <td className="py-2">{checkbox(g)}</td>
                         <td className="py-2 pr-2">
@@ -472,6 +550,7 @@ export default function PayeesSettingsPage() {
                   </tbody>
                 </table>
               </div>
+              {pager(rows.length)}
               {data && data.totalGroups > data.groups.length && (
                 <p className="text-xs text-muted-foreground">Showing the {data.groups.length} most used of {data.totalGroups} payees.</p>
               )}
@@ -480,87 +559,25 @@ export default function PayeesSettingsPage() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Dictionary file</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <DictionaryCard onImported={() => mutate()} />
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Studio settings</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={data?.settings.advancedMode ?? false}
-              disabled={!data}
-              onChange={(e) => saveSettings({ advancedMode: e.target.checked })}
-            />
-            <span>
-              Advanced mode
-              <span className="block text-xs text-muted-foreground">
-                Show requisites on payee pages: IBAN, tax id, EDRPOU, card last 4 digits, crypto wallet. Stored encrypted;
-                full card numbers are never kept.
-              </span>
-            </span>
-          </label>
-          <label className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={data?.settings.importHint ?? false}
-              disabled={!data}
-              onChange={(e) => saveSettings({ importHint: e.target.checked })}
-            />
-            <span>
-              Use canonical names for new payees
-              <span className="block text-xs text-muted-foreground">
-                When an imported row or a new transaction has a payee that matches an alias, save it under the canonical name.
-                Imports are recorded in Changes and can be undone.
-              </span>
-            </span>
-          </label>
-          <div className="flex items-start gap-2 text-sm">
-            <input
-              type="checkbox"
-              className="mt-1"
-              aria-label="Autopilot"
-              checked={data?.settings.autopilotEnabled ?? false}
-              disabled={!data}
-              onChange={(e) => saveSettings({ autopilotEnabled: e.target.checked })}
-            />
-            <span className="flex-1">
-              Autopilot for new payees
-              <span className="block text-xs text-muted-foreground">
-                On import, a payee not in the directory that is very close to exactly one entry (at or above the threshold) is
-                renamed and its spelling added as an alias. Never for people or sole proprietors; every run can be undone.
-              </span>
-              <label className="mt-1 inline-flex items-center gap-2 text-xs">
-                Threshold
-                <select
-                  className="h-7 rounded-md border bg-background px-1 text-xs"
-                  value={String(data?.settings.autopilotThreshold ?? 0.9)}
-                  disabled={!data || !data.settings.autopilotEnabled}
-                  onChange={(e) => saveSettings({ autopilotThreshold: Number(e.target.value) })}
-                >
-                  {[0.75, 0.8, 0.85, 0.9, 0.95, 0.99].map((t) => (
-                    <option key={t} value={String(t)}>
-                      {Math.round(t * 100)}%
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </span>
-          </div>
-        </CardContent>
-      </Card>
-
+      {settingsOpen && (
+        <StudioSettingsDialog settings={data?.settings ?? null} onSave={saveSettings} onClose={() => setSettingsOpen(false)} onImported={() => mutate()} />
+      )}
+      {drawer && (
+        <PayeeDrawer
+          group={drawer}
+          currency={currency}
+          onClose={() => setDrawer(null)}
+          onAdd={(g) => {
+            setDrawer(null);
+            mergeGroups(`Add “${g.name}” to the directory`, [g]);
+          }}
+          onExplain={(g) => {
+            setDrawer(null);
+            setExplain({ a: g.name, b: "" });
+          }}
+        />
+      )}
+      {explain && <ExplainDialog initialA={explain.a} initialB={explain.b} onClose={() => setExplain(null)} />}
       {action?.kind === "merge" && (
         <MergeDialog
           title={action.title}

@@ -25,6 +25,7 @@ import { buildPayeeMatcher, insertAlias, loadDirectory, type PayeeEntity } from 
 import { runPayeeBatch, writeStoredPayees } from "./batches";
 import { scoreKeys } from "./overview";
 import { getPayeeSettings } from "./settings";
+import { invalidatePayeeSuggest } from "./suggest";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 
 export type ImportAssistResult = { hinted: number; autopilot: number; aliasesAdded: number; batchIds: number[] };
@@ -131,6 +132,7 @@ export async function applyPayeeImportAssist(opts: {
     });
     if (batchId != null) out.batchIds.push(batchId);
   }
+  if (out.batchIds.length) invalidatePayeeSuggest(userId);
   return out;
 }
 
