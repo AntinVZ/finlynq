@@ -10,7 +10,6 @@ import {
 } from "@/lib/loan-calculator";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { requireEncryption } from "@/lib/auth/require-encryption";
-import { requireDevMode } from "@/lib/require-dev-mode";
 import { z } from "zod";
 import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
 import { buildNameFields, decryptNamedRows, encryptOptional, decryptOptional } from "@/lib/crypto/encrypted-columns";
@@ -83,7 +82,6 @@ async function getLinkedAccountBalances(userId: string, accountIds: number[]) {
 
 export async function GET(request: NextRequest) {
   const auth = await requireAuth(request); if (!auth.authenticated) return auth.response;
-  const devGuard = await requireDevMode(request); if (devGuard) return devGuard;
   const { userId } = auth.context;
   // Stream D Phase 4 — plaintext name/accountName dropped.
   const rawLoans = await db
@@ -251,7 +249,6 @@ export async function POST(request: NextRequest) {
   // write persisted a permanently nameless row (review 2026-07-30 #7).
   const auth = await requireEncryption(request); if (!auth.ok) return auth.response;
   const { userId, dek } = auth;
-  const devGuard = await requireDevMode(request); if (devGuard) return devGuard;
   try {
     const body = await request.json();
 
@@ -360,7 +357,6 @@ export async function PUT(request: NextRequest) {
   // lands in plaintext (review 2026-07-30 #7).
   const auth = await requireEncryption(request); if (!auth.ok) return auth.response;
   const { userId, dek } = auth;
-  const devGuard = await requireDevMode(request); if (devGuard) return devGuard;
   try {
     const body = await request.json();
     const parsed = validateBody(body, updateLoanSchema);
@@ -418,7 +414,6 @@ export async function PUT(request: NextRequest) {
 
 export async function DELETE(request: NextRequest) {
   const auth = await requireAuth(request); if (!auth.authenticated) return auth.response;
-  const devGuard = await requireDevMode(request); if (devGuard) return devGuard;
   const id = parseInt(request.nextUrl.searchParams.get("id") ?? "0");
   if (!id) return NextResponse.json({ error: "Missing id" }, { status: 400 });
   await db.delete(schema.loans).where(and(eq(schema.loans.id, id), eq(schema.loans.userId, auth.context.userId)));

@@ -75,7 +75,7 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/accounts", label: "Accounts", icon: Wallet, color: ACTIVE_ACCENT, mode: "prod" },
       { href: "/portfolio", label: "Portfolio", icon: TrendingUp, color: ACTIVE_ACCENT, mode: "prod" },
-      { href: "/loans", label: "Loans & Debt", icon: Landmark, color: ACTIVE_ACCENT, mode: "dev" },
+      { href: "/loans", label: "Loans & Debt", icon: Landmark, color: ACTIVE_ACCENT },
     ],
   },
   {

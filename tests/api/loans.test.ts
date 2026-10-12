@@ -30,10 +30,6 @@ vi.mock("@/lib/auth/require-auth", () => ({
 
 // The loans surface is DevModeGuard-gated; without this mock every request
 // 404s before reaching the handler (the mocked settings query returns []).
-vi.mock("@/lib/require-dev-mode", () => ({
-  requireDevMode: vi.fn(async () => null),
-  isDevModeEnabled: vi.fn(async () => true),
-}));
 
 const mockGenerateAmortization = vi.fn();
 const mockExtraPaymentImpact = vi.fn();

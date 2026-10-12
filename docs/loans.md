@@ -1,6 +1,7 @@
 # Loans & Debt v2 (FINLYNQ-136)
 
-Status: **dev-only** (page behind `DevModeGuard`). Phases 1–3 + 5 shipped 2026-06-10;
+Status: **generally available since 2026-10-12** (the `DevModeGuard` on the page and
+`requireDevMode` on `/api/loans` were removed). Phases 1–3 + 5 shipped 2026-06-10;
 Phase 4 (ledger posting) deferred — see "Deferred" below.
 
 ## Model
@@ -173,4 +174,3 @@ second payload shape is how the two modes drift apart.
   categorization decisions that come with it.
 - Variable / floating rates (schema designed so a rate-schedule table can slot
   in additively — do NOT widen `annual_rate` semantics).
-- GA gating: the page stays behind `DevModeGuard`.
