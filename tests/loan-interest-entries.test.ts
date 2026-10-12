@@ -228,6 +228,16 @@ describe("posting chokepoint (static wiring)", () => {
     expect(lib.indexOf("computeReportingFields(")).toBeLessThan(lib.indexOf("withDbTransaction("));
   });
 
+  // Found on dev: the first entry on an empty linked account flips the loan
+  // from its projected balance to the account's, so a 12,000 loan read as 60.
+  it("refuses to make interest the first entry on an empty loan account", () => {
+    const start = lib.indexOf("withDbTransaction(");
+    const guard = lib.indexOf("activity?.n");
+    expect(guard).toBeGreaterThan(-1);
+    expect(guard).toBeLessThan(start);
+    expect(lib).toContain("Set its opening balance first");
+  });
+
   it("refuses before writing: unlinked loan, investment account, off-schedule date", () => {
     const start = lib.indexOf("withDbTransaction(");
     for (const guard of ["loan.accountId == null", "account.isInvestment", "scheduleDates.has("]) {

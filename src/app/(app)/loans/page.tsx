@@ -38,6 +38,11 @@ type Loan = {
   accountName: string | null;
   accountId: number | null;
   scheduleMode?: "calculated" | "manual";
+  // How the interest is worked out; see INTEREST_METHODS in loan-calculator.ts.
+  interestMethod?: "rate" | "flat" | "total";
+  interestAmount?: number | null;
+  // The comparable yearly rate on the balance owed (differs from annualRate for flat / total).
+  effectiveAnnualRate?: number | null;
   // FINLYNQ-123 dual basis. Every amount above is in `currency` (the loan's
   // own). The `*Display` companions are the server's current-rate conversion
   // into `displayCurrency` and are the ONLY figures safe to sum across loans.
@@ -62,6 +67,13 @@ const FREQUENCY_OPTIONS = [
 const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(
   FREQUENCY_OPTIONS.map((f) => [f.value, f.label])
 );
+
+// How a loan's interest is entered. Mirrors INTEREST_METHODS in loan-calculator.ts.
+const INTEREST_METHOD_OPTIONS = [
+  { value: "rate", label: "Yearly rate" },
+  { value: "flat", label: "Fixed amount each payment" },
+  { value: "total", label: "Total for the whole loan" },
+];
 
 // Tabs of the schedule panel, in display order. A `?tab=` deep link must name one.
 const PANEL_TABS = ["chart", "table", "monthly", "entries", "whatif"];
@@ -173,7 +185,7 @@ function LoansPageContent() {
   const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
   const [amort, setAmort] = useState<AmortResult | null>(null);
   const [whatIf, setWhatIf] = useState<WhatIf[]>([]);
-  const [form, setForm] = useState({ name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "", termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly", extraPayment: "0", residualValue: "", accountId: "" });
+  const [form, setForm] = useState({ name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "", termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly", extraPayment: "0", residualValue: "", accountId: "", interestMethod: "rate", interestAmount: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Built-in fiat UNION the user's active currencies (#291).
   const currencyOptions = useActiveCurrencies(form.currency);
@@ -182,8 +194,12 @@ function LoansPageContent() {
     const e: Record<string, string> = {};
     if (!form.name.trim()) e.name = "Name is required";
     if (!form.principal || parseFloat(form.principal) <= 0) e.principal = "Principal must be greater than 0";
-    if (!form.annualRate || parseFloat(form.annualRate) < 0) e.annualRate = "Rate must be 0 or more";
-    if (form.annualRate && parseFloat(form.annualRate) > 100) e.annualRate = "Rate must be 100 or less";
+    if (form.interestMethod === "rate") {
+      if (!form.annualRate || parseFloat(form.annualRate) < 0) e.annualRate = "Rate must be 0 or more";
+      if (form.annualRate && parseFloat(form.annualRate) > 100) e.annualRate = "Rate must be 100 or less";
+    } else if (form.interestAmount === "" || !(parseFloat(form.interestAmount) >= 0)) {
+      e.annualRate = "Enter the interest amount (0 or more)";
+    }
     // FINLYNQ-136: term OR payment — payment-driven loans solve for the term.
     if (!form.termMonths && !form.paymentAmount) e.termMonths = "Enter a term or a payment amount";
     if (form.termMonths && parseInt(form.termMonths) <= 0) e.termMonths = "Term must be greater than 0";
@@ -194,12 +210,13 @@ function LoansPageContent() {
     return Object.keys(e).length === 0;
   }
 
-  const isFormValid = form.name.trim() !== "" && form.principal !== "" && parseFloat(form.principal) > 0 && form.annualRate !== "" && parseFloat(form.annualRate) >= 0 && parseFloat(form.annualRate) <= 100 && (form.termMonths !== "" ? parseInt(form.termMonths) > 0 : form.paymentAmount !== "" && parseFloat(form.paymentAmount) > 0) && form.startDate !== "";
+  const isFormValid = form.name.trim() !== "" && form.principal !== "" && parseFloat(form.principal) > 0 && (form.interestMethod === "rate" ? form.annualRate !== "" && parseFloat(form.annualRate) >= 0 && parseFloat(form.annualRate) <= 100 : form.interestAmount !== "" && parseFloat(form.interestAmount) >= 0) && (form.termMonths !== "" ? parseInt(form.termMonths) > 0 : form.paymentAmount !== "" && parseFloat(form.paymentAmount) > 0) && form.startDate !== "";
 
   const BLANK_FORM = {
     name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "",
     termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly",
     extraPayment: "0", residualValue: "", accountId: "",
+    interestMethod: "rate", interestAmount: "",
   };
 
   function openCreate() {
@@ -220,6 +237,8 @@ function LoansPageContent() {
       principal: String(loan.principal),
       currency: loan.currency,
       annualRate: String(loan.annualRate),
+      interestMethod: loan.interestMethod ?? "rate",
+      interestAmount: loan.interestAmount == null ? "" : String(loan.interestAmount),
       termMonths: loan.termMonths == null ? "" : String(loan.termMonths),
       startDate: loan.startDate,
       paymentAmount: loan.paymentAmount == null ? "" : String(loan.paymentAmount),
@@ -255,6 +274,13 @@ function LoansPageContent() {
   // (the dashboard's loan-interest card links here). Read once, after the
   // loans have loaded; later clicks own the panel from then on.
   const deepLinkDone = useRef(false);
+  // Set by the deep link; the panel is scrolled to once it has rendered.
+  const scrollToPanel = useRef(false);
+  useEffect(() => {
+    if (!scrollToPanel.current || !amort) return;
+    scrollToPanel.current = false;
+    document.getElementById("loan-schedule")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [amort]);
   useEffect(() => {
     if (deepLinkDone.current || loans.length === 0) return;
     deepLinkDone.current = true;
@@ -264,9 +290,8 @@ function LoansPageContent() {
     if (!target || target.remainingBalance == null) return;
     const tab = params.get("tab");
     if (tab && PANEL_TABS.includes(tab)) setPanelTab(tab);
-    void viewAmortization(target).then(() => {
-      document.getElementById("loan-schedule")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
+    scrollToPanel.current = true;
+    void viewAmortization(target);
     // viewAmortization is recreated every render; this runs once by design.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loans]);
@@ -289,7 +314,11 @@ function LoansPageContent() {
       type: form.type,
       principal: parseFloat(form.principal),
       currency: form.currency || displayCurrency,
-      annualRate: parseFloat(form.annualRate),
+      // For a fixed-amount or total-interest loan the rate is not what
+      // produces the interest; keep whatever was typed, or 0.
+      annualRate: form.interestMethod === "rate" ? parseFloat(form.annualRate) : parseFloat(form.annualRate) || 0,
+      interestMethod: form.interestMethod,
+      interestAmount: form.interestMethod === "rate" ? null : parseFloat(form.interestAmount),
       termMonths: form.termMonths ? parseInt(form.termMonths) : null,
       startDate: form.startDate,
       paymentAmount: form.paymentAmount ? parseFloat(form.paymentAmount) : null,
@@ -409,7 +438,12 @@ function LoansPageContent() {
                   )}
                 </div>
                 <div><p className="text-xs text-muted-foreground">{FREQUENCY_LABELS[loan.paymentFrequency] ?? "Payment"}</p><p className="font-mono">{formatCurrency(loan.paymentPerPeriod ?? loan.monthlyPayment, loan.currency)}</p></div>
-                <div><p className="text-xs text-muted-foreground">Rate</p><p className="font-mono">{loan.annualRate}%</p></div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{(loan.interestMethod ?? "rate") === "rate" ? "Rate" : "Effective rate"}</p>
+                  <p className="font-mono" title={(loan.interestMethod ?? "rate") === "rate" ? undefined : "The yearly rate, on the balance still owed, that this loan works out to"}>
+                    {(loan.interestMethod ?? "rate") === "rate" ? loan.annualRate : loan.effectiveAnnualRate ?? loan.annualRate}%
+                  </p>
+                </div>
                 <div><p className="text-xs text-muted-foreground">Total Interest</p><p className="font-mono">{formatCurrency(loan.totalInterest, loan.currency)}</p></div>
                 <div>
                   <p className="text-xs text-muted-foreground">{loan.type === "lease" ? "Term end" : "Payoff"}</p>
@@ -489,10 +523,35 @@ function LoansPageContent() {
                   {errors.principal && <p className="text-xs text-destructive mt-1">{errors.principal}</p>}
                 </div>
                 <div>
-                  <Label>Annual Rate (%)</Label>
-                  <Input type="number" step="0.01" value={form.annualRate} onChange={(e) => { setForm({ ...form, annualRate: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                  <Label>Interest</Label>
+                  <Select value={form.interestMethod} onValueChange={(v) => { setForm({ ...form, interestMethod: v ?? "rate" }); setErrors({ ...errors, annualRate: "" }); }}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {INTEREST_METHOD_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  {form.interestMethod === "rate" ? (
+                    <>
+                      <Label>Annual Rate (%)</Label>
+                      <Input type="number" step="0.01" value={form.annualRate} onChange={(e) => { setForm({ ...form, annualRate: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                    </>
+                  ) : (
+                    <>
+                      <Label>{form.interestMethod === "flat" ? "Interest each payment" : "Total interest"}</Label>
+                      <Input type="number" step="0.01" min="0" value={form.interestAmount} onChange={(e) => { setForm({ ...form, interestAmount: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                    </>
+                  )}
                   {errors.annualRate && <p className="text-xs text-destructive mt-1">{errors.annualRate}</p>}
                 </div>
+                {form.interestMethod !== "rate" && (
+                  <p className="col-span-2 text-xs text-muted-foreground">
+                    {form.interestMethod === "flat"
+                      ? "Every payment carries this same interest, the way such loans are advertised. Interest really accrues on what is still owed, so the loan card also shows the yearly rate this works out to."
+                      : "The whole loan's interest, spread the standard way: the payment stays level, with more interest in the early payments and less in the later ones."}
+                  </p>
+                )}
                 <div>
                   <Label>Term (months)</Label>
                   <Input type="number" placeholder="From payment" value={form.termMonths} onChange={(e) => { setForm({ ...form, termMonths: e.target.value }); setErrors({ ...errors, termMonths: "" }); }} />
@@ -684,8 +743,8 @@ function LoansPageContent() {
                 <LoanInterestEntries
                   loan={selectedLoan}
                   schedule={amort.schedule}
-                  // A manual schedule is not driven by the rate, so no rate is suggested for it.
-                  rateDriven={amort.scheduleMode !== "manual"}
+                  // No rate is suggested unless the rate is what produces the interest.
+                  rateDriven={amort.scheduleMode !== "manual" && (selectedLoan.interestMethod ?? "rate") === "rate"}
                   onPosted={load}
                   // Rebuild this panel's schedule at the new rate, and the cards above it.
                   onRateChanged={(annualRate) => { void viewAmortization({ ...selectedLoan, annualRate }); void load(); }}

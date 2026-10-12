@@ -30,6 +30,23 @@ export function normalizeFrequency(freq?: string | null): PaymentFrequency {
     : "monthly";
 }
 
+// How a loan's interest is worked out.
+//   rate  : annualRate on the balance still owed (the default).
+//   flat  : the same interest with every payment (`interestAmount` each).
+//           How such loans are advertised; not how interest accrues.
+//   total : `interestAmount` is the interest over the whole loan, spread the
+//           standard way (level payment, rate solved to give that total).
+export const INTEREST_METHODS = ["rate", "flat", "total"] as const;
+export type InterestMethod = (typeof INTEREST_METHODS)[number];
+
+// Anything unknown or missing is the default, so a row written before the
+// column existed behaves exactly as it always did.
+export function normalizeInterestMethod(method?: string | null): InterestMethod {
+  return (INTEREST_METHODS as readonly string[]).includes(method ?? "")
+    ? (method as InterestMethod)
+    : "rate";
+}
+
 // Thrown for user-correctable inputs (payment doesn't cover interest, residual
 // >= principal). API routes map this to a 400 instead of a 500.
 export class LoanValidationError extends Error {
@@ -84,6 +101,15 @@ export type LoanSummary = {
   monthlyAccrual: MonthlyAccrualRow[];
   // "manual" when the rows came from `manualSchedule`, else "calculated".
   scheduleMode: "calculated" | "manual";
+  // How the interest was worked out (always "rate" for a manual schedule,
+  // where it is whatever the rows say).
+  interestMethod: InterestMethod;
+  // The yearly rate, on the balance still owed, that a loan with this payment
+  // and length carries. For "rate" it is the loan's own rate. For "flat" and
+  // "total" it is the figure to compare against other loans: a loan quoted as
+  // a fixed interest amount costs noticeably more than that amount suggests.
+  // Null when it cannot be worked out (a manual schedule).
+  effectiveAnnualRate: number | null;
 };
 
 export type LoanScheduleOptions = {
@@ -106,6 +132,10 @@ export type LoanScheduleOptions = {
   // A complete user-supplied schedule. When non-empty it REPLACES the
   // calculation: rate, term and payment are not used to build rows.
   manualSchedule?: readonly ManualScheduleRow[] | null;
+  // See INTEREST_METHODS. Missing or unknown means "rate".
+  interestMethod?: string | null;
+  // "flat": interest with each payment. "total": interest over the whole loan.
+  interestAmount?: number | null;
 };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -263,7 +293,7 @@ export function normalizeInterestOverrides(input: unknown): Record<string, numbe
  */
 export function loanScheduleExtras(
   row: object,
-): Pick<LoanScheduleOptions, "manualSchedule" | "interestOverrides"> {
+): Pick<LoanScheduleOptions, "manualSchedule" | "interestOverrides" | "interestMethod" | "interestAmount"> {
   const r = row as Record<string, unknown>;
   const parse = (v: unknown): unknown => {
     if (typeof v !== "string") return v ?? null;
@@ -282,7 +312,32 @@ export function loanScheduleExtras(
       overrides && typeof overrides === "object" && !Array.isArray(overrides)
         ? (overrides as Record<string, number>)
         : null,
+    interestMethod: normalizeInterestMethod((r.interestMethod ?? r.interest_method) as string | null),
+    interestAmount: toAmount(r.interestAmount ?? r.interest_amount),
   };
+}
+
+function toAmount(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+// The per-period rate at which a loan of `principal`, repaid over `n` periods
+// down to `residual`, has a level payment of `payment`. The payment rises with
+// the rate, so bisection finds it; 0 when the payment only covers principal.
+function solvePeriodRate(principal: number, payment: number, n: number, residual: number): number {
+  if (n <= 0 || payment <= calculatePeriodPayment(principal, 0, n, residual) + 1e-9) return 0;
+  let lo = 0;
+  let hi = 1;
+  // 100% per period is far beyond any real loan; widen only if it somehow is not.
+  for (let i = 0; i < 20 && calculatePeriodPayment(principal, hi, n, residual) < payment; i++) hi *= 2;
+  for (let i = 0; i < 100; i++) {
+    const mid = (lo + hi) / 2;
+    if (calculatePeriodPayment(principal, mid, n, residual) < payment) lo = mid;
+    else hi = mid;
+  }
+  return (lo + hi) / 2;
 }
 
 // The payment that occurs most often (the latest one on a tie). A manual
@@ -356,6 +411,8 @@ function buildManualSchedule(opts: LoanScheduleOptions): LoanSummary {
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([month, interest]) => ({ month, interest: round2(interest) })),
     scheduleMode: "manual",
+    interestMethod: "rate",
+    effectiveAnnualRate: null,
   };
 }
 
@@ -384,7 +441,10 @@ export function buildLoanSchedule(opts: LoanScheduleOptions): LoanSummary {
   const overrides = opts.interestOverrides ?? null;
   const freq = normalizeFrequency(opts.paymentFrequency);
   const periodsPerYear = PERIODS_PER_YEAR[freq];
-  const r = opts.annualRate / 100 / periodsPerYear;
+  const method = normalizeInterestMethod(opts.interestMethod);
+  // Per-period rate. "total" replaces it below with the rate that gives the
+  // stated total; "flat" does not use a rate at all.
+  let r = opts.annualRate / 100 / periodsPerYear;
   const extra = Math.max(0, opts.extraPayment ?? 0);
   const residual = Math.max(0, opts.residualValue ?? 0);
   const principal = opts.principal;
@@ -394,8 +454,49 @@ export function buildLoanSchedule(opts: LoanScheduleOptions): LoanSummary {
     throw new LoanValidationError("Residual value must be less than the principal");
   }
 
+  const stated = opts.interestAmount;
+  if (method !== "rate" && !(typeof stated === "number" && Number.isFinite(stated) && stated >= 0)) {
+    throw new LoanValidationError(
+      method === "flat"
+        ? "Enter the interest charged with each payment"
+        : "Enter the total interest for the whole loan",
+    );
+  }
+  const flat = method === "flat" ? (stated as number) : 0;
+
   let payment: number;
-  if (opts.paymentAmount != null && opts.paymentAmount > 0) {
+  if (method === "total") {
+    // Level payment that repays the principal plus the stated total interest,
+    // then the rate that makes a declining-balance loan cost exactly that.
+    const total = stated as number;
+    const owed = principal - residual + total;
+    let n: number;
+    if (opts.termMonths != null && opts.termMonths > 0) {
+      n = Math.max(1, Math.round((opts.termMonths * periodsPerYear) / 12));
+    } else if (opts.paymentAmount != null && opts.paymentAmount > 0) {
+      n = Math.max(1, Math.round(owed / opts.paymentAmount));
+    } else {
+      throw new LoanValidationError("Either a term or a payment amount is required");
+    }
+    payment = owed / n;
+    r = solvePeriodRate(principal, payment, n, residual);
+  } else if (method === "flat" && !(opts.paymentAmount != null && opts.paymentAmount > 0)) {
+    // Term-driven flat loan: equal principal each period plus the fixed interest.
+    const termMonths = opts.termMonths ?? 0;
+    if (termMonths <= 0) {
+      throw new LoanValidationError("Either a term or a payment amount is required");
+    }
+    const n = Math.max(1, Math.round((termMonths * periodsPerYear) / 12));
+    payment = (principal - residual) / n + flat;
+  } else if (method === "flat") {
+    payment = opts.paymentAmount as number;
+    if (payment + extra <= flat) {
+      throw new LoanValidationError(
+        `Payment of ${round2(payment + extra)} does not cover the interest of ${round2(flat)} ` +
+          "charged with each payment; the loan will never be paid off. Increase the payment.",
+      );
+    }
+  } else if (opts.paymentAmount != null && opts.paymentAmount > 0) {
     // Payment-driven: the schedule solves for the number of periods.
     payment = opts.paymentAmount;
     const firstInterest = principal * r;
@@ -438,7 +539,7 @@ export function buildLoanSchedule(opts: LoanScheduleOptions): LoanSummary {
     // later balance) follows from the overridden interest.
     const override = overrides ? overrides[ymd(date)] : undefined;
     const overridden = typeof override === "number" && Number.isFinite(override) && override >= 0;
-    const interest = overridden ? override : balance * r;
+    const interest = overridden ? override : method === "flat" ? flat : balance * r;
     let principalPortion = payment - interest + extra;
     if (principalPortion > balance - residual) principalPortion = balance - residual;
 
@@ -468,6 +569,11 @@ export function buildLoanSchedule(opts: LoanScheduleOptions): LoanSummary {
 
   const lastRow = schedule[schedule.length - 1];
   const paymentPerPeriod = round2(payment);
+  // What this loan costs as a yearly rate on the balance still owed. For a
+  // flat loan that is solved from its level payment over the periods it runs.
+  const periodRate =
+    method === "flat" ? solvePeriodRate(principal, payment + extra, schedule.length, residual) : r;
+  const effectiveAnnualRate = Math.round(periodRate * periodsPerYear * 100 * 100) / 100;
   return {
     monthlyPayment: paymentPerPeriod,
     paymentPerPeriod,
@@ -481,6 +587,8 @@ export function buildLoanSchedule(opts: LoanScheduleOptions): LoanSummary {
     schedule,
     monthlyAccrual,
     scheduleMode: "calculated",
+    interestMethod: method,
+    effectiveAnnualRate,
   };
 }
 

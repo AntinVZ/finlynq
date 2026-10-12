@@ -41,6 +41,7 @@ vi.mock("@/lib/loan-calculator", () => ({
   calculateDebtPayoff: (...a: unknown[]) => mockDebtPayoff(...a),
   LoanValidationError: class LoanValidationError extends Error {},
   PAYMENT_FREQUENCIES: ["weekly", "biweekly", "semi_monthly", "monthly", "quarterly", "annual"],
+  INTEREST_METHODS: ["rate", "flat", "total"],
   // The route spreads a loan's stored schedule rows into the builder; these
   // fixtures have none, so every loan is "calculated".
   loanScheduleExtras: () => ({ manualSchedule: null, interestOverrides: null }),

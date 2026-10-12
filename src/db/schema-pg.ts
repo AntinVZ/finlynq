@@ -481,12 +481,19 @@ export const loans = pgTable("loans", {
   //   interestOverrides: { "YYYY-MM-DD": amount } for single calculated rows.
   manualSchedule: jsonb("manual_schedule").$type<Array<{ date: string; payment: number; interest: number }> | null>(),
   interestOverrides: jsonb("interest_overrides").$type<Record<string, number> | null>(),
+  // 2026-10-12 — how the interest is worked out: 'rate' (annual_rate on the
+  // balance owed, the default), 'flat' (interest_amount with EVERY payment) or
+  // 'total' (interest_amount over the whole loan, spread on a declining
+  // balance). Also read through `loanScheduleExtras`.
+  interestMethod: text("interest_method").notNull().default("rate"),
+  interestAmount: doublePrecision("interest_amount"),
   // Stream D (2026-04-24) — dual-write.
   nameCt: text("name_ct"),
   nameLookup: text("name_lookup"),
 }, (t) => [
   index("idx_loans_user_id").on(t.userId),
   uniqueIndex("loans_user_name_lookup_uniq").on(t.userId, t.nameLookup),
+  check("loans_interest_method_check", sql`${t.interestMethod} IN ('rate','flat','total')`),
 ]);
 
 

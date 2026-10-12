@@ -7,6 +7,7 @@ import {
   calculateDebtPayoff,
   LoanValidationError,
   PAYMENT_FREQUENCIES,
+  INTEREST_METHODS,
   loanScheduleExtras,
 } from "@/lib/loan-calculator";
 import { requireAuth } from "@/lib/auth/require-auth";
@@ -22,6 +23,7 @@ import { pickRecordCurrency } from "@/lib/fx/record-currency";
 import { ymdDate, parseYmdSafe } from "../../../../mcp-server/lib/date-validators";
 
 const paymentFrequencyEnum = z.enum(PAYMENT_FREQUENCIES);
+const interestMethodEnum = z.enum(INTEREST_METHODS);
 
 const createLoanSchema = z.object({
   name: z.string(),
@@ -37,6 +39,9 @@ const createLoanSchema = z.object({
   paymentFrequency: paymentFrequencyEnum.optional(),
   extraPayment: z.number().nonnegative().optional(),
   residualValue: z.number().nonnegative().nullable().optional(),
+  // rate (default) | flat (interestAmount each payment) | total (interestAmount over the loan)
+  interestMethod: interestMethodEnum.optional(),
+  interestAmount: z.number().nonnegative().nullable().optional(),
   note: z.string().optional(),
 }).refine((d) => d.termMonths != null || d.paymentAmount != null, {
   message: "Either termMonths or paymentAmount is required",
@@ -56,6 +61,9 @@ const updateLoanSchema = z.object({
   paymentFrequency: paymentFrequencyEnum.optional(),
   extraPayment: z.number().nonnegative().optional(),
   residualValue: z.number().nonnegative().nullable().optional(),
+  // rate (default) | flat (interestAmount each payment) | total (interestAmount over the loan)
+  interestMethod: interestMethodEnum.optional(),
+  interestAmount: z.number().nonnegative().nullable().optional(),
   note: z.string().optional(),
 });
 
@@ -104,6 +112,8 @@ export async function GET(request: NextRequest) {
       note: schema.loans.note,
       manualSchedule: schema.loans.manualSchedule,
       interestOverrides: schema.loans.interestOverrides,
+      interestMethod: schema.loans.interestMethod,
+      interestAmount: schema.loans.interestAmount,
     })
     .from(schema.loans)
     .leftJoin(schema.accounts, eq(schema.loans.accountId, schema.accounts.id))
@@ -244,6 +254,7 @@ export async function GET(request: NextRequest) {
       interestPaid: Math.round(interestPaid * 100) / 100,
       periodsRemaining,
       scheduleMode: summary.scheduleMode,
+      effectiveAnnualRate: summary.effectiveAnnualRate,
       interestOverrideCount: Object.keys(extras.interestOverrides ?? {}).length,
       // Additive reporting-currency companions — the native fields above are
       // untouched, so nothing that already read this response changes.
@@ -280,6 +291,8 @@ export async function POST(request: NextRequest) {
           .select({
             manualSchedule: schema.loans.manualSchedule,
             interestOverrides: schema.loans.interestOverrides,
+            interestMethod: schema.loans.interestMethod,
+            interestAmount: schema.loans.interestAmount,
           })
           .from(schema.loans)
           .where(and(eq(schema.loans.id, loanId), eq(schema.loans.userId, userId)))
@@ -288,6 +301,10 @@ export async function POST(request: NextRequest) {
       }
       const result = buildLoanSchedule({
         ...extras,
+        // A caller trying out a method before saving states it explicitly.
+        ...(body.interestMethod
+          ? { interestMethod: body.interestMethod, interestAmount: body.interestAmount }
+          : {}),
         principal: body.principal,
         annualRate: body.annualRate,
         termMonths: body.termMonths,
@@ -334,6 +351,8 @@ export async function POST(request: NextRequest) {
       paymentFrequency: d.paymentFrequency ?? "monthly",
       extraPayment: d.extraPayment ?? 0,
       residualValue: d.residualValue,
+      interestMethod: d.interestMethod,
+      interestAmount: d.interestAmount,
     });
     // Currency resolution (feedback #7): explicit > linked account > display.
     // Falling through to the column default is what let MCP-created loans land
@@ -367,6 +386,8 @@ export async function POST(request: NextRequest) {
       paymentFrequency: d.paymentFrequency ?? "monthly",
       extraPayment: d.extraPayment ?? 0,
       residualValue: d.residualValue ?? null,
+      interestMethod: d.interestMethod ?? "rate",
+      interestAmount: d.interestMethod && d.interestMethod !== "rate" ? d.interestAmount ?? null : null,
       note: encryptOptional(dek, d.note) ?? "",
       ...enc,
     }).returning().get();
@@ -419,6 +440,9 @@ export async function PUT(request: NextRequest) {
         extraPayment: merged.extraPayment ?? 0,
         residualValue: merged.residualValue,
         ...loanScheduleExtras(existing[0]),
+        // After the stored extras: this request may be changing the method.
+        interestMethod: merged.interestMethod,
+        interestAmount: merged.interestAmount,
       });
     }
     const toEncrypt: Record<string, string | null | undefined> = {};

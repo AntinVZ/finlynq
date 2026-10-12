@@ -33,8 +33,10 @@ import {
   calculateDebtPayoff,
   LoanValidationError,
   PAYMENT_FREQUENCIES,
+  INTEREST_METHODS,
   loanScheduleExtras,
   type Debt,
+  type InterestMethod,
 } from "../../src/lib/loan-calculator";
 import {
   resolveReportingCurrency,
@@ -74,7 +76,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const rawRows = await q(db, sql`
         SELECT l.id, l.name_ct, l.type, l.principal, l.annual_rate, l.term_months,
                l.start_date, l.payment_amount, l.payment_frequency, l.extra_payment,
-               l.residual_value, l.manual_schedule, l.interest_overrides, l.note, l.account_id, l.currency,
+               l.residual_value, l.manual_schedule, l.interest_overrides, l.interest_method, l.interest_amount, l.note, l.account_id, l.currency,
                a.name_ct AS account_name_ct
         FROM loans l
         LEFT JOIN accounts a ON a.id = l.account_id
@@ -203,6 +205,11 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
               : Math.round(principalPaid * 100) / 100,
           interestPaid: Math.round(interestPaid * 100) / 100,
           periodsRemaining,
+          scheduleMode: summary.scheduleMode,
+          interestMethod: summary.interestMethod,
+          // The comparable yearly rate on the balance owed (differs from
+          // annualRate for a flat or total-interest loan).
+          effectiveAnnualRate: summary.effectiveAnnualRate,
           currency: loanCurrency,
           reportingCurrency: reporting,
           remainingBalanceReporting: toReporting(remainingBalance),
@@ -224,13 +231,15 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
     account_id?: number;
     payment_amount?: number;
     payment_frequency?: (typeof PAYMENT_FREQUENCIES)[number];
+    interest_method?: InterestMethod;
+    interest_amount?: number;
     extra_payment?: number;
     residual_value?: number;
     min_payment?: number;
     currency?: string;
     note?: string;
   }): Promise<ToolResult> {
-      const { name, type, principal, annual_rate, term_months, start_date, account, account_id, payment_amount, payment_frequency, extra_payment, residual_value, min_payment, currency, note } = args;
+      const { name, type, principal, annual_rate, term_months, start_date, account, account_id, payment_amount, payment_frequency, extra_payment, residual_value, min_payment, currency, note, interest_method, interest_amount } = args;
       // FINLYNQ-267: resolve the optional linked account via the shared envelope
       // — a mistyped/unmatched name is REFUSED (not silently unlinked) and a 2+
       // match returns an ambiguous list; `account_id` is the FK fast-path.
@@ -260,6 +269,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           paymentFrequency: payment_frequency ?? "monthly",
           extraPayment: extra_payment ?? 0,
           residualValue: residual_value ?? null,
+          interestMethod: interest_method,
+          interestAmount: interest_amount,
         });
       } catch (e) {
         if (e instanceof LoanValidationError) return err(e.message);
@@ -283,8 +294,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const n = dek ? encryptName(dek, name) : { ct: null, lookup: null };
       // Stream D Phase 4 — plaintext name dropped.
       const result = await q(db, sql`
-        INSERT INTO loans (user_id, type, account_id, currency, principal, annual_rate, term_months, start_date, payment_amount, payment_frequency, extra_payment, residual_value, note, name_ct, name_lookup)
-        VALUES (${userId}, ${type}, ${accountId}, ${loanCurrency}, ${principal}, ${annual_rate}, ${term_months ?? null}, ${start_date}, ${pmt}, ${payment_frequency ?? "monthly"}, ${extra_payment ?? 0}, ${residual_value ?? null}, ${encNote(note)}, ${n.ct}, ${n.lookup})
+        INSERT INTO loans (user_id, type, account_id, currency, principal, annual_rate, term_months, start_date, payment_amount, payment_frequency, extra_payment, residual_value, interest_method, interest_amount, note, name_ct, name_lookup)
+        VALUES (${userId}, ${type}, ${accountId}, ${loanCurrency}, ${principal}, ${annual_rate}, ${term_months ?? null}, ${start_date}, ${pmt}, ${payment_frequency ?? "monthly"}, ${extra_payment ?? 0}, ${residual_value ?? null}, ${interest_method ?? "rate"}, ${interest_method && interest_method !== "rate" ? interest_amount ?? null : null}, ${encNote(note)}, ${n.ct}, ${n.lookup})
         RETURNING id
       `);
       const termDesc = term_months != null ? `over ${term_months} months` : `at ${pmt}/${payment_frequency ?? "monthly"} (payment-driven)`;
@@ -303,6 +314,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
     start_date?: string;
     payment_amount?: number;
     payment_frequency?: (typeof PAYMENT_FREQUENCIES)[number];
+    interest_method?: InterestMethod;
+    interest_amount?: number;
     extra_payment?: number;
     residual_value?: number;
     account?: string;
@@ -310,10 +323,10 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
     currency?: string;
     note?: string;
   }): Promise<ToolResult> {
-      const { id, name, type, principal, annual_rate, term_months, start_date, payment_amount, payment_frequency, extra_payment, residual_value, account, account_id, currency, note } = args;
+      const { id, name, type, principal, annual_rate, term_months, start_date, payment_amount, payment_frequency, extra_payment, residual_value, account, account_id, currency, note, interest_method, interest_amount } = args;
       const existing = await q(db, sql`
         SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
-               payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides
+               payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, interest_method, interest_amount
         FROM loans WHERE id = ${id} AND user_id = ${userId}
       `);
       if (!existing.length) return err(`Loan #${id} not found`);
@@ -330,6 +343,9 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         extraPayment: extra_payment ?? Number(cur.extra_payment ?? 0),
         residualValue: residual_value ?? (cur.residual_value == null ? null : Number(cur.residual_value)),
         ...loanScheduleExtras(cur),
+        // After the stored extras: this call may be changing the method.
+        ...(interest_method !== undefined ? { interestMethod: interest_method } : {}),
+        ...(interest_amount !== undefined ? { interestAmount: interest_amount } : {}),
       };
       if (parseYmdSafe(merged.startDate) !== null) {
         try {
@@ -381,6 +397,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       if (payment_frequency !== undefined) updates.push(sql`payment_frequency = ${payment_frequency}`);
       if (extra_payment !== undefined) updates.push(sql`extra_payment = ${extra_payment}`);
       if (residual_value !== undefined) updates.push(sql`residual_value = ${residual_value}`);
+      if (interest_method !== undefined) updates.push(sql`interest_method = ${interest_method}`);
+      if (interest_amount !== undefined) updates.push(sql`interest_amount = ${interest_amount}`);
       if (accountIdUpdate !== undefined) updates.push(sql`account_id = ${accountIdUpdate}`);
       // Re-denominates the loan; it does NOT convert the stored amounts. This
       // is the repair path for a loan created before the currency was settable.
@@ -430,7 +448,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
 
     const rows = await q(db, sql`
       SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
-             payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, currency, interest_category_id
+             payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, interest_method, interest_amount, currency, interest_category_id
       FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
     `);
     if (!rows.length) return err(`Loan #${loan_id} not found`);
@@ -566,7 +584,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_loans",
-    "Manage loans & debt; `op`: add, update, delete, list, post_interest, set_schedule, set_interest, reset_schedule. add: create a loan or lease (principal/rate + term_months OR payment_amount; residual_value for leases; `currency` defaults to the linked account's, else the display currency). update / delete: by id. list: every loan with balance/rate/payment/payoff/linked account, in each loan's `currency` plus `*Reporting` companions for totals. post_interest: book one period's interest as an expense on the linked account (refused if unlinked or already booked); record the payment itself as a plain transfer (manage_transfers). set_schedule: give the loan your own rows instead of the calculated ones (`merge` to change a few). set_interest: override the interest of single calculated rows. reset_schedule: back to calculated. See get_loan_amortization for the rows.",
+    "Manage loans & debt; `op`: add, update, delete, list, post_interest, set_schedule, set_interest, reset_schedule. add: create a loan or lease (principal + term_months OR payment_amount; interest by annual_rate, or `interest_method` flat / total with `interest_amount`; residual_value for leases; `currency` defaults to the linked account's). update / delete: by id. list: every loan with balance/payment/payoff, in its own `currency` plus `*Reporting` companions for totals. post_interest: book one period's interest as an expense on the linked account (refused if unlinked or already booked); record the payment itself as a plain transfer (manage_transfers). set_schedule: your own rows replace the calculated ones (`merge` to change a few). set_interest: override the interest of single calculated rows. reset_schedule: back to calculated. See get_loan_amortization for the rows.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("add"),
@@ -582,6 +600,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         payment_frequency: z.enum(PAYMENT_FREQUENCIES).optional().describe("weekly | biweekly | semi_monthly | monthly | quarterly | annual (default monthly)"),
         extra_payment: z.number().nonnegative().optional().describe("Extra principal per payment (must be >= 0; default 0)"),
         residual_value: z.number().nonnegative().optional().describe("Lease residual/buyout — the schedule amortizes down to this instead of 0 (must be < principal)"),
+        interest_method: z.enum(INTEREST_METHODS).optional().describe("How interest is worked out. rate (default): annual_rate on the balance owed. flat: `interest_amount` with EVERY payment (how such loans are advertised). total: `interest_amount` is the interest over the whole loan, spread the standard way (level payment, more interest early)."),
+        interest_amount: z.number().nonnegative().optional().describe("For interest_method flat: interest per payment. For total: interest over the whole loan. Unused for rate."),
         min_payment: z.number().positive().optional().describe("Alias for payment_amount — minimum required payment (must be > 0)"),
         currency: z.string().regex(/^[A-Za-z]{3,4}$/).optional().describe("ISO code the loan is denominated in, e.g. 'RUB'. Defaults to the linked account's currency, else the user's display currency — never a hardcoded default."),
         note: z.string().optional(),
@@ -599,6 +619,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
         payment_frequency: z.enum(PAYMENT_FREQUENCIES).optional().describe("weekly | biweekly | semi_monthly | monthly | quarterly | annual"),
         extra_payment: z.number().nonnegative().optional().describe("Extra principal per payment (must be >= 0)"),
         residual_value: z.number().nonnegative().optional().describe("Lease residual/buyout — balance remaining at term end (must be < principal)"),
+        interest_method: z.enum(INTEREST_METHODS).optional().describe("How interest is worked out. rate (default): annual_rate on the balance owed. flat: `interest_amount` with EVERY payment (how such loans are advertised). total: `interest_amount` is the interest over the whole loan, spread the standard way (level payment, more interest early)."),
+        interest_amount: z.number().nonnegative().optional().describe("For interest_method flat: interest per payment. For total: interest over the whole loan. Unused for rate."),
         account: z.string().optional().describe("Linked account — name or alias (fuzzy matched — mistyped/unmatched is REFUSED; 2+ → ambiguous). Pass empty string to clear. PREFER `account_id`."),
         account_id: z.number().int().positive().optional().describe("Linked-account FK fast-path — wins over the fuzzy `account` name."),
         currency: z.string().regex(/^[A-Za-z]{3,4}$/).optional().describe("ISO code the loan is denominated in. Changes the currency the stored amounts are interpreted in — it does NOT convert them."),
@@ -705,7 +727,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       // Stream D Phase 4: l.name dropped — read l.name_ct only.
       const rows = await q(db, sql`
         SELECT id, name_ct, principal, annual_rate, term_months, start_date,
-               payment_amount, payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, currency
+               payment_amount, payment_frequency, extra_payment, residual_value, manual_schedule, interest_overrides, interest_method, interest_amount, currency
         FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
       `);
       if (!rows.length) return err(`Loan #${loan_id} not found`);
@@ -754,6 +776,8 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
           loanId: loan_id,
           loanName: loan.name,
           scheduleMode: summary.scheduleMode,
+          interestMethod: summary.interestMethod,
+          effectiveAnnualRate: summary.effectiveAnnualRate,
           interestCheck,
           // FINLYNQ-183/284: never a CAD literal. A loan predating an explicit
           // currency reads as the user's own reporting currency, not Canada's.
@@ -800,7 +824,7 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const loansRaw = await q(db, sql`
         SELECT id, name_ct, principal, annual_rate, term_months, start_date,
                payment_amount, payment_frequency, extra_payment, residual_value,
-               manual_schedule, interest_overrides, currency
+               manual_schedule, interest_overrides, interest_method, interest_amount, currency
         FROM loans WHERE user_id = ${userId}
       `);
       if (!loansRaw.length) return text({ success: true, data: { message: "No loans found", strategies: {} } });

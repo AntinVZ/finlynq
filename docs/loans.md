@@ -165,6 +165,48 @@ second payload shape is how the two modes drift apart.
   (`/api/loans` has no idempotency key), a `try/catch` around the request, and
   `parseSaveError` on `!res.ok` with the dialog left open and input preserved.
 
+## How the interest is worked out (2026-10-12)
+
+`loans.interest_method` (CHECK `loans_interest_method_check`) with
+`loans.interest_amount`:
+
+| Method | `interest_amount` | Schedule |
+|---|---|---|
+| `rate` (default) | unused | `annual_rate` on the balance still owed. The original behaviour; every existing loan. |
+| `flat` | interest with EACH payment | Every row carries that same interest; principal is the payment less it. With a term instead of a payment, the payment is principal over the term plus the interest. |
+| `total` | interest over the WHOLE loan | Level payment of (principal + total) over the periods, then the per-period rate that makes a declining-balance loan cost exactly that total is solved by bisection (`solvePeriodRate`) and applied to the balance owed. More interest early, less late. |
+
+`flat` is how such loans are advertised ("60 payments of 587, 87 of it
+interest"), not how interest accrues. It is supported because users arrive with
+those numbers and their lender's statements show them, and `total` is offered
+beside it as the financially standard allocation of the same money. So that the
+difference is visible, every calculated schedule returns
+**`effectiveAnnualRate`**: the yearly rate on the balance owed that a loan with
+this payment and length carries. For `rate` it is the loan's own rate; for the
+other two it is the comparable figure. The feedback loan (30,000 over 60 months,
+5,220 of interest) is 3.48% a year quoted flat and about 6.4% effective. The
+loan card labels it "Effective rate".
+
+Rules:
+
+- The method is a property of the loan row and travels through
+  `loanScheduleExtras`, so it reaches every surface the same way as the
+  loan's own schedule (and every raw `SELECT ... FROM loans` feeding a
+  schedule must name `interest_method` and `interest_amount` too; pinned).
+- An update that CHANGES the method is validated with the new one: the stored
+  extras are spread first and the merged fields after (REST `PUT /api/loans`
+  and MCP `manage_loans(op:"update")`; pinned).
+- Interest overrides still apply on top of any method. A manual schedule still
+  replaces the calculation entirely.
+- No rate is suggested by the interest check unless the method is `rate`.
+- An unknown or missing method reads as `rate`.
+
+Surfaces: the loan form's **Interest** select (Yearly rate / Fixed amount each
+payment / Total for the whole loan), REST `POST`/`PUT /api/loans`
+(`interestMethod`, `interestAmount`), MCP `manage_loans` add/update
+(`interest_method`, `interest_amount`); `list` and `get_loan_amortization`
+return `interestMethod` and `effectiveAnnualRate`.
+
 ## The loan's own schedule (2026-10-12)
 
 A schedule is calculated from the loan's terms unless the user says otherwise.
@@ -289,8 +331,10 @@ lookup can reach the network.
 
 Known limits:
 
-- The calculation is declining-balance only. A lender that charges something
-  else is modelled with interest overrides or a manual schedule (see above).
+- Interest cannot be the FIRST entry on an empty linked account. A linked
+  account with no entries leaves the loan on its projected balance; with one
+  entry its balance becomes the loan's, so `postLoanInterest` refuses and asks
+  for the account's opening balance first.
 - Nothing posts automatically on the due date; generation is one click.
 
 ### Booked versus calculated (2026-10-12)

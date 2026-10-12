@@ -70,6 +70,9 @@ function build(
     paymentFrequency: loan.paymentFrequency,
     extraPayment: loan.extraPayment ?? 0,
     residualValue: loan.residualValue,
+    // The method is a property of the loan, not of the change being applied.
+    interestMethod: loan.interestMethod,
+    interestAmount: loan.interestAmount,
     ...extras,
   });
 }

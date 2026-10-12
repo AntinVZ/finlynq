@@ -9,7 +9,12 @@
 
 import { db, schema } from "@/db";
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
-import { buildLoanSchedule, LoanValidationError, loanScheduleExtras } from "@/lib/loan-calculator";
+import {
+  buildLoanSchedule,
+  LoanValidationError,
+  loanScheduleExtras,
+  normalizeInterestMethod,
+} from "@/lib/loan-calculator";
 import { todayISO } from "@/lib/utils/date";
 import {
   assessBookedInterest,
@@ -90,9 +95,11 @@ export async function assessLoanRow(
   }
   const txs = await loadInterestTransactions(userId, loan.accountId, [loan.interestCategoryId]);
   const { booked } = matchInterestToSchedule(schedule, txs);
-  // A manual schedule's interest is not derived from the rate, so no rate is suggested.
-  const manual = loanScheduleExtras(loan).manualSchedule != null;
-  return assessBookedInterest(schedule, booked, todayISO(), manual ? 0 : loan.annualRate);
+  // A rate is only suggested when the rate is what produces the interest:
+  // not for a manual schedule, nor a fixed-amount or total-interest loan.
+  const rateDriven =
+    loanScheduleExtras(loan).manualSchedule == null && normalizeInterestMethod(loan.interestMethod) === "rate";
+  return assessBookedInterest(schedule, booked, todayISO(), rateDriven ? loan.annualRate : 0);
 }
 
 /** The verdict for one of the caller's loans by id; null when unknown or not comparable. */

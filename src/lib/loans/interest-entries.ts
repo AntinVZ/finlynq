@@ -144,6 +144,22 @@ export async function postLoanInterest(
   // 404-shaped on a foreign id, like every other write (anti-enumeration).
   await verifyOwnership(userId, { categoryIds: [categoryId] });
 
+  // A linked account with no entries at all leaves the loan on its projected
+  // balance. The moment it has one, its balance IS the loan's balance, so an
+  // interest entry on an empty account would turn a 12,000 loan into one that
+  // owes 60. The account needs its starting balance first.
+  const activity = await db
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(schema.transactions)
+    .where(and(eq(schema.transactions.userId, userId), eq(schema.transactions.accountId, accountId)))
+    .get();
+  if (!Number(activity?.n ?? 0)) {
+    throw new AppError(
+      "This loan's account has no entries yet. Set its opening balance first (what you owed when you started tracking it); otherwise the interest would become the loan's whole balance.",
+      400,
+    );
+  }
+
   let schedule: InterestScheduleRow[];
   try {
     schedule = scheduleRowsFor(loan);

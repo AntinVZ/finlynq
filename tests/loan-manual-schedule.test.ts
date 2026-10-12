@@ -186,14 +186,14 @@ describe("loanScheduleExtras reads every row shape", () => {
   const overrides = { "2026-02-15": 87 };
 
   it("Drizzle shape", () => {
-    expect(loanScheduleExtras({ manualSchedule: manual, interestOverrides: overrides })).toEqual({
+    expect(loanScheduleExtras({ manualSchedule: manual, interestOverrides: overrides })).toMatchObject({
       manualSchedule: manual,
       interestOverrides: overrides,
     });
   });
 
   it("raw SQL shape", () => {
-    expect(loanScheduleExtras({ manual_schedule: manual, interest_overrides: overrides })).toEqual({
+    expect(loanScheduleExtras({ manual_schedule: manual, interest_overrides: overrides })).toMatchObject({
       manualSchedule: manual,
       interestOverrides: overrides,
     });
@@ -204,17 +204,17 @@ describe("loanScheduleExtras reads every row shape", () => {
       manual_schedule: JSON.stringify(manual),
       interest_overrides: JSON.stringify(overrides),
     });
-    expect(got).toEqual({ manualSchedule: manual, interestOverrides: overrides });
+    expect(got).toMatchObject({ manualSchedule: manual, interestOverrides: overrides });
   });
 
   it("nothing stored means calculated", () => {
     for (const row of [{}, { manual_schedule: null, interest_overrides: null }, { manualSchedule: [] }]) {
-      expect(loanScheduleExtras(row)).toEqual({ manualSchedule: null, interestOverrides: null });
+      expect(loanScheduleExtras(row)).toMatchObject({ manualSchedule: null, interestOverrides: null });
     }
   });
 
   it("unreadable JSON degrades to calculated instead of throwing", () => {
-    expect(loanScheduleExtras({ manual_schedule: "{not json" })).toEqual({
+    expect(loanScheduleExtras({ manual_schedule: "{not json" })).toMatchObject({
       manualSchedule: null,
       interestOverrides: null,
     });
@@ -365,6 +365,8 @@ describe("every surface applies the loan's own schedule (static wiring)", () => 
       for (const q of scheduleSelects) {
         expect(q, `${file}: ${q.slice(0, 60)}`).toContain("manual_schedule");
         expect(q, `${file}: ${q.slice(0, 60)}`).toContain("interest_overrides");
+        expect(q, `${file}: ${q.slice(0, 60)}`).toContain("interest_method");
+        expect(q, `${file}: ${q.slice(0, 60)}`).toContain("interest_amount");
       }
     }
   });
