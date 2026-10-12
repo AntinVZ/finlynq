@@ -21,6 +21,13 @@ import { CHART_COLORS } from "@/lib/chart-colors";
 import { todayISO } from "@/lib/utils/date";
 import { AccountFilter } from "./_components/account-filter";
 import { serializeAccountIds } from "@/lib/reports/account-filter";
+import {
+  ALL_TIME_START,
+  MULTI_YEAR_PRESETS,
+  REPORT_PERIODS,
+  REPORT_PERIOD_LABELS,
+  type ReportPeriod as Period,
+} from "@/lib/reports/period";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { SankeyChart } from "@/components/sankey-chart";
 import {
@@ -54,7 +61,6 @@ import {
 
 // ── Types ──
 
-type Period = "daily" | "weekly" | "monthly" | "quarterly";
 type GroupByOption = "category" | "group";
 
 type TimeseriesPoint = {
@@ -195,6 +201,11 @@ export function getPresetRange(preset: string, now: Date = new Date()): { start:
         end: localDateStr(endD.getFullYear(), endD.getMonth() + 1, endD.getDate()),
       };
     }
+    case "last-5-years":
+      // Five calendar years including the current one, through today.
+      return { start: `${y - 4}-01-01`, end };
+    case "all-time":
+      return { start: ALL_TIME_START, end };
     default: {
       // Fallback: current year-to-date (same as "ytd") — safe, no partial months.
       return { start: `${y}-01-01`, end };
@@ -251,6 +262,9 @@ export default function ReportsPage() {
     const { start, end } = getPresetRange(preset);
     setStartDate(start);
     setEndDate(end);
+    // A multi-year range broken down monthly is 60+ columns; default it to
+    // yearly. The Period select stays free to change afterwards.
+    if (MULTI_YEAR_PRESETS.includes(preset)) setPeriod("yearly");
   }, []);
 
   // Fetch trends data
@@ -389,12 +403,7 @@ export default function ReportsPage() {
     );
   }
 
-  const periodLabels: Record<Period, string> = {
-    daily: "Daily",
-    weekly: "Weekly",
-    monthly: "Monthly",
-    quarterly: "Quarterly",
-  };
+  const periodLabels = REPORT_PERIOD_LABELS;
 
   // Hold the first paint until trends resolves so the charts never flash blank
   // axes against null data.
@@ -431,6 +440,8 @@ export default function ReportsPage() {
                   <SelectItem value="last-quarter">Last Quarter</SelectItem>
                   <SelectItem value="last-year">Last Year</SelectItem>
                   <SelectItem value="last-12">Last 12 Months</SelectItem>
+                  <SelectItem value="last-5-years">Last 5 Years</SelectItem>
+                  <SelectItem value="all-time">All Time</SelectItem>
                   <SelectItem value="custom">Custom</SelectItem>
                 </SelectContent>
               </Select>
@@ -475,10 +486,9 @@ export default function ReportsPage() {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="daily">Daily</SelectItem>
-                  <SelectItem value="weekly">Weekly</SelectItem>
-                  <SelectItem value="monthly">Monthly</SelectItem>
-                  <SelectItem value="quarterly">Quarterly</SelectItem>
+                  {REPORT_PERIODS.map((p) => (
+                    <SelectItem key={p} value={p}>{REPORT_PERIOD_LABELS[p]}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>

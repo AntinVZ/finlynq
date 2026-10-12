@@ -28,3 +28,21 @@ describe("getPresetRange — last-12 (FINLYNQ-203)", () => {
     expect(result).toEqual({ start: "2023-03-01", end: "2024-02-29" });
   });
 });
+
+describe("getPresetRange — multi-year presets (yearly Reports view)", () => {
+  it("last-5-years starts on Jan 1 four years back, so it spans five calendar years", () => {
+    const { start } = getPresetRange("last-5-years", new Date(2026, 9, 12));
+    expect(start).toBe("2022-01-01");
+  });
+
+  it("all-time starts before any plausible transaction", () => {
+    const { start } = getPresetRange("all-time", new Date(2026, 9, 12));
+    expect(start).toBe("1970-01-01");
+  });
+
+  it("both multi-year presets end today, like the other to-date presets", () => {
+    const ytd = getPresetRange("ytd", new Date(2026, 9, 12));
+    expect(getPresetRange("last-5-years", new Date(2026, 9, 12)).end).toBe(ytd.end);
+    expect(getPresetRange("all-time", new Date(2026, 9, 12)).end).toBe(ytd.end);
+  });
+});

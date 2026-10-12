@@ -54,4 +54,19 @@ describe("API /api/reports/trends", () => {
     const { status } = await parseResponse(res);
     expect(status).toBe(200);
   });
+
+  it("accepts the yearly period", async () => {
+    const req = createMockRequest("http://localhost:3000/api/reports/trends?period=yearly");
+    const res = await GET(req);
+    const { status } = await parseResponse(res);
+    expect(status).toBe(200);
+  });
+
+  it("refuses an unknown period instead of guessing a granularity", async () => {
+    const req = createMockRequest("http://localhost:3000/api/reports/trends?period=decade");
+    const res = await GET(req);
+    const { status, data } = await parseResponse(res);
+    expect(status).toBe(400);
+    expect(String((data as { error?: string }).error)).toContain("yearly");
+  });
 });
