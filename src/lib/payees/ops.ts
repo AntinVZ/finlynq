@@ -15,6 +15,7 @@
  * Limits: an apply over PAYEE_APPLY_MAX_ROWS rows, or over a scan that
  * stopped early, is refused (the preview says `blocked`).
  */
+import { createHash } from "crypto";
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { decryptRuleFields } from "@/lib/rules/crypto";
@@ -39,7 +40,10 @@ import {
   type IdentifierKind,
   type PayeeEntity,
 } from "./directory";
-import { inTransaction, PayeeBatchError, runPayeeBatch, undoPayeeBatch, type BatchActor, type RewriteTable, type UndoResult } from "./batches";
+import { inTransaction, PayeeBatchError, runPayeeBatch, undoPayeeBatch, writeStoredPayees, writeTransactionColumn, type BatchActor, type RewriteTable, type UndoResult } from "./batches";
+import { encryptField } from "@/lib/crypto/envelope";
+import { addTags } from "@/lib/tags";
+import { decodeStoredPayee, spellingOf } from "./scan";
 import { PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
 import type { PayeeExecutor } from "./scan";
 import { invalidatePayeeSuggest } from "./suggest";
@@ -57,6 +61,14 @@ export type PayeeOp =
   | { op: "merge"; into: { entityId: number } | { name: string; type?: PayeeType }; entityIds?: number[]; payees?: string[]; apply?: boolean }
   | { op: "split"; entityId: number; aliasIds: number[]; name: string; type?: PayeeType; apply?: boolean }
   | { op: "apply"; entityIds?: number[] }
+  /**
+   * P5b look-alike action (2): "same payee, move the rest to a tag or note".
+   * Every `transactions` row whose payee has the matching key of one of
+   * `payees` gets the entity's canonical name, and `remainder` is added to
+   * its tags (default) or appended to its note. Journaled (payee + tags /
+   * note) for the 30-day undo. No alias is added: the remainder is per row.
+   */
+  | { op: "move_remainder"; entityId: number; payees: string[]; remainder: string; target?: "tag" | "note" }
   | { op: "delete"; entityId: number }
   | { op: "undo"; batchId: number }
   /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
@@ -436,6 +448,73 @@ async function runOp(
             const ids = op.entityIds?.length ? op.entityIds : entities.map((e) => e.id);
             for (const id of ids) entityOf(entities, id);
             applyTo.push(...ids);
+            break;
+          }
+          case "move_remainder": {
+            const e = entityOf(entities, op.entityId);
+            const keys = new Set(op.payees.map((p) => payeeMatchKey(p)).filter(Boolean));
+            if (!keys.size) throw new PayeeDirectoryError("Name the spelling(s) to rename.");
+            const target = op.target === "note" ? "note" : "tag";
+            // A tag can't hold the tag separator; a note can hold anything.
+            const remainder = (target === "tag" ? op.remainder.replace(/,/g, " ") : op.remainder).replace(/\s+/g, " ").trim();
+            if (!remainder) throw new PayeeDirectoryError("The text to keep can't be empty.");
+            if (remainder.length > 200) throw new PayeeDirectoryError("The text to keep is too long (200 characters max).");
+            await journal.willModify([e.id]);
+            const planned: Array<{ id: string; payee: string | null; tags: string | null; note: string | null; plain: string }> = [];
+            let after = 0;
+            for (;;) {
+              const page = normalizeDbRows<Record<string, unknown>>(
+                await btx.execute(sql`SELECT id, payee, tags, note FROM transactions WHERE user_id = ${userId} AND id > ${after} ORDER BY id LIMIT 2000`),
+              );
+              for (const r of page) {
+                after = Number(r.id);
+                const plain = decodeStoredPayee(r.payee, null, dek);
+                if (plain === undefined || !keys.has(payeeMatchKey(plain))) continue;
+                planned.push({ id: String(r.id), payee: r.payee == null ? null : String(r.payee), tags: r.tags == null ? null : String(r.tags), note: r.note == null ? null : String(r.note), plain: spellingOf(plain) });
+              }
+              if (page.length < 2000) break;
+            }
+            if (planned.length > PAYEE_APPLY_MAX_ROWS) {
+              out.blocked = `This would change ${planned.length.toLocaleString("en-US")} rows; one change can cover at most ${PAYEE_APPLY_MAX_ROWS.toLocaleString("en-US")}.`;
+              break;
+            }
+            const payeeWrites: Array<{ id: string; value: string | null }> = [];
+            const colWrites: Array<{ id: string; value: string | null }> = [];
+            const changes = new Map<string, number>();
+            for (const r of planned) {
+              const newPayee = encryptField(dek, e.name);
+              let colOld: string | null;
+              let colNew: string | null;
+              if (target === "tag") {
+                const cur = decodeStoredPayee(r.tags, null, dek) ?? "";
+                const next = addTags(cur, remainder);
+                colOld = r.tags;
+                colNew = next === cur ? r.tags : encryptField(dek, next);
+              } else {
+                const cur = decodeStoredPayee(r.note, null, dek) ?? "";
+                const next = cur.includes(remainder) ? cur : cur.trim() ? `${cur.trim()}; ${remainder}` : remainder;
+                colOld = r.note;
+                colNew = next === cur ? r.note : encryptField(dek, next);
+              }
+              payeeWrites.push({ id: r.id, value: newPayee });
+              if (colNew !== colOld) colWrites.push({ id: r.id, value: colNew });
+              journal.rowChanged({ t: "transactions", id: r.id, old: r.payee, new: newPayee, ...(colNew !== colOld ? { cols: { [target === "tag" ? "tags" : "note"]: { old: colOld, new: colNew } } } : {}) });
+              changes.set(r.plain, (changes.get(r.plain) ?? 0) + 1);
+            }
+            await writeStoredPayees(btx, userId, "transactions", payeeWrites);
+            await writeTransactionColumn(btx, userId, target === "tag" ? "tags" : "note", colWrites);
+            journal.count("transactions", payeeWrites.length);
+            journal.count(target === "tag" ? "tags_added" : "notes_extended", colWrites.length);
+            out.rows = {
+              total: payeeWrites.length,
+              byTable: { transactions: payeeWrites.length, recurring: 0, staged: 0 },
+              changes: [...changes.entries()].map(([from, count]) => ({ from, to: e.name, entityId: e.id, count })).sort((a, b) => b.count - a.count),
+              conflicts: [],
+              truncated: false,
+            };
+            out.fingerprint = createHash("sha256").update(`move_remainder:${e.id}:${target}:${remainder}:${planned.map((p) => p.id).join(",")}`).digest("hex").slice(0, 32);
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            if (!payeeWrites.length) out.warnings.push("No transactions carry that spelling any more.");
             break;
           }
           case "delete": {

@@ -2134,6 +2134,21 @@ export const payeeProposals = pgTable("payee_proposals", {
   check("payee_proposals_status_check", sql`${t.status} IN ('draft','approved','rejected')`),
 ]);
 
+// ─── Payee Studio look-alike rejections (P5b) ───────────────────────────────
+//
+// "Different payee" answers to a look-alike suggestion, so the pair is not
+// suggested again. key_hash = HMAC (user DEK) of the spelling's matching key.
+// Migration: scripts/migrations/20261012_payee_rejections.sql.
+export const payeeRejections = pgTable("payee_rejections", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  keyHash: text("key_hash").notNull(),
+  entityId: integer("entity_id").notNull().references(() => payeeEntities.id, { onDelete: "cascade" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("payee_rejections_user_key_entity_idx").on(t.userId, t.keyHash, t.entityId),
+]);
+
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────
 //
 // Append-only record of every admin mutation. Never UPDATE/DELETE via app code;

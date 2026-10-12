@@ -36,7 +36,20 @@ export type RewriteTable = "transactions" | "recurring" | "staged";
 
 type StoredRow = Record<string, unknown>;
 type Snapshot = { entities: StoredRow[]; aliases: StoredRow[]; identifiers: StoredRow[] };
-export type RowChange = { t: RewriteTable; id: string; old: string | null; new: string | null };
+/**
+ * One rewritten row. `old` / `new` are the stored payee values. P5b: a
+ * transactions row may also carry `cols` — other columns the batch changed
+ * (`tags`, `note`: stored ciphertext before / after), undone the same way
+ * (only where the value is still exactly what the batch wrote).
+ */
+export type RowChange = {
+  t: RewriteTable;
+  id: string;
+  old: string | null;
+  new: string | null;
+  cols?: Partial<Record<ExtraColumn, { old: string | null; new: string | null }>>;
+};
+export type ExtraColumn = "tags" | "note";
 type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[] };
 
 export class PayeeBatchError extends Error {
@@ -239,6 +252,47 @@ export async function readStoredPayees(
   return out;
 }
 
+/** Write a transactions text column (`tags` / `note`) by id (CASE update, user-scoped, chunks of 500, bumps updated_at). */
+export async function writeTransactionColumn(
+  tx: PayeeExecutor,
+  userId: string,
+  col: ExtraColumn,
+  writes: Array<{ id: string; value: string | null }>,
+): Promise<void> {
+  const column = col === "tags" ? sql`tags` : sql`note`;
+  for (let i = 0; i < writes.length; i += 500) {
+    const chunk = writes.slice(i, i + 500);
+    const cases = sql.join(chunk.map((w) => sql`WHEN ${Number(w.id)}::int THEN ${w.value}::text`), sql` `);
+    const ids = sql.join(chunk.map((w) => sql`${Number(w.id)}::int`), sql`, `);
+    await tx.execute(sql`
+      UPDATE transactions SET ${column} = CASE id ${cases} END, updated_at = NOW()
+      WHERE user_id = ${userId} AND id IN (${ids})`);
+  }
+}
+
+/** Read stored transactions columns by id (FOR UPDATE). */
+export async function readTransactionColumns(
+  tx: PayeeExecutor,
+  userId: string,
+  ids: readonly string[],
+): Promise<Map<string, { payee: string | null; tags: string | null; note: string | null }>> {
+  const out = new Map<string, { payee: string | null; tags: string | null; note: string | null }>();
+  for (let i = 0; i < ids.length; i += 1000) {
+    const list = sql.join(ids.slice(i, i + 1000).map((id) => sql`${Number(id)}::int`), sql`, `);
+    const rows = normalizeDbRows<StoredRow>(
+      await tx.execute(sql`SELECT id::text AS id, payee, tags, note FROM transactions WHERE user_id = ${userId} AND id IN (${list}) FOR UPDATE`),
+    );
+    for (const r of rows) {
+      out.set(String(r.id), {
+        payee: r.payee == null ? null : String(r.payee),
+        tags: r.tags == null ? null : String(r.tags),
+        note: r.note == null ? null : String(r.note),
+      });
+    }
+  }
+  return out;
+}
+
 export type UndoResult = { batchId: number; restoredRows: number; skippedRows: number; restoredEntities: number; removedEntities: number };
 
 export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: string; dek: Buffer; batchId: number }): Promise<UndoResult> {
@@ -286,6 +340,21 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       }
       await writeStoredPayees(tx, userId, t, writes);
       restoredRows += writes.length;
+    }
+    // 1b. Other transactions columns the batch changed (P5b: tags / note).
+    const withCols = undo.rows.filter((r) => r.t === "transactions" && r.cols);
+    if (withCols.length) {
+      const current = await readTransactionColumns(tx, userId, withCols.map((c) => c.id));
+      for (const col of ["tags", "note"] as ExtraColumn[]) {
+        const writes: Array<{ id: string; value: string | null }> = [];
+        for (const c of withCols) {
+          const ch = c.cols?.[col];
+          if (!ch) continue;
+          const cur = current.get(c.id);
+          if (cur && cur[col] === ch.new) writes.push({ id: c.id, value: ch.old });
+        }
+        await writeTransactionColumn(tx, userId, col, writes);
+      }
     }
 
     // 2. Directory: drop the touched + created entities, restore the snapshot.

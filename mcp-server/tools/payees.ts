@@ -48,7 +48,8 @@ import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
-import { loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
+import { loadLookalikes, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
+import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
 
 const NO_DEK_NOTE = "No decryption key on this connection: encrypted payees can't be read, only legacy plaintext ones are shown.";
@@ -305,7 +306,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters, get, batches, insights, review (compact pack for you to analyse), proposals, explain (why two payees are or are not clustered). AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters, get, batches, insights, review (compact pack for you to analyse), proposals, explain (why two payees are or are not clustered), lookalikes (new spellings like a directory entry). AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -410,6 +411,24 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         op: z.literal("explain"),
         a: z.string().min(1).describe("First payee (any spelling)."),
         b: z.string().min(1).describe("Second payee."),
+      }),
+      z.object({
+        op: z.literal("lookalikes"),
+        limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 50)."),
+      }),
+      z.object({
+        op: z.literal("move_remainder"),
+        entity_id: z.number().int().positive().describe("The directory entry the spelling belongs to."),
+        payees: z.array(z.string().min(1)).min(1).max(100).describe("The spelling(s), e.g. \"Степаненко компенсація житла\"."),
+        remainder: z.string().min(1).max(200).describe("The text to keep, e.g. \"компенсація житла\" (from lookalikes `remainder`)."),
+        target: z.enum(["tag", "note"]).optional().describe("tag (default) or note."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("reject_lookalike"),
+        payee: z.string().min(1).describe("The spelling the user says is a DIFFERENT payee."),
+        entity_id: z.number().int().positive(),
+        undo: z.boolean().optional().describe("true cancels an earlier answer."),
       }),
       z.object({
         op: z.literal("review"),
@@ -520,6 +539,42 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               limit: input.limit,
             });
             return dataResponse({ ...ins, ...(dek ? {} : { note: NO_DEK_NOTE }) });
+          }
+          case "lookalikes": {
+            const o = await overview();
+            const r = await loadLookalikes({ executor: db, userId, dek, overview: o, limit: input.limit ?? 50 });
+            return dataResponse({
+              suggestions: r.candidates.map((c) => ({
+                payee: c.name,
+                ...(c.spellings.length > 1 ? { spellings: c.spellings.map((x) => x.spelling) } : {}),
+                count: c.count,
+                total: c.total,
+                looksLike: { entity_id: c.entity.id, name: c.entity.name, type: c.entity.type },
+                confidence: c.confidence,
+                reason: c.reason,
+                ...(c.needsDecision ? { needsDecision: true, decisionReason: c.decisionReason } : {}),
+                ...(c.remainder ? { remainder: c.remainder } : {}),
+                ...(c.alternatives.length ? { alternatives: c.alternatives } : {}),
+              })),
+              total: r.candidates.length,
+              unrenamed: r.unrenamed.map((u) => ({ entity_id: u.entityId, name: u.entityName, spellings: u.spellings, rows: u.rows })),
+              ...(r.rejectedHidden ? { hiddenByRejections: r.rejectedHidden } : {}),
+              howTo:
+                "Same payee → op=propose [{canonical: looksLike.name, entity_id, aliases: [payee]}] (or alias_add, two-step). Same payee with a purpose in the name → op=move_remainder (payee becomes the entry's name, remainder goes to a tag or note; two-step). Different payee → op=reject_lookalike. unrenamed → op=apply entity_ids=[…]. Never decide needsDecision items without the user.",
+              ...scanMeta(o),
+            });
+          }
+          case "move_remainder":
+            return await writeOp(
+              { op: "move_remainder", entityId: input.entity_id, payees: input.payees, remainder: input.remainder, target: input.target },
+              input.confirmation_token,
+            );
+          case "reject_lookalike": {
+            if (!dek) return err("Unlock required: answers are stored with your encryption key.");
+            if (input.undo) return dataResponse({ removed: await cancelRejection(db, userId, dek, { payee: input.payee, entityId: input.entity_id }) });
+            const ok = await rejectLookalike(db, userId, dek, input.payee, input.entity_id);
+            if (!ok) return err(`No payee entity #${input.entity_id}.`);
+            return dataResponse({ rejected: true, note: "Remembered: this spelling is not suggested for that entry again. reject_lookalike with undo=true cancels." });
           }
           case "explain": {
             const matcher = buildPayeeMatcher(dek ? await loadDirectory(db, userId, dek) : []);

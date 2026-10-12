@@ -73,6 +73,8 @@ export type PayeeSettings = {
 
 export type PayeesResponse = {
   draftCount?: number;
+  lookalikeCount?: number;
+  unrenamedRows?: number;
   entities: EntityRow[];
   batches: BatchRow[];
   settings: PayeeSettings;
@@ -112,6 +114,7 @@ const BATCH_LABEL: Record<string, string> = {
   import_hint: "Canonical names on import",
   autopilot: "Autopilot",
   dictionary_import: "Dictionary imported",
+  move_remainder: "Payee renamed, rest kept as tag / note",
 };
 
 /** "Merged · 12 rows · by AI (MCP)" */

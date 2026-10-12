@@ -53,6 +53,7 @@ export const MCP_READ_OPS: ReadonlySet<string> = new Set([
   "proposals",
   "insights",
   "explain",
+  "lookalikes",
 ]);
 
 /** `op` as a safe label, or null (never echoes free text from the arguments). */

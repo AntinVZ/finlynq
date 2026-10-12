@@ -58,10 +58,11 @@ import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
 import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
+import { LookalikesPanel } from "./_components/lookalikes-panel";
 
 const PAGE_SIZES = [25, 50] as const;
 
-type Tab = "all" | "clusters" | "unrecognized" | "directory" | "changes" | "insights";
+type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
@@ -232,6 +233,7 @@ export default function PayeesSettingsPage() {
   const tabs: Array<{ id: Tab; label: string }> = [
     { id: "all", label: `All${data ? ` (${data.groups.filter((g) => g.key).length})` : ""}` },
     { id: "clusters", label: `Clusters${data ? ` (${data.clusters.length})` : ""}` },
+    { id: "lookalikes", label: `Look-alikes${data ? ` (${data.lookalikeCount ?? 0})` : ""}` },
     { id: "unrecognized", label: `Unrecognized${data ? ` (${unrecognizedCount})` : ""}` },
     { id: "directory", label: `Directory${data ? ` (${entities.length})` : ""}` },
     { id: "changes", label: "Changes" },
@@ -253,11 +255,12 @@ export default function PayeesSettingsPage() {
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6" aria-label="Summary">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7" aria-label="Summary">
         {[
           { label: "Payees", value: data ? String(payeeCount) : "…", onClick: () => setTab("all") },
           { label: "Not in directory", value: data ? String(unrecognizedCount) : "…", onClick: () => setTab("unrecognized") },
           { label: "Merge candidates", value: data ? String(data.clusters.length) : "…", onClick: () => setTab("clusters") },
+          { label: "New look-alikes", value: data ? String(data.lookalikeCount ?? 0) : "…", onClick: () => setTab("lookalikes") },
           { label: "Auto-replace", value: data ? (data.settings.importHint ? "ON" : "OFF") : "…", onClick: () => setSettingsOpen(true) },
         ].map((c) => (
           <button key={c.label} type="button" onClick={c.onClick} className="rounded-lg border p-2 text-left hover:bg-accent/50">
@@ -353,6 +356,8 @@ export default function PayeesSettingsPage() {
             <p className="text-sm text-muted-foreground">Loading… (payees are decrypted and grouped on the server; large ledgers take a few seconds)</p>
           ) : tab === "insights" ? (
             <InsightsPanel />
+          ) : tab === "lookalikes" ? (
+            <LookalikesPanel onChanged={() => mutate()} />
           ) : tab === "clusters" ? (
             clusters.length === 0 ? (
               <p className="text-sm text-muted-foreground">{query ? "No clusters match." : "No look-alike payees found."}</p>

@@ -36,8 +36,8 @@ export type PayeeGroup = {
   name: string;
   /** A tidy canonical-name suggestion (noise stripped, ALL CAPS title-cased). */
   suggestedName: string;
-  /** Every spelling with its row count (all sources), most used first. */
-  spellings: Array<{ spelling: string; count: number }>;
+  /** Every spelling with its row count (all sources), most used first. `rewritable` = rows Apply can rename (transactions, recurring, staged). */
+  spellings: Array<{ spelling: string; count: number; rewritable?: number }>;
   /** `transactions` rows. */
   count: number;
   /** Rows across every source table. */
@@ -146,7 +146,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       key: acc.key,
       name,
       suggestedName,
-      spellings: spellings.map((s) => ({ spelling: s.spelling, count: rowsOf(s) })),
+      spellings: spellings.map((s) => ({ spelling: s.spelling, count: rowsOf(s), rewritable: s.counts.transactions + s.counts.recurring + s.counts.staged })),
       count: sources.transactions,
       rows: PAYEE_SOURCES.reduce((n, src) => n + sources[src], 0),
       sources,

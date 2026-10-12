@@ -62,6 +62,23 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url === "/api/payees/lookalikes" && body) return { ok: true, json: async () => ({ rejected: true }) };
+    if (url.startsWith("/api/payees/lookalikes")) {
+      return {
+        ok: true,
+        json: async () => ({
+          currency: "UAH", rejectedHidden: 0,
+          candidates: [{
+            key: "stepanenko kompensatsiia zhitla", name: "Степаненко компенсація житла", spellings: [{ spelling: "Степаненко компенсація житла", count: 2 }],
+            count: 2, total: -4000, lastDate: "2026-09-15", entity: { id: 5, name: "Степаненко", type: "person" }, confidence: 0.75,
+            reason: "one name continues the other", matchedAlias: "Степаненко", needsDecision: true, decisionReason: "“Степаненко” is a private person; people are never matched automatically.",
+            remainder: "компенсація житла", alternatives: [],
+          }],
+          unrenamed: [{ entityId: 1, entityName: "Епіцентр", spellings: [{ spelling: "EPITCENTR K10 KYIV 360616", count: 1 }], rows: 1 }],
+          rejections: [{ id: 3, entityId: 1, entityName: "Епіцентр", payee: "Епіцентр К", createdAt: "2026-10-12T00:00:00Z" }],
+        }),
+      };
+    }
     if (url.startsWith("/api/payees/explain")) {
       return { ok: true, json: async () => ({ verdict: "separate", score: null, sameKey: false, reasons: ["Different first letters of the core"], a: { payee: "Rozetka", key: "rozetka", core: "rozetka", block: "roze", type: { type: "retail", reason: "", isPerson: false }, entity: null }, b: { payee: "Comfy", key: "komfi", core: "komfi", block: "komf", type: { type: "retail", reason: "", isPerson: false }, entity: null } }) };
     }
@@ -226,5 +243,27 @@ describe("Settings → Payees paging", () => {
     fireEvent.change(screen.getByLabelText("Rows per page"), { target: { value: "50" } });
     expect(screen.getByText("1–50 of 60")).toBeTruthy();
     expect(screen.getByLabelText("Summary").textContent).toMatch(/Auto-replaceON/);
+  });
+});
+
+describe("Settings → Payees look-alikes (P5b)", () => {
+  it("offers the three answers, moves the rest to a tag after a preview, remembers «different payee»", async () => {
+    const calls = setup();
+    await screen.findAllByText("Епіцентр");
+    fireEvent.click(screen.getByRole("tab", { name: /Look-alikes/ }));
+    expect(await screen.findByText("Степаненко компенсація житла")).toBeTruthy();
+    expect(screen.getAllByText("Needs decision").length).toBeGreaterThan(0);
+    expect(screen.getByText("Belongs to an entry, not renamed yet")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
+    const keep = screen.getByLabelText("Text to keep from Степаненко компенсація житла") as HTMLInputElement;
+    expect(keep.value).toBe("компенсація житла");
+    fireEvent.click(screen.getByRole("button", { name: "Same payee, keep the rest" }));
+    await screen.findByText(/Renames 12 rows/);
+    const dry = calls.find((c) => c.body?.op === "move_remainder")!;
+    expect(dry.body).toMatchObject({ entityId: 5, remainder: "компенсація житла", target: "tag", payees: ["Степаненко компенсація житла"], dryRun: true });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Different payee" }));
+    await waitFor(() => expect(calls.some((c) => c.url === "/api/payees/lookalikes" && c.body?.action === "reject" && c.body?.entityId === 5)).toBe(true));
+    expect(screen.getByText(/Answered “Different payee” \(1\)/)).toBeTruthy();
   });
 });

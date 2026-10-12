@@ -14,7 +14,10 @@
  *
  *   Also: `entities` (the directory, with resolved transaction counts and
  *   totals), `batches` (the 20 newest change batches, with `canUndo`),
- *   `settings` and `draftCount` (AI proposals awaiting review). A group's `entityId` / `entityName` say which entity its
+ *   `settings` and `draftCount` (AI proposals awaiting review).
+ *   P5b: `lookalikeCount` (spellings that look like a directory entry and
+ *   are not yet in it) and `unrenamedRows` (rows that already belong to an
+ *   entry but still carry another spelling) — computed, nothing written. A group's `entityId` / `entityName` say which entity its
  *   spellings resolve to (unrecognized = none).
  *
  * POST { op, …, dryRun? } — directory change (create, update, alias_add,
@@ -33,7 +36,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
-import { loadPayeeOverview } from "@/lib/payees/service";
+import { loadLookalikes, loadPayeeOverview } from "@/lib/payees/service";
 import { listPayeeBatches } from "@/lib/payees/batches";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 import { executePayeeOp, type PayeeOp } from "@/lib/payees/ops";
@@ -45,13 +48,16 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
   const limitRaw = Number(request.nextUrl.searchParams.get("limit") ?? "");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 20_000) : 5_000;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
-  const [batches, settings, drafts] = await Promise.all([
+  const [batches, settings, drafts, lookalikes] = await Promise.all([
     listPayeeBatches(db, userId, { limit: 20 }),
     getPayeeSettings(db, userId),
     db.execute(sql`SELECT count(*)::int AS n FROM payee_proposals WHERE user_id = ${userId} AND status = 'draft'`),
+    loadLookalikes({ executor: db, userId, dek, overview }),
   ]);
   return NextResponse.json({
     draftCount: Number((drafts as unknown as { rows: Array<{ n: number }> }).rows?.[0]?.n ?? 0),
+    lookalikeCount: lookalikes.candidates.length,
+    unrenamedRows: lookalikes.unrenamed.reduce((n, u) => n + u.rows, 0),
     entities: overview.entities,
     batches,
     settings,
@@ -91,6 +97,7 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("split"), entityId: id, aliasIds: z.array(id).min(1).max(200), name, type, apply, dryRun }),
   z.object({ op: z.literal("apply"), entityIds: z.array(id).max(5000).optional(), dryRun }),
   z.object({ op: z.literal("delete"), entityId: id, dryRun }),
+  z.object({ op: z.literal("move_remainder"), entityId: id, payees: z.array(z.string().min(1).max(500)).min(1).max(100), remainder: z.string().min(1).max(200), target: z.enum(["tag", "note"]).optional(), dryRun }),
   z.object({ op: z.literal("undo"), batchId: id, dryRun }),
 ]);
 

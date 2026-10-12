@@ -8,6 +8,7 @@ import { buildPayeeClusters, buildPayeeGroups, type EntityResolver, type PayeeCl
 import { loadPayeeNameMaps, scanPayees, type AmountSlice, type PayeeExecutor, type PayeeScan, type PayeeSource } from "./scan";
 import { buildPayeeMatcher, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
 import type { PayeeType } from "./match-key";
+import { computeLookalikes, describeRejections, loadRejections, rejectionPredicate } from "./lookalikes";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -127,4 +128,15 @@ export async function suggestPayees(opts: { executor: PayeeExecutor; userId: str
     setCachedSuggestIndex(opts.userId, index);
   }
   return querySuggestIndex(index, opts.q, opts.limit ?? 10);
+}
+
+/** Look-alikes against the directory (P5b), with remembered "different payee" answers filtered out. Read only. */
+export async function loadLookalikes(opts: { executor: PayeeExecutor; userId: string; dek: Buffer | null; overview: PayeeOverview; limit?: number }) {
+  const { executor, userId, dek, overview } = opts;
+  const rows = dek ? await loadRejections(executor, userId) : [];
+  const report = computeLookalikes(overview.groups, overview.directory, {
+    rejected: dek && rows.length ? rejectionPredicate(dek, rows) : undefined,
+    limit: opts.limit,
+  });
+  return { ...report, rejections: dek ? describeRejections(rows, dek, overview.groups, overview.directory) : [] };
 }
