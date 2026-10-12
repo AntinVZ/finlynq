@@ -36,6 +36,7 @@ import {
   buildLotContext,
 } from "./portfolio/lots/write-hooks";
 import type { TxRowForLots } from "./portfolio/lots/types";
+import { makePayeeHinter } from "@/lib/payees/import-assist";
 
 export interface RawTransaction {
   date: string;
@@ -936,6 +937,9 @@ export async function executeImport(
   // (2026-04-29) dropped the legacy portfolio_holding text column; the
   // in-memory `portfolioHolding` field stays for the resolver above but
   // is stripped before each insert via destructuring.
+  // Payee Studio import hint (B13): the canonical name for the stored payee
+  // (after the hash, which stays over the ingest-time payee). Off by default.
+  const payeeHint = await makePayeeHinter(db, userId, userDek ?? null);
   for (let i = 0; i < toInsert.length; i += batchSize) {
     const batch = toInsert.slice(i, i + batchSize);
     const values = batch.map(({
@@ -951,6 +955,7 @@ export async function executeImport(
       // 'connector' so reconciliation lineage stays distinct from
       // user-uploaded files.
       const row = { ...rest, userId, source: txSource };
+      if (typeof row.payee === "string") row.payee = payeeHint(row.payee);
       if (userDek) {
         row.payee = encryptField(userDek, row.payee) ?? "";
         row.note = encryptField(userDek, row.note) ?? "";

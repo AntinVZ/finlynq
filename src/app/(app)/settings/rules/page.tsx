@@ -306,7 +306,8 @@ export default function RulesSettingsPage() {
                 const data = await res.json().catch(() => ({}));
                 return { ok: false, error: data?.error ?? "Failed to save rule" };
               }
-              return { ok: true };
+              const saved = await res.json().catch(() => null);
+              return { ok: true, ruleId: typeof saved?.id === "number" ? saved.id : editing?.id };
             } catch (e) {
               return { ok: false, error: e instanceof Error ? e.message : String(e) };
             }

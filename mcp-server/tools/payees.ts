@@ -44,6 +44,7 @@ import {
 } from "../../src/lib/payees/proposals";
 import { computePayeeInsights } from "../../src/lib/payees/insights";
 import { explainPayeePair } from "../../src/lib/payees/explain";
+import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "../../src/lib/payees/dictionary";
 import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
@@ -310,7 +311,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -428,6 +429,16 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         logo: z.string().nullable().optional().describe("data:image/png|jpeg|webp;base64,… ≤ 20 KB (no SVG); null clears."),
         type: typeArg,
         note: z.string().nullable().optional(),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("dictionary_export"),
+        format: z.enum(["json", "yaml"]).optional().describe("json (default) or yaml."),
+      }),
+      z.object({
+        op: z.literal("dictionary_import"),
+        content: z.string().min(1).max(5_000_000).describe("A finlynq-payee-dictionary file (JSON or YAML)."),
+        resolutions: z.record(z.string(), z.string()).optional().describe("Per conflicting entry index: \"skip\" or \"merge:<entity_id>\" (from the preview)."),
         confirmation_token: tokenArg,
       }),
       z.object({
@@ -595,6 +606,62 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
                 "Same payee → op=propose [{canonical: looksLike.name, entity_id, aliases: [payee]}] (or alias_add, two-step). Same payee with a purpose in the name → op=move_remainder (payee becomes the entry's name, remainder goes to a tag or note; two-step). Different payee → op=reject_lookalike. unrenamed → op=apply entity_ids=[…]. Never decide needsDecision items without the user.",
               ...scanMeta(o),
             });
+          }
+          case "dictionary_export": {
+            if (!dek) return err("Unlock required: the directory is encrypted. Sign in to Finlynq in the browser, then retry.");
+            const dict = buildDictionary(await loadDirectory(db, userId, dek));
+            return dataResponse({
+              format: input.format ?? "json",
+              content: input.format === "yaml" ? dictionaryToYaml(dict) : dictionaryToJson(dict),
+              entries: dict.entries.length,
+              skipped: dict.skipped,
+              note: "Shareable data only: names, aliases, types, websites and public company ids (EDRPOU; IBAN for company / bank / government). Never amounts, dates, notes, categories, logos, private persons / sole proprietors, tax ids or card digits.",
+            });
+          }
+          case "dictionary_import": {
+            if (!dek) return err("Unlock required: the directory is encrypted. Sign in to Finlynq in the browser, then retry.");
+            let parsed: ReturnType<typeof parseDictionary>;
+            try {
+              parsed = parseDictionary(input.content);
+            } catch (e) {
+              return err(e instanceof Error ? e.message : String(e));
+            }
+            const resolutions: Record<number, Resolution> = {};
+            for (const [k, v] of Object.entries(input.resolutions ?? {})) {
+              if (!/^\d+$/.test(k) || !(v === "skip" || v === "create" || /^merge:\d+$/.test(v))) return err(`Bad resolution "${k}": "${v}". Use "skip" or "merge:<entity_id>".`);
+              resolutions[Number(k)] = v as Resolution;
+            }
+            const plan = planDictionaryImport(parsed.entries, await loadDirectory(db, userId, dek), resolutions);
+            const counts = { create: 0, merge: 0, unchanged: 0, skip: 0, conflict: 0 };
+            for (const p of plan) counts[p.action]++;
+            const planOut = plan.map((p) => ({
+              index: p.index,
+              name: p.name,
+              action: p.action,
+              ...(p.target ? { target: p.target } : {}),
+              ...(p.candidates.length && p.action === "conflict" ? { candidates: p.candidates } : {}),
+              ...(p.newAliases.length ? { newAliases: p.newAliases.map((a) => a.pattern) } : {}),
+              ...(p.newIdentifiers.length ? { newIdentifiers: p.newIdentifiers.map((i) => ({ kind: i.kind, value: maskIdentifier(i.kind, i.value) })) } : {}),
+              ...(p.newWebsite ? { website: p.newWebsite } : {}),
+              ...(p.note ? { note: p.note } : {}),
+            }));
+            const { ops, labels } = dictionaryImportOps(plan);
+            const payload = { plan: plan.map((p) => `${p.index}:${p.action}:${p.target?.id ?? ""}:${p.newAliases.length}:${p.newIdentifiers.length}:${p.newWebsite ?? ""}`), resolutions };
+            if (!input.confirmation_token) {
+              if (counts.conflict) return dataResponse({ preview: true, plan: planOut, counts, errors: parsed.errors, note: "Conflicts need a decision: pass resolutions {\"<index>\": \"skip\" | \"merge:<entity_id>\"} and preview again. No token issued." });
+              if (!ops.length) return dataResponse({ preview: true, plan: planOut, counts, errors: parsed.errors, note: "Nothing to import." });
+              return dataResponse({ preview: true, plan: planOut, counts, errors: parsed.errors, confirmationToken: signPreviewToken(userId, "manage_payees_dictionary_import", payload) });
+            }
+            if (counts.conflict) return err("Refusing to import: some entries still conflict. Preview again with resolutions.");
+            const check = verifyPreviewToken(input.confirmation_token, userId, "manage_payees_dictionary_import", payload);
+            if (!check.valid) return err(`Confirmation token invalid: ${check.reason}. Re-call without confirmation_token to refresh the preview.`);
+            try {
+              const done = await executePayeeOp({ executor: db, userId, dek, actor: "mcp", op: { op: "bulk", kind: "dictionary_import", ops, labels } });
+              return dataResponse({ imported: counts, batch_id: done.batchId, ...(done.batchId != null ? { undoWith: `manage_payees op=undo batch_id=${done.batchId} (within 30 days)` } : {}), note: "Stored payees are not renamed; use op=apply to rename them." });
+            } catch (e) {
+              if (e instanceof PayeeDirectoryError || e instanceof PayeeBatchError) return err(e.message);
+              throw e;
+            }
           }
           case "set_profile":
             if (input.website === undefined && input.logo === undefined && input.type === undefined && input.note === undefined) return err("Pass website, logo, type or note.");

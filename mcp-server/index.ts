@@ -6,6 +6,8 @@ import { registerCoreTools } from "./register-core-tools.js";
 import { registerV2Tools } from "./tools-v2.js";
 import { registerImportTemplateTools } from "./tools-import-templates.js";
 import { withAutoAnnotations } from "./auto-annotations.js";
+import { registerPayeesTools } from "./tools/payees.js";
+import type { DbLike } from "./tools/_shared.js";
 import { MCP_TOOL_COUNTS, MCP_SERVER_VERSION, MCP_SERVER_INSTRUCTIONS } from "../src/lib/mcp/tool-counts.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -77,6 +79,18 @@ const server = withAutoAnnotations(new McpServer({
 registerCoreTools(server, db, { userId });
 registerV2Tools(server, db, { userId });
 registerImportTemplateTools(server, db, { userId });
+
+// Payee Studio (B16): manage_payees on stdio too. It runs on the shared `@/db`
+// Drizzle adapter (initSharedAdapter below), resolved lazily per call. Stdio
+// carries no DEK, so it reads only legacy plaintext payees and every write
+// answers "Unlock required" — the full tool lives on HTTP MCP (/mcp).
+const sharedDb: DbLike = {
+  execute: async (q) => {
+    const mod = await import("../src/db/index.js");
+    return mod.db.execute(q);
+  },
+};
+registerPayeesTools(server, { db: sharedDb, userId, dek: null, encNote: (v) => v ?? "", decNote: (v) => v ?? null });
 
 /**
  * Bootstrap the shared `@/db` Drizzle adapter inside the stdio process

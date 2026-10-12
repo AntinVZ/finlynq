@@ -54,7 +54,7 @@ import {
 import { computePureActionPatch } from "@/lib/rules/execute";
 import type { Condition, Action, ConditionGroup } from "@/lib/rules/schema";
 import { defaultConditionForField, defaultActionForKind } from "@/lib/rules/schema";
-import { PayeeCombobox } from "@/components/payees/payee-combobox";
+import { PayeeCombobox, type PayeeSuggestion } from "@/components/payees/payee-combobox";
 
 export type Category = { id: number; name: string; type: string; group: string };
 export type Account = { id: number; name: string };
@@ -77,7 +77,8 @@ export type RuleEditorPayload = {
   isActive: boolean;
 };
 
-export type SubmitResult = { ok: true } | { ok: false; error: string };
+/** `ruleId` (when the caller knows it) lets the editor link the rule to a payee entry afterwards. */
+export type SubmitResult = { ok: true; ruleId?: number } | { ok: false; error: string };
 
 export interface RuleEditorDialogProps {
   /** When set, the editor opens in edit-mode and uses the seed's id on submit. */
@@ -219,6 +220,10 @@ export function RuleEditorDialog({
   );
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Payee Studio: "Rename payee" picked a directory entry → optionally save
+  // the rule's payee conditions as aliases of that entry after saving.
+  const [aliasTarget, setAliasTarget] = useState<{ entityId: number; name: string } | null>(null);
+  const [saveAsAlias, setSaveAsAlias] = useState(false);
 
   // Live preview state.
   const [samplePayee, setSamplePayee] = useState("Whole Foods");
@@ -262,6 +267,20 @@ export function RuleEditorDialog({
       if (!result.ok) {
         setError(result.error ?? "Failed to save rule");
         return;
+      }
+      const renameTo = actions.find((a) => a.kind === "rename_payee");
+      if (saveAsAlias && aliasTarget && result.ruleId && renameTo?.kind === "rename_payee" && renameTo.to === aliasTarget.name) {
+        // The existing alias-from-rule op: one undoable payee batch; stored payees are not renamed here.
+        const res = await fetch("/api/payees", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ op: "alias_from_rule", ruleId: result.ruleId, entityId: aliasTarget.entityId, apply: false }),
+        }).catch(() => null);
+        if (!res || !res.ok) {
+          const data = res ? await res.json().catch(() => null) : null;
+          setError(`The rule was saved, but the alias wasn't: ${data?.error ?? "request failed"}.`);
+          return;
+        }
       }
       onClose(true);
     } catch (e) {
@@ -342,8 +361,18 @@ export function RuleEditorDialog({
                 onRemove={() => setActions(actions.filter((_, j) => j !== i))}
                 onMoveUp={i > 0 ? () => moveAction(i, -1) : undefined}
                 onMoveDown={i < actions.length - 1 ? () => moveAction(i, 1) : undefined}
+                onPayeePick={(s) => setAliasTarget(s.entityId != null ? { entityId: s.entityId, name: s.value } : null)}
               />
             ))}
+            {aliasTarget && actions.some((a) => a.kind === "rename_payee" && a.to === aliasTarget.name) && (
+              <label className="flex items-start gap-2 text-xs">
+                <input type="checkbox" className="mt-0.5" checked={saveAsAlias} onChange={(e) => setSaveAsAlias(e.target.checked)} />
+                <span>
+                  Also save as alias of “{aliasTarget.name}” (directory)
+                  <span className="block text-muted-foreground">The rule&apos;s payee conditions become aliases of that payee entry, so imports and Payee Studio recognise them too. Undoable in Settings → Payees → Changes.</span>
+                </span>
+              </label>
+            )}
           </div>
 
           {/* Live preview */}
@@ -567,6 +596,7 @@ function ActionRow({
   onRemove,
   onMoveUp,
   onMoveDown,
+  onPayeePick,
 }: {
   action: Action;
   categories: Category[];
@@ -576,6 +606,7 @@ function ActionRow({
   onRemove: () => void;
   onMoveUp?: () => void;
   onMoveDown?: () => void;
+  onPayeePick?: (s: PayeeSuggestion) => void;
 }) {
   const sortCategory = useDropdownOrder("category");
 
@@ -629,7 +660,7 @@ function ActionRow({
         <Input value={action.tags} onChange={(e) => onChange({ tags: e.target.value } as Partial<Action>)} placeholder="tag1, tag2" className="flex-1" />
       )}
       {action.kind === "rename_payee" && (
-        <PayeeCombobox value={action.to} onChange={(v) => onChange({ to: v } as Partial<Action>)} placeholder="Clean payee" ariaLabel="Clean payee" className="flex-1" />
+        <PayeeCombobox value={action.to} onChange={(v) => onChange({ to: v } as Partial<Action>)} onPick={onPayeePick} placeholder="Clean payee" ariaLabel="Clean payee" className="flex-1" />
       )}
       {action.kind === "set_account" && (
         <Combobox

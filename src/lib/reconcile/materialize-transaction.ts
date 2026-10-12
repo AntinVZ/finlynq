@@ -38,6 +38,7 @@ import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { decryptStaged } from "@/lib/crypto/staging-envelope";
 import { invalidateUser } from "@/lib/mcp/user-tx-cache";
 import { validateSignVsCategoryById } from "@/lib/transactions/sign-category-invariant";
+import { makePayeeHinter } from "@/lib/payees/import-assist";
 
 /** Stable machine codes for the expected refusals. The route maps the
  *  `*_not_found` family to 404 and the two business-rule codes to 400; the
@@ -143,7 +144,12 @@ export async function materializeBankRowAsTransaction(
   // Decrypt payee/note/tags tier-aware, then re-encrypt under the user DEK.
   // transactions table is always user-tier; we don't preserve service-tier
   // wrappings across the materialization.
-  const payeePlain = decodeBankString(bank.encryptionTier, dek, bank.payee);
+  // Payee Studio import hint (B13): the new transaction gets the canonical
+  // name when the payee matches a directory alias and the hint is on. The
+  // bank row keeps its own text; import_hash is copied verbatim below.
+  const hint = await makePayeeHinter(db, userId, dek);
+  const bankPayee = decodeBankString(bank.encryptionTier, dek, bank.payee);
+  const payeePlain = bankPayee == null ? bankPayee : hint(bankPayee);
   const notePlain = decodeBankString(bank.encryptionTier, dek, bank.note);
   const tagsPlain = decodeBankString(bank.encryptionTier, dek, bank.tags);
 

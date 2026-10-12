@@ -70,6 +70,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "@/db";
+import { makePayeeHinter } from "@/lib/payees/import-assist";
 import { requireEncryption } from "@/lib/auth/require-encryption";
 import { validateBody } from "@/lib/validate";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
@@ -268,7 +269,8 @@ export async function POST(
   // re-encrypt under the user's DEK because `transactions` is user-tier
   // only.
   const payeeFromBank = decodeBankString(bank.encryptionTier, dek, bank.payee);
-  const payeePlain = parsed.data.payee ?? payeeFromBank ?? "";
+  // Payee Studio import hint (B13): canonical name for the new transaction only.
+  const payeePlain = (await makePayeeHinter(db, userId, dek))(parsed.data.payee ?? payeeFromBank ?? "");
   const notePlain = decodeBankString(bank.encryptionTier, dek, bank.note);
   const tagsPlain = decodeBankString(bank.encryptionTier, dek, bank.tags);
 

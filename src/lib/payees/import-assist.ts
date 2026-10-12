@@ -149,3 +149,34 @@ export async function canonicalPayeeHint(executor: PayeeExecutor, userId: string
   const m = buildPayeeMatcher(directory).match(spellingOf(payee));
   return m.kind === "match" && m.name !== payee ? m.name : null;
 }
+
+/**
+ * A reusable import hint for paths that turn many rows into transactions at
+ * once (P5e / B13, B14, B19): staged or bank rows materialized into
+ * `transactions` (reconcile materialize, rule auto-apply, bank-row approve /
+ * categorize, email "Record"), direct file / connector imports
+ * (`executeImport`) and MCP writes. Loads the settings and the directory ONCE
+ * and returns `payee → canonical name` (identity when the import hint is
+ * off, the directory is empty, or no single alias matches). Only the new
+ * transaction's payee changes: bank-ledger rows keep their text and
+ * `import_hash` is never recomputed. Never throws — a failure means "no hint".
+ */
+export async function makePayeeHinter(executor: PayeeExecutor, userId: string, dek: Buffer | null | undefined): Promise<(payee: string) => string> {
+  const identity = (p: string) => p;
+  if (!dek) return identity;
+  try {
+    const settings = await getPayeeSettings(executor, userId);
+    if (!settings.importHint) return identity;
+    const directory = await loadDirectory(executor, userId, dek);
+    if (!directory.length) return identity;
+    const matcher = buildPayeeMatcher(directory);
+    return (payee: string) => {
+      if (!payee || !payee.trim()) return payee;
+      const m = matcher.match(spellingOf(payee));
+      return m.kind === "match" ? m.name : payee;
+    };
+  } catch (err) {
+    console.warn("[payees] import hint unavailable:", err instanceof Error ? err.message : String(err));
+    return identity;
+  }
+}

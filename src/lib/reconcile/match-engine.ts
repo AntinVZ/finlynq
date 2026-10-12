@@ -40,6 +40,7 @@
 
 import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { db, schema } from "@/db";
+import { makePayeeHinter } from "@/lib/payees/import-assist";
 import { round2 } from "@/lib/utils/number";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { decryptStaged } from "@/lib/crypto/staging-envelope";
@@ -1034,6 +1035,9 @@ export async function applyRulesToBankRows(
   // to every bank row. Rules are decrypted with the same DEK that decodes the
   // bank-row payees below (2026-06-01) — both are required to match.
   const activeRules = await loadActiveRulesForReconcile(userId, dek);
+  // Payee Studio import hint (B13): a materialized transaction gets the
+  // canonical payee unless a rule renames it; the bank row keeps its text.
+  const payeeHint = autoMaterialize ? await makePayeeHinter(db, userId, dek) : (p: string) => p;
 
   // Load the bank rows + their account is_investment flag. Cross-tenant
   // 404 guard via `userId` on the SELECT.
@@ -1419,7 +1423,7 @@ export async function applyRulesToBankRows(
     // Apply the rule's pure modifiers (rename_payee / set_tags /
     // set_entered_currency) on top of the bank row's own values. A modifier
     // that the rule didn't set falls back to the bank row's value.
-    const effectivePayee = patch.payee ?? payeePlain;
+    const effectivePayee = patch.payee ?? (payeePlain == null ? payeePlain : payeeHint(payeePlain));
     const effectiveTags = patch.tags ?? tagsPlain;
     const effectiveEnteredCurrency = patch.enteredCurrency ?? bank.enteredCurrency;
 

@@ -116,6 +116,7 @@ import { scanInBatches } from "../lib/scan-in-batches";
 import { hasTextFilter, compileTextFilters, type TextFilters } from "../lib/text-match";
 import { parseBusinessParam } from "../../src/lib/reports/business-filter";
 import { businessFilterCondition } from "../../src/lib/reports/business-filter-sql";
+import { makePayeeHinter } from "../../src/lib/payees/import-assist";
 
 export function registerTransactionsTools(server: McpServer, ctx: PgToolContext) {
   const { db, userId, dek } = ctx;
@@ -431,7 +432,10 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       // Encrypt text fields when a DEK is available. Without one (legacy API
       // keys) we fall back to plaintext; the row will still be readable via
       // the legacy passthrough in decryptField.
-      const encPayee = dek ? encryptField(dek, payee) : payee;
+      // Payee Studio import hint (B14): the canonical name when the payee
+      // matches a directory alias and the hint is on (Settings → Payees).
+      const storedPayee = (await makePayeeHinter(db, userId, dek))(payee);
+      const encPayee = dek ? encryptField(dek, storedPayee) : storedPayee;
       const encNote = dek ? encryptField(dek, note ?? "") : (note ?? "");
       const encTags = dek ? encryptField(dek, tags ?? "") : (tags ?? "");
 
@@ -552,6 +556,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
     idempotencyKey?: string;
   };
   async function opTxBulkRecord(argsObj: BulkRecordArgs): Promise<ToolResult> {
+      // Payee Studio import hint (B14): loaded once per bulk call, on first use.
+      let bulkPayeeHint: ((p: string) => string) | null = null;
       const { transactions, account_id: defaultAccountId, dryRun, idempotencyKey } = argsObj;
       // Idempotency replay (issue #98). Look up first — before any
       // account/category/holdings prefetch — so a hit returns immediately.
@@ -955,7 +961,9 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
             continue;
           }
 
-          const encPayee = dek ? encryptField(dek, t.payee) : t.payee;
+          bulkPayeeHint ??= await makePayeeHinter(db, userId, dek);
+          const storedPayee = bulkPayeeHint(t.payee);
+          const encPayee = dek ? encryptField(dek, storedPayee) : storedPayee;
           const encNote = dek ? encryptField(dek, t.note ?? "") : (t.note ?? "");
           const encTags = dek ? encryptField(dek, t.tags ?? "") : (t.tags ?? "");
 
@@ -1433,7 +1441,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         fieldsUpdated.push("category_id");
       }
       if (payee !== undefined) {
-        const v = dek ? encryptField(dek, payee) : payee;
+        const stored = (await makePayeeHinter(db, userId, dek))(payee);
+        const v = dek ? encryptField(dek, stored) : stored;
         await db.execute(sql`UPDATE transactions SET payee = ${v}, updated_at = NOW() WHERE id = ${id} AND user_id = ${userId}`);
         fieldsUpdated.push("payee");
       }
@@ -2827,7 +2836,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       await db.execute(sql`UPDATE transactions SET is_business = ${resolved.is_business}, updated_at = NOW() WHERE ${idMatch} AND user_id = ${userId}`);
     }
     if (resolved.payee !== undefined) {
-      const v = dek ? encryptField(dek, resolved.payee) : resolved.payee;
+      const stored = (await makePayeeHinter(db, userId, dek))(resolved.payee);
+      const v = dek ? encryptField(dek, stored) : stored;
       await db.execute(sql`UPDATE transactions SET payee = ${v}, updated_at = NOW() WHERE ${idMatch} AND user_id = ${userId}`);
     }
     if (resolved.note !== undefined) {

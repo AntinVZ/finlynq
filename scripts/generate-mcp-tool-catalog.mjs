@@ -139,6 +139,9 @@ const STDIO_FILES = [
   join(REPO_ROOT, "mcp-server", "register-core-tools.ts"),
   join(REPO_ROOT, "mcp-server", "tools-v2.ts"),
   join(REPO_ROOT, "mcp-server", "tools-import-templates.ts"),
+  // Payee Studio B16: mcp-server/index.ts also registers manage_payees on stdio
+  // (registerPayeesTools with no DEK), so the payees module counts for stdio too.
+  join(REPO_ROOT, "mcp-server", "tools", "payees.ts"),
 ];
 
 const OUTPUT_FILE = join(

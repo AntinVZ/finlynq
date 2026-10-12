@@ -34,6 +34,7 @@ import { upsertBankTransaction } from "@/lib/bank-ledger";
 import { createTransferPair } from "@/lib/transfer";
 import { validateSignVsCategoryById } from "@/lib/transactions/sign-category-invariant";
 import { invalidateUser } from "@/lib/mcp/user-tx-cache";
+import { makePayeeHinter } from "@/lib/payees/import-assist";
 import { loadActiveEmailRules, firstMatchingRule } from "@/lib/email-rules/load";
 import { applyEmailTransform, type EmailTransform } from "@/lib/email-import/apply-transform";
 import { htmlToText } from "@/lib/email-import/parse-body";
@@ -549,6 +550,10 @@ async function materialize(args: {
     source: "import",
   });
 
+  // Payee Studio import hint (B13): the transaction may get the canonical
+  // name; the bank-ledger row above keeps the email's own text.
+  const txPayee = (await makePayeeHinter(db, userId, dek))(payee);
+
   const txId = await db.transaction(async (tx) => {
     const txRow = await tx
       .insert(schema.transactions)
@@ -559,7 +564,7 @@ async function materialize(args: {
         categoryId,
         currency,
         amount,
-        payee: encryptField(dek, payee) ?? "",
+        payee: encryptField(dek, txPayee) ?? "",
         note: "",
         tags: "",
         importHash,
