@@ -84,18 +84,21 @@ describeDb("Payee Studio P6 merchant types (seeded DB)", () => {
     expect((await dir())[0].merchantTypeId).toBe(rest.id);
   });
 
+  // P6.2 (B29): only the canonical name decides; "Doctor" (alias-only match) is skipped, not typed.
   it("assigns one type in bulk by a type word, only to untyped entries", async () => {
     const a = await op({ op: "create", name: "Аптека Подорожник", apply: false });
     await op({ op: "create", name: "Doctor", apply: false, aliases: [{ pattern: "Apteka Dobroho Dnia" }] });
     await op({ op: "create", name: "Сільпо", apply: false });
     await op({ op: "update", entityId: a.entity!.id, merchantType: "Інше" });
     const res = await op({ op: "set_merchant_type", typeWord: "аптека", merchantType: "Аптеки", onlyUntyped: true }, true);
-    expect(res.typed.map((t) => t.name)).toEqual(["Doctor"]);
+    expect(res.typed).toEqual([]);
+    expect(res.skipped.map((t) => t.name)).toEqual(["Doctor"]);
     const all = await op({ op: "set_merchant_type", typeWord: "аптека", merchantType: "Аптеки" });
-    expect(all.typed.map((t) => t.name).sort()).toEqual(["Doctor", "Аптека Подорожник"]);
+    expect(all.typed.map((t) => t.name).sort()).toEqual(["Аптека Подорожник"]);
     await op({ op: "undo", batchId: all.batchId });
     const d = await dir();
     expect(d.find((e) => e.name === "Doctor")!.merchantTypeId).toBeNull();
+    expect(d.find((e) => e.name === "Аптека Подорожник")!.merchantTypeId).not.toBeNull();
   });
 
   it("edits the dictionary: add, rename, remove (entries lose the type), undo brings it back", async () => {

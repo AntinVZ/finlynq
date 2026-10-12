@@ -18,6 +18,8 @@
  *   P6: `merchantTypes` (the dictionary, group → position; ids are null
  *   while it is the built-in starting set); each entity carries
  *   `merchantType` and, untyped, a `merchantTypeHint` (never applied).
+ *   P6.2: `suspicious` — entries with a short / meaningless name to check
+ *   (reasons, rows, spellings); entries marked as checked are left out.
  *   P5b: `lookalikeCount` (spellings that look like a directory entry and
  *   are not yet in it) and `unrenamedRows` (rows that already belong to an
  *   entry but still carry another spelling) — computed, nothing written. A group's `entityId` / `entityName` say which entity its
@@ -25,7 +27,7 @@
  *
  * POST { op, …, dryRun? } — directory change (create, update, alias_add,
  *   alias_remove, alias_from_rule, identifiers, merge, split, apply, delete,
- *   merchant_types, set_merchant_type, undo). `dryRun: true` runs the op in a rolled-back transaction and returns
+ *   merchant_types, set_merchant_type, mark_reviewed, own_accounts, undo). `dryRun: true` runs the op in a rolled-back transaction and returns
  *   exactly what it would do (rows per table, spellings that change,
  *   conflicts, warnings, `blocked`); without it the op commits as one batch,
  *   undoable for 30 days. 400 bad input, 404 unknown id, 409 alias conflict /
@@ -39,7 +41,7 @@ import { sql } from "drizzle-orm";
 import { z } from "zod";
 import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
-import { loadLookalikes, loadPayeeOverview } from "@/lib/payees/service";
+import { loadLookalikes, loadPayeeOverview, suspiciousOf } from "@/lib/payees/service";
 import { listPayeeBatches } from "@/lib/payees/batches";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 import { executePayeeOp, type PayeeOp } from "@/lib/payees/ops";
@@ -62,6 +64,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     lookalikeCount: lookalikes.candidates.length,
     unrenamedRows: lookalikes.unrenamed.reduce((n, u) => n + u.rows, 0),
     entities: overview.entities,
+    suspicious: suspiciousOf(overview),
     merchantTypes: overview.merchantTypes,
     batches,
     settings,
@@ -92,6 +95,15 @@ const dryRun = z.boolean().optional();
 const merchantType = z.union([id, z.string().min(1).max(170), z.object({ group: z.string().min(1).max(80), name: z.string().min(1).max(80) })]).nullable();
 const typeEdit = { group: z.string().min(1).max(80), name: z.string().min(1).max(80).optional(), sort: z.number().int().min(0).max(1_000_000).optional(), defaultCategoryId: id.nullable().optional() };
 const apply = z.boolean().optional();
+/** P6.2: an own account / card ("Мої рахунки і картки"); a full card number is refused by the op. */
+const ownAccount = {
+  iban: z.string().max(40).nullable().optional(),
+  card: z.string().max(30).nullable().optional(),
+  bank: z.string().max(60).nullable().optional(),
+  label: z.string().max(60).nullable().optional(),
+  currency: z.string().max(3).nullable().optional(),
+  owner: z.enum(["me", "spouse", "business"]).optional(),
+};
 
 const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("create"), name, type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), website: z.string().max(500).nullable().optional(), merchantType: merchantType.optional(), aliases: z.array(alias).max(100).optional(), identifiers: z.array(identifier).max(20).optional(), apply, dryRun }),
@@ -147,6 +159,14 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("apply"), entityIds: z.array(id).max(5000).optional(), dryRun }),
   z.object({ op: z.literal("delete"), entityId: id, dryRun }),
   z.object({ op: z.literal("move_remainder"), entityId: id, payees: z.array(z.string().min(1).max(500)).min(1).max(100), remainder: z.string().min(1).max(200), target: z.enum(["tag", "note"]).optional(), dryRun }),
+  z.object({ op: z.literal("mark_reviewed"), entityIds: z.array(id).min(1).max(500), reviewed: z.boolean().optional(), dryRun }),
+  z.object({
+    op: z.literal("own_accounts"),
+    add: z.array(z.object(ownAccount)).max(50).optional(),
+    update: z.array(z.object({ id, ...ownAccount })).max(50).optional(),
+    remove: z.array(id).max(50).optional(),
+    dryRun,
+  }),
   z.object({ op: z.literal("undo"), batchId: id, dryRun }),
 ]);
 

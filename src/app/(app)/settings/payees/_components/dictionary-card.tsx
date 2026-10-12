@@ -10,7 +10,9 @@
 
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import type { StudioTextKey } from "@/lib/payees/i18n";
 import { PayeeTypeLabel } from "./merchant-type-ui";
+import { useStudioT } from "./i18n";
 
 type PlanItem = {
   index: number;
@@ -27,15 +29,16 @@ type PlanItem = {
 };
 type PlanResponse = { plan: PlanItem[]; errors: Array<{ index: number; error: string }>; counts: Record<string, number>; batchId?: number | null; error?: string };
 
-const ACTION_LABEL: Record<PlanItem["action"], string> = {
-  create: "New",
-  merge: "Adds to existing",
-  unchanged: "Already known",
-  skip: "Skipped",
-  conflict: "Needs a decision",
+const ACTION_LABEL: Record<PlanItem["action"], StudioTextKey> = {
+  create: "dictionary.action.create",
+  merge: "dictionary.action.merge",
+  unchanged: "dictionary.action.unchanged",
+  skip: "dictionary.action.skip",
+  conflict: "dictionary.action.conflict",
 };
 
 export function DictionaryCard({ onImported }: { onImported: () => void }) {
+  const t = useStudioT();
   const [content, setContent] = useState<string | null>(null);
   const [fileName, setFileName] = useState("");
   const [resolutions, setResolutions] = useState<Record<string, string>>({});
@@ -56,7 +59,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
     setBusy(false);
     if (json?.plan) setPlan(json);
     if (!r?.ok) {
-      setError(json?.error ?? "Import failed.");
+      setError(json?.error ?? t("dictionary.importFailed"));
       return null;
     }
     return json;
@@ -84,7 +87,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
     if (!content) return;
     const res = await send(content, resolutions, false);
     if (res) {
-      setStatus(`Imported: ${res.counts.create ?? 0} new, ${res.counts.merge ?? 0} extended.${res.batchId ? ` Undo it from Changes (#${res.batchId}).` : ""}`);
+      setStatus(`${t("dictionary.imported", { created: res.counts.create ?? 0, merged: res.counts.merge ?? 0 })}${res.batchId ? ` ${t("dictionary.undoHint", { id: res.batchId })}` : ""}`);
       setPlan(null);
       setContent(null);
       onImported();
@@ -95,20 +98,17 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
 
   return (
     <div className="space-y-3 text-sm">
-      <p className="text-xs text-muted-foreground">
-        Share or back up your directory: names, aliases, types and public company ids (EDRPOU) only — never amounts, dates,
-        notes, people or sole proprietors.
-      </p>
+      <p className="text-xs text-muted-foreground">{t("dictionary.intro")}</p>
       <div className="flex flex-wrap gap-2">
         <a href="/api/payees/dictionary?format=json" download>
-          <Button size="sm" variant="outline">Export JSON</Button>
+          <Button size="sm" variant="outline">{t("dictionary.exportJson")}</Button>
         </a>
         <a href="/api/payees/dictionary?format=yaml" download>
-          <Button size="sm" variant="outline">Export YAML</Button>
+          <Button size="sm" variant="outline">{t("dictionary.exportYaml")}</Button>
         </a>
         <label className="inline-flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">Import:</span>
-          <input type="file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml" aria-label="Dictionary file" onChange={(e) => onFile(e.target.files?.[0])} className="text-xs" />
+          <span className="text-xs text-muted-foreground">{t("dictionary.importLabel")}</span>
+          <input type="file" accept=".json,.yaml,.yml,application/json,application/yaml,text/yaml" aria-label={t("dictionary.file")} onChange={(e) => onFile(e.target.files?.[0])} className="text-xs" />
         </label>
       </div>
       {status && <p className="text-emerald-600 dark:text-emerald-400">{status}</p>}
@@ -116,12 +116,13 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
       {plan && (
         <div className="space-y-2 rounded-md border p-3">
           <p>
-            {fileName}: {plan.counts.create ?? 0} new · {plan.counts.merge ?? 0} add to existing · {plan.counts.unchanged ?? 0} already known ·{" "}
-            {plan.counts.skip ?? 0} skipped · <span className={conflicts ? "text-amber-600 dark:text-amber-400" : undefined}>{conflicts} need a decision</span>
+            {fileName}: {t("dictionary.planCounts", { created: plan.counts.create ?? 0, merged: plan.counts.merge ?? 0, unchanged: plan.counts.unchanged ?? 0, skipped: plan.counts.skip ?? 0 })}
+            {" · "}
+            <span className={conflicts ? "text-amber-600 dark:text-amber-400" : undefined}>{t("dictionary.planConflicts", { n: conflicts })}</span>
           </p>
           {plan.errors.length > 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              Unreadable entries left out: {plan.errors.map((e) => `#${e.index + 1} (${e.error})`).join("; ")}
+              {t("dictionary.unreadable", { list: plan.errors.map((e) => `#${e.index + 1} (${e.error})`).join("; ") })}
             </p>
           )}
           <ul className="max-h-72 overflow-y-auto divide-y text-xs">
@@ -132,22 +133,22 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
                   <span className="font-medium break-all">{p.name}</span>
                   <PayeeTypeLabel className="text-muted-foreground" merchantType={p.newMerchantType} type={p.type} />
                   <span className={p.action === "conflict" ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}>
-                    {ACTION_LABEL[p.action]}
+                    {t(ACTION_LABEL[p.action])}
                     {p.target ? ` “${p.target.name}”` : ""}
-                    {p.newAliases.length ? ` · +${p.newAliases.length} alias(es)` : ""}
-                    {p.newWebsite ? ` · website ${p.newWebsite.replace(/^https:\/\//, "")}` : ""}
+                    {p.newAliases.length ? ` · ${t("dictionary.newAliases", { n: p.newAliases.length })}` : ""}
+                    {p.newWebsite ? ` · ${t("dictionary.newWebsite", { site: p.newWebsite.replace(/^https:\/\//, "") })}` : ""}
                   </span>
                   {(p.action === "conflict" || resolutions[String(p.index)]) && (
                     <select
-                      aria-label={`Decision for ${p.name}`}
+                      aria-label={t("dictionary.decisionFor", { name: p.name })}
                       className="ml-auto h-7 rounded-md border bg-background px-1"
                       value={resolutions[String(p.index)] ?? ""}
                       onChange={(e) => decide(p.index, e.target.value)}
                     >
-                      <option value="">Decide…</option>
-                      <option value="skip">Skip</option>
+                      <option value="">{t("dictionary.decide")}</option>
+                      <option value="skip">{t("dictionary.skip")}</option>
                       {p.candidates.map((c) => (
-                        <option key={c.id} value={`merge:${c.id}`}>Add to “{c.name}”</option>
+                        <option key={c.id} value={`merge:${c.id}`}>{t("dictionary.addTo", { name: c.name })}</option>
                       ))}
                     </select>
                   )}
@@ -157,7 +158,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
           </ul>
           <div className="flex justify-end">
             <Button size="sm" disabled={busy || conflicts > 0 || !((plan.counts.create ?? 0) + (plan.counts.merge ?? 0))} onClick={commit}>
-              {busy ? "Working…" : "Import"}
+              {busy ? t("common.working") : t("dictionary.import")}
             </Button>
           </div>
         </div>

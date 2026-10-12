@@ -17,7 +17,9 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { formatCurrency } from "@/lib/currency";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
+import type { StudioTextKey } from "@/lib/payees/i18n";
 import { OpDialog, type OpPreview } from "./op-dialog";
+import { useStudioT } from "./i18n";
 
 type Candidate = {
   entity: { id: number; name: string; type: string } | null;
@@ -34,7 +36,7 @@ type Candidate = {
 };
 type Report = { query: { kind: string; masked: string; strength: "strong" | "weak" }; candidates: Candidate[]; bankRows: number; hints: string[] };
 
-const EVIDENCE: Record<string, string> = { directory: "in the directory", text: "in payee / note", bank: "in the bank statement" };
+const EVIDENCE: Record<string, StudioTextKey> = { directory: "whose.evidence.directory", text: "whose.evidence.text", bank: "whose.evidence.bank" };
 
 /** The requisite to store from what the user typed (cards: last 4 digits only). */
 function valueToStore(kind: string, typed: string): string {
@@ -43,6 +45,7 @@ function valueToStore(kind: string, typed: string): string {
 }
 
 export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
+  const t = useStudioT();
   const [q, setQ] = useState("");
   const [asked, setAsked] = useState("");
   const [report, setReport] = useState<Report | null>(null);
@@ -62,7 +65,7 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
       const data = await res.json().catch(() => null);
       if (!res.ok) {
         setReport(null);
-        setError(data?.error ?? "Couldn't search.");
+        setError(data?.error ?? t("whose.failed"));
       } else {
         setReport(data as Report);
         setAsked(typed);
@@ -73,8 +76,8 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
   }
 
   return (
-    <section className="space-y-3" aria-label="Find by card or IBAN">
-      <h3 className="text-sm font-medium">Find by card / IBAN</h3>
+    <section className="space-y-3" aria-label={t("whose.aria")}>
+      <h3 className="text-sm font-medium">{t("whose.title")}</h3>
       <form
         className="flex flex-wrap gap-2"
         onSubmit={(e) => {
@@ -82,9 +85,9 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
           void find();
         }}
       >
-        <Input className="max-w-sm" aria-label="Card, IBAN or tax id" placeholder="**** 1234, UA21 3223…, ІПН or ЄДРПОУ" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input className="max-w-sm" aria-label={t("whose.inputAria")} placeholder={t("whose.placeholder")} value={q} onChange={(e) => setQ(e.target.value)} />
         <Button size="sm" type="submit" disabled={busy || !q.trim()}>
-          Find
+          {t("whose.find")}
         </Button>
       </form>
       {error && <p className="text-sm text-destructive">{error}</p>}
@@ -92,9 +95,9 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
       {report && (
         <div className="space-y-2">
           <p className="text-xs text-muted-foreground">
-            {report.query.masked} · {report.query.strength === "weak" ? "the last 4 digits of a card only hint at a payee" : "identifies a payee"}
-            {report.bankRows ? ` · mentioned in ${report.bankRows} bank-statement row(s)` : ""}{" "}
-            <Link className="underline" href={buildTxDrillUrl({ identifier: asked })}>Show transactions</Link>
+            {report.query.masked} · {report.query.strength === "weak" ? t("whose.weak") : t("whose.strong")}
+            {report.bankRows ? ` · ${t("whose.bankRows", { n: report.bankRows })}` : ""}{" "}
+            <Link className="underline" href={buildTxDrillUrl({ identifier: asked })}>{t("common.showTransactions")}</Link>
           </p>
           {report.hints.length > 0 && (
             <ul className="rounded-md border border-amber-300 p-2 text-xs text-amber-800 dark:border-amber-800 dark:text-amber-200">
@@ -104,7 +107,7 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
             </ul>
           )}
           {report.candidates.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Nobody found with this requisite.</p>
+            <p className="text-sm text-muted-foreground">{t("whose.empty")}</p>
           ) : (
             <ul className="space-y-2">
               {report.candidates.map((c) => (
@@ -116,16 +119,16 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
                       <span className="font-medium break-all">{c.payee}</span>
                     )}
                     {c.evidence.map((e) => (
-                      <Badge key={e} variant="outline">{EVIDENCE[e] ?? e}</Badge>
+                      <Badge key={e} variant="outline">{EVIDENCE[e] ? t(EVIDENCE[e]) : e}</Badge>
                     ))}
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                      {c.transactions} tx{c.firstDate ? ` · ${c.firstDate} → ${c.lastDate}` : ""}
+                      {t("common.tx", { n: c.transactions })}{c.firstDate ? ` · ${c.firstDate} → ${c.lastDate}` : ""}
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    {c.totals.map((t) => `paid ${formatCurrency(t.paid, t.currency || "UAH")}${t.received ? `, received ${formatCurrency(t.received, t.currency || "UAH")}` : ""}`).join(" · ") || "No transactions yet"}
-                    {c.typicalAmount != null ? ` · usually ${c.typicalAmount}` : ""}
-                    {c.accounts.length ? ` · from ${c.accounts.map((a) => a.name).join(", ")}` : ""}
+                    {c.totals.map((x) => `${t("analytics.paid", { amount: formatCurrency(x.paid, x.currency || "UAH") })}${x.received ? `, ${t("analytics.received", { amount: formatCurrency(x.received, x.currency || "UAH") })}` : ""}`).join(" · ") || t("whose.noTx")}
+                    {c.typicalAmount != null ? ` · ${t("whose.usually", { amount: c.typicalAmount })}` : ""}
+                    {c.accounts.length ? ` · ${t("whose.from", { list: c.accounts.map((a) => a.name).join(", ") })}` : ""}
                   </p>
                   {c.examples.length > 0 && (
                     <ul className="text-xs text-muted-foreground">
@@ -136,7 +139,7 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
                   )}
                   {c.entity && !c.holdsRequisite && (
                     <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setAdd({ entityId: c.entity!.id, name: c.entity!.name })}>
-                      Add to payee {c.entity.name}
+                      {t("whose.addTo", { name: c.entity.name })}
                     </Button>
                   )}
                 </li>
@@ -147,13 +150,13 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
       )}
       {add && report && (
         <OpDialog
-          title={`Add ${report.query.masked} to “${add.name}”`}
+          title={t("whose.addTitle", { masked: report.query.masked, name: add.name })}
           body={{ op: "identifiers", entityId: add.entityId, add: [{ kind: report.query.kind, value: valueToStore(report.query.kind, asked) }] }}
-          confirmLabel="Add"
+          confirmLabel={t("common.add")}
           onClose={() => setAdd(null)}
           onDone={(r: OpPreview) => {
             setAdd(null);
-            setStatus(`Added to ${add.name}.${r.warnings.length ? " " + r.warnings.join(" ") : ""}`);
+            setStatus(`${t("whose.added", { name: add.name })}${r.warnings.length ? " " + r.warnings.join(" ") : ""}`);
             void find();
             onChanged?.();
           }}

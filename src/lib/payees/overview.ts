@@ -20,12 +20,16 @@
  * that is nothing but type words is never clustered, different brand tokens
  * are only ever joined by a person's decision, and the bank's own service
  * rows (`комісія`, `переказ власних коштів`, …) are never merchants.
+ * P6.2 (76): neither are transfers between the user's own accounts — a
+ * group whose spellings mention an own IBAN / card, or that resolves to an
+ * entry holding one (`ownAccount`).
  *
  * Pure: no DB, no network. Amount totals come from a caller-supplied
  * `convert` (display-currency conversion lives in ./convert.ts).
  */
 import { createHash } from "crypto";
 import {
+  canonicalSpelling,
   cleanPayeeDisplay,
   coreOfKey,
   guessPayeeType,
@@ -35,6 +39,7 @@ import {
 } from "./match-key";
 import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
 import { scoreKeys, type KeyScore } from "./score-keys";
+import { describeOwnAccount, type OwnMatcher } from "./own-accounts";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
 
 export type NamedCount = { id: number; name: string; count: number };
@@ -71,6 +76,8 @@ export type PayeeGroup = {
   brand: { core: string; removed: string[]; typeOnly: boolean; hint: MerchantTypeHint | null };
   /** P6 (B25): the bank's own service row (fee, own transfer, interest…): the matched pattern. */
   bankOperation: string | null;
+  /** P6.2 (76): a transfer between own accounts — the own account / card it mentions (masked description). */
+  ownAccount: string | null;
   /** Most recent transactions (when the scan kept samples). */
   samples?: Array<{ date: string; amount: number; currency: string | null; category: string | null }>;
 };
@@ -105,6 +112,9 @@ export type BuildGroupsOptions = {
   resolveEntity?: EntityResolver;
   /** P6: type words and bank-operation patterns (default: the built-in vocabulary). */
   vocab?: PayeeVocabulary;
+  /** P6.2: own accounts / cards; `entityOf` = the directory entry a group resolves to (for its requisites). */
+  own?: OwnMatcher;
+  ownOfEntity?: (entityId: number) => string | null;
 };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -147,13 +157,15 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       if (cleanPayeeDisplay(s.spelling).toLowerCase() !== s.spelling.toLowerCase()) noisy = true;
     }
     const name = spellings[0].spelling;
-    const clean = spellings.find((s) => cleanPayeeDisplay(s.spelling).toLowerCase() === s.spelling.toLowerCase() && s.spelling !== s.spelling.toUpperCase());
-    const suggestedName = clean ? clean.spelling : cleanPayeeDisplay(name);
+    // P6.2: the most used spelling's own letter case, never the matching key.
+    const suggestedName = canonicalSpelling(spellings.map((s) => ({ spelling: s.spelling, count: rowsOf(s) })));
     const sliceList = [...slices.values()];
     const entity = opts.resolveEntity ? opts.resolveEntity(name, acc.key) : null;
     const vocab = opts.vocab ?? defaultVocabulary();
     const bc = brandCoreOfKey(acc.key, vocab);
     const bankOperation = spellings.map((s) => bankOperationOf(s.spelling, vocab)).find((x) => x != null) ?? null;
+    const ownHit = opts.own ? spellings.map((s) => opts.own!.inText(s.spelling)).find((x) => x != null) : null;
+    const ownAccount = ownHit ? describeOwnAccount(ownHit) : entity && opts.ownOfEntity ? opts.ownOfEntity(entity.id) : null;
     const samples = spellings.some((s) => s.samples)
       ? spellings
           .flatMap((s) => s.samples ?? [])
@@ -181,6 +193,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       entityName: entity?.name ?? null,
       brand: { core: bc.core, removed: bc.removed, typeOnly: bc.typeOnly, hint: bc.hint },
       bankOperation,
+      ownAccount,
       ...(samples ? { samples } : {}),
     });
   }
@@ -199,9 +212,9 @@ type Edge = { a: number; b: number; confidence: number; reason: string; sameBran
 // Pair scoring lives in ./score-keys.ts (pure, also used by the web picker).
 export { scoreKeys, type KeyScore };
 
-/** Groups that never take part in merchant clustering: no brand (only type words) or a bank service row. */
+/** Groups that never take part in merchant clustering: no brand (only type words), a bank service row or an own transfer. */
 export function clusterable(g: PayeeGroup): boolean {
-  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null;
+  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
 }
 
 /** Score a pair of groups; null when they should not be clustered. */
@@ -333,7 +346,8 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
         : brandEdge
           ? `Різні бренд-токени («${groups[brandEdge.a].brand.core}» / «${groups[brandEdge.b].brand.core}»): назви лише схожі, автоматично не зливаються.`
           : null,
-      suggestedName: lead.suggestedName,
+      // P6.2: across every member's spellings, so one mixed-case spelling anywhere wins over ALL CAPS.
+      suggestedName: canonicalSpelling(lead.spellings, { mixedOnly: true }) || canonicalSpelling(members.flatMap((g) => g.spellings), { mixedOnly: true }) || lead.suggestedName,
       suggestedType: lead.type,
       count: members.reduce((n, g) => n + g.count, 0),
       total: round2(members.reduce((n, g) => n + g.total, 0)),

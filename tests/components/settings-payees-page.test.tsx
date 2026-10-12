@@ -61,6 +61,7 @@ function setup() {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string }) => {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
+    if (url === "/api/payees/settings") return { ok: true, json: async () => ({ language: "en" }) };
     if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
     if (url.startsWith("/api/payees/requisites?action=whose")) {
       return {
@@ -275,7 +276,7 @@ describe("Settings → Payees paging", () => {
     }));
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
-      json: async () => ({ groups: many, totalGroups: 60, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities: [], batches: [], settings: { advancedMode: false, identifierKinds: [], importHint: true } }),
+      json: async () => ({ groups: many, totalGroups: 60, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities: [], batches: [], settings: { advancedMode: false, identifierKinds: [], importHint: true }, language: "en" }),
     })));
     render(
       <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>

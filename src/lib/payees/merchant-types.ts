@@ -254,3 +254,59 @@ export function suggestMerchantType(
   }
   return null;
 }
+
+/**
+ * P6.2 (B29): the suggestion for a directory entry, by FIELD. Only the
+ * canonical name gives a STRONG suggestion (one that bulk assignment may
+ * use); a match found through an alias is a WEAK one with the alias named
+ * in its reason (`alias “Apteka Epitsentr”: слово-тип «аптека»`), so
+ * «Епіцентр» is never proposed as a pharmacy for one odd spelling. When the
+ * name and the aliases point to different types the entry is MIXED and no
+ * automatic assignment is offered for it.
+ */
+export type EntityTypeHint = MerchantTypeRef & {
+  reason: string;
+  source: MerchantTypeSuggestion["source"];
+  strength: "strong" | "weak";
+  field: "name" | "alias";
+  /** The text the suggestion came from (the name, or the alias spelling). */
+  matched: string;
+};
+
+export type EntityTypeHints = {
+  /** The strong suggestion, else the first weak one (null when none). */
+  hint: EntityTypeHint | null;
+  /** Every suggestion found, name first. */
+  all: EntityTypeHint[];
+  /** Name / aliases suggest different types. */
+  mixed: boolean;
+  mixedReason: string | null;
+};
+
+export function entityMerchantTypeHints(
+  entity: { name: string; aliases: ReadonlyArray<{ pattern: string; mode: string }> },
+  types: readonly MerchantType[],
+  opts: { vocab?: PayeeVocabulary } = {},
+): EntityTypeHints {
+  const all: EntityTypeHint[] = [];
+  const s = suggestMerchantType([entity.name], types, opts);
+  if (s) all.push({ group: s.type.group, name: s.type.name, reason: s.reason, source: s.source, strength: "strong", field: "name", matched: entity.name });
+  const seen = new Set<string>([payeeMatchKey(entity.name)]);
+  for (const a of entity.aliases) {
+    if (a.mode !== "exact") continue;
+    const k = payeeMatchKey(a.pattern);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const w = suggestMerchantType([a.pattern], types, opts);
+    if (w) all.push({ group: w.type.group, name: w.type.name, reason: `alias “${a.pattern}”: ${w.reason}`, source: w.source, strength: "weak", field: "alias", matched: a.pattern });
+  }
+  const distinct: EntityTypeHint[] = [];
+  for (const h of all) if (!distinct.some((d) => sameMerchantType(d, h))) distinct.push(h);
+  const mixed = distinct.length > 1;
+  return {
+    hint: all[0] ?? null,
+    all,
+    mixed,
+    mixedReason: mixed ? `змішаний: ${distinct.map((d) => `${formatMerchantType(d)} (${d.field === "name" ? "назва" : `alias “${d.matched}”`})`).join(" / ")}` : null,
+  };
+}

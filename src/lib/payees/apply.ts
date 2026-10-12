@@ -24,7 +24,7 @@ import { encryptStaged } from "@/lib/crypto/staging-envelope";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { readStoredPayees, writeStoredPayees, type PayeeBatchJournal, type RewriteTable } from "./batches";
 import type { PayeeMatcher } from "./directory";
-import { payeeMatchKey } from "./match-key";
+import { caseOnlyChange, payeeMatchKey } from "./match-key";
 
 /** Most rows one apply may rewrite (undo data grows with it). */
 export const PAYEE_APPLY_MAX_ROWS = 20_000;
@@ -37,7 +37,8 @@ export type ApplyPlan = {
   rows: Array<{ t: RewriteTable; id: string; entityId: number }>;
   byTable: Record<RewriteTable, number>;
   /** Distinct spellings that will change, most rows first. */
-  changes: Array<{ from: string; to: string; entityId: number; count: number }>;
+  /** P6.2: `caseOnly` = the rename changes nothing but letter case. */
+  changes: Array<{ from: string; to: string; entityId: number; count: number; caseOnly: boolean }>;
   /** Payees matching two or more entities: left alone. */
   conflicts: Array<{ payee: string; entities: string[]; count: number }>;
   total: number;
@@ -118,7 +119,7 @@ export async function planPayeeApply(opts: {
     }
   }
   const near = new Map<string, { payee: string; entityId: number; count: number }>();
-  const changes = new Map<string, { from: string; to: string; entityId: number; count: number }>();
+  const changes = new Map<string, ApplyPlan["changes"][number]>();
   const conflicts = new Map<string, { payee: string; entities: string[]; count: number }>();
   for (const t of opts.tables ?? REWRITE_TABLES) {
     let after: string | null = null;
@@ -168,7 +169,7 @@ export async function planPayeeApply(opts: {
         plan.rows.push({ t, id: String(r.id), entityId: m.entityId });
         plan.byTable[t]++;
         const ck = `${m.entityId}\u0000${plain}`;
-        const c = changes.get(ck) ?? { from: plain, to: m.name, entityId: m.entityId, count: 0 };
+        const c = changes.get(ck) ?? { from: plain, to: m.name, entityId: m.entityId, count: 0, caseOnly: caseOnlyChange(plain, m.name) };
         c.count++;
         changes.set(ck, c);
       }

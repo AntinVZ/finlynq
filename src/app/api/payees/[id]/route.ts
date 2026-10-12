@@ -36,6 +36,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     history,
     merchantTypes: overview.merchantTypes,
     merchantTypeHint: overview.entities.find((x) => x.id === id)?.merchantTypeHint ?? null,
+    merchantTypeMixed: overview.entities.find((x) => x.id === id)?.merchantTypeMixed ?? null,
     categories: [...names.categories.entries()].map(([cid, name]) => ({ id: cid, name })).sort((a, b) => a.name.localeCompare(b.name)),
     currency: overview.currency,
   });

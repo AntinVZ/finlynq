@@ -17,6 +17,8 @@
  *   typeWordsOff        (P6) built-in type words switched off
  *   bankOpsExtra        (P6) the user's own bank-operation patterns
  *   bankOpsOff          (P6) built-in bank-operation patterns switched off
+ *   language            (P6.2) the Studio's interface language, "uk" (default) or "en";
+ *                       Finlynq has no app-wide language setting yet
  */
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
@@ -36,7 +38,11 @@ export type PayeeStudioSettings = {
   typeWordsOff: string[];
   bankOpsExtra: string[];
   bankOpsOff: string[];
+  language: StudioLanguage;
 };
+
+export const STUDIO_LANGUAGES = ["uk", "en"] as const;
+export type StudioLanguage = (typeof STUDIO_LANGUAGES)[number];
 
 /** Most entries one vocabulary list may hold; each ≤ 60 characters. */
 export const VOCAB_LIST_MAX = 200;
@@ -54,6 +60,7 @@ export const DEFAULT_PAYEE_SETTINGS: PayeeStudioSettings = {
   typeWordsOff: [],
   bankOpsExtra: [],
   bankOpsOff: [],
+  language: "uk",
 };
 
 /** A list of short words / phrases: trimmed, deduplicated, ≤ 60 chars each, ≤ VOCAB_LIST_MAX. */
@@ -92,6 +99,7 @@ export function coercePayeeSettings(raw: unknown): PayeeStudioSettings {
     typeWordsOff: wordList(v.typeWordsOff),
     bankOpsExtra: wordList(v.bankOpsExtra),
     bankOpsOff: wordList(v.bankOpsOff),
+    language: (STUDIO_LANGUAGES as readonly string[]).includes(String(v.language)) ? (v.language as StudioLanguage) : DEFAULT_PAYEE_SETTINGS.language,
   };
 }
 

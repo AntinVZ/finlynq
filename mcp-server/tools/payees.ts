@@ -51,12 +51,14 @@ import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
-import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
+import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, suspiciousOf, type PayeeOverview } from "../../src/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
 import { mineIdentifiers, proposeMined } from "../../src/lib/payees/mine";
 import { findWhose } from "../../src/lib/payees/whose";
 import { loadPayeeNameMaps } from "../../src/lib/payees/scan";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
+import { describeOwnAccount, loadOwnAccounts, loadOwnMatcher } from "../../src/lib/payees/own-accounts";
+import { BULK_DEFAULT_THRESHOLD, BULK_MAX, buildBulkCandidates, commitBulkRegistry, type BulkItem, type BulkRow } from "../../src/lib/payees/bulk-registry";
 
 const ymdArg = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
@@ -147,14 +149,17 @@ function opOut(r: PayeeOpResult) {
     rows: {
       total: r.rows.total,
       byTable: r.rows.byTable,
-      changes: r.rows.changes.slice(0, 20).map((c) => ({ from: c.from, to: c.to, count: c.count })),
+      changes: r.rows.changes.slice(0, 20).map((c) => ({ from: c.from, to: c.to, count: c.count, ...(c.caseOnly ? { caseOnly: true } : {}) })),
       ...(r.rows.conflicts.length ? { conflicts: r.rows.conflicts.slice(0, 20) } : {}),
     },
     ...(r.undo ? { undo: r.undo } : {}),
     ...(r.warnings.length ? { warnings: r.warnings } : {}),
     ...(r.blocked ? { blocked: r.blocked } : {}),
     ...(r.emptyReason ? { emptyReason: r.emptyReason } : {}),
-    ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to })) } : {}),
+    ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to, ...(t.via ? { matched_by: t.via } : {}) })) } : {}),
+    ...(r.ownAccounts.added.length || r.ownAccounts.updated.length || r.ownAccounts.removed.length ? { ownAccounts: r.ownAccounts } : {}),
+    ...(r.reviewed.length ? { reviewed: r.reviewed.map((x) => ({ entity_id: x.id, name: x.name, reviewed: x.reviewed })) } : {}),
+    ...(r.skipped.length ? { merchantTypeSkipped: r.skipped.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, reason: t.reason })) } : {}),
     ...(r.merchantTypes.added.length || r.merchantTypes.updated.length || r.merchantTypes.removed.length ? { merchantTypes: r.merchantTypes } : {}),
   };
 }
@@ -193,7 +198,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           name: e.name,
           type: e.type,
           merchant_type: e.merchantType ? formatMerchantType(e.merchantType) : null,
-          ...(e.merchantTypeHint ? { merchant_type_hint: `${formatMerchantType(e.merchantTypeHint)} (${e.merchantTypeHint.reason}; suggestion only — set it with op=update merchant_type after the user agrees)` } : {}),
+          ...(e.merchantTypeHint
+            ? {
+                merchant_type_hint: `${formatMerchantType(e.merchantTypeHint)} (${e.merchantTypeHint.reason}; ${e.merchantTypeHint.strength === "weak" ? "WEAK: matched through an alias, not the name" : "from the name"}; suggestion only — set it with op=update merchant_type after the user agrees)`,
+              }
+            : {}),
+          ...(e.merchantTypeMixed ? { merchant_type_mixed: `${e.merchantTypeMixed} — no automatic type` } : {}),
           count: e.count,
           total: e.total,
           lastDate: e.lastDate,
@@ -282,6 +292,39 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     }
   }
 
+  /** P6.2 (82): create the chosen bulk rows as directory entries — two-step, one batch. */
+  async function bulkCreate(items: BulkItem[], token: string | undefined) {
+    if (!dek) return err("Unlock required: payee changes need the encryption key. Sign in to Finlynq in the browser, then retry.");
+    try {
+      const o = await overview();
+      const preview = await commitBulkRegistry({ executor: db, userId, dek, overview: o, items, actor: "mcp", dryRun: true });
+      const payload = { op: "bulk_create", items, fingerprint: preview.fingerprint, created: preview.bulk.created };
+      const out = (r: typeof preview) => ({ ...opOut(r), bulk: r.bulk });
+      if (!token) return dataResponse({ preview: true, ...out(preview), confirmationToken: signPreviewToken(userId, "manage_payees_bulk_create", payload) });
+      const check = verifyPreviewToken(token, userId, "manage_payees_bulk_create", payload);
+      if (!check.valid) return err(`Confirmation token invalid: ${check.reason}. The data may have changed; re-call without confirmation_token to refresh the preview.`);
+      const done = await commitBulkRegistry({ executor: db, userId, dek, overview: o, items, actor: "mcp" });
+      return dataResponse({
+        ...out(done),
+        next: `${done.bulk.pendingRows} stored row(s) still carry other spellings: preview op=apply entity_ids=[…] (or the web Apply) to rename them.`,
+        ...(done.batchId != null ? { undoWith: `manage_payees op=undo batch_id=${done.batchId} (within 30 days)` } : {}),
+      });
+    } catch (e) {
+      if (e instanceof PayeeDirectoryError || e instanceof PayeeBatchError) return err(e.message);
+      throw e;
+    }
+  }
+  const bulkRowOut = (r: BulkRow) => ({
+    row_id: r.rowId,
+    name: r.name,
+    ...(r.merchantTypeHint ? { merchant_type_hint: `${r.merchantTypeHint.group} → ${r.merchantTypeHint.name}`, hint_reason: r.merchantTypeHint.reason } : {}),
+    spellings: r.spellings.slice(0, 20),
+    rows: r.rows,
+    transactions: r.transactions,
+    confidence: r.confidence,
+    ...(r.personReason ? { person_reason: r.personReason } : {}),
+  });
+
   async function opEntity(entityId: number) {
     const o = await overview();
     const e = o.directory.find((x) => x.id === entityId);
@@ -355,13 +398,21 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     .optional()
     .describe("Requisites: iban | tax_id | edrpou | card_last4 (a full card number is cut to its last 4 digits) | crypto_wallet.");
   const applyArg = z.boolean().optional().describe("Also rename stored payees to the canonical name (default true).");
+  const ownAccountArgs = {
+    iban: z.string().max(40).nullable().optional(),
+    card: z.string().max(30).nullable().optional().describe("Last 4 digits or a mask (\"**** 1234\"). Never a full card number."),
+    bank: z.string().max(60).nullable().optional(),
+    label: z.string().max(60).nullable().optional(),
+    currency: z.string().max(3).nullable().optional(),
+    owner: z.enum(["me", "spouse", "business"]).optional().describe("me (default), spouse, business."),
+  };
   const toAliases = (a: Array<string | { pattern: string; mode?: (typeof ALIAS_MODES)[number] }> | undefined) =>
     (a ?? []).map((x) => (typeof x === "string" ? { pattern: x } : x));
 
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, mine_identifiers, whose (who has this card / IBAN / code), dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -426,7 +477,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         op: z.literal("set_merchant_type"),
         merchant_type: z.union([z.number().int().positive(), z.string().min(1).max(170)]).nullable().describe("The type to set (id, \"Group → Position\", or a unique position / group name); null clears."),
         entity_ids: z.array(z.number().int().positive()).max(5000).optional().describe("These entries…"),
-        type_word: z.string().min(1).max(60).optional().describe("…or every entry whose name / exact alias carries this type word, e.g. \"ресторан\"."),
+        type_word: z.string().min(1).max(60).optional().describe("…or every entry whose canonical NAME carries this type word or a synonym (аптека = apteka = pharmacy), e.g. \"ресторан\". Alias-only matches and mixed entries are listed as skipped, not changed."),
         only_untyped: z.boolean().optional().describe("Leave entries that already have a type alone."),
         confirmation_token: tokenArg,
       }),
@@ -588,6 +639,46 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         proposal_ids: z.array(z.number().int().positive()).min(1).max(1000),
       }),
       z.object({
+        op: z.literal("suspicious"),
+        include_reviewed: z.boolean().optional().describe("Also list entries already marked as checked."),
+        limit: z.number().int().positive().max(1000).optional().describe("Most entries (default 100)."),
+      }),
+      z.object({
+        op: z.literal("mark_reviewed"),
+        entity_ids: z.array(z.number().int().positive()).min(1).max(500),
+        reviewed: z.boolean().optional().describe("false clears the mark (default true)."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("delete"),
+        entity_id: z.number().int().positive().describe("The directory entry to remove; its transactions keep their payees as they are."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("own_accounts"),
+      }),
+      z.object({
+        op: z.literal("bulk_review"),
+        threshold: z.number().min(0).max(1).optional().describe(`Least cluster confidence (default ${BULK_DEFAULT_THRESHOLD}).`),
+        limit: z.number().int().positive().max(2000).optional().describe("Most rows (default 500)."),
+      }),
+      z.object({
+        op: z.literal("bulk_create"),
+        items: z
+          .array(z.object({ row_id: z.string().min(1).max(80), name: z.string().min(1).max(200).optional(), merchant_type: merchantTypeArg }))
+          .min(1)
+          .max(BULK_MAX)
+          .describe(`Rows from bulk_review the user kept (at most ${BULK_MAX}); name = edited name; merchant_type only when the user confirmed it.`),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("own_accounts_edit"),
+        add: z.array(z.object(ownAccountArgs)).max(50).optional().describe("New own accounts / cards: iban and / or card (LAST 4 digits or a mask; a full number is refused)."),
+        update: z.array(z.object({ id: z.number().int().positive(), ...ownAccountArgs })).max(50).optional().describe("Changed fields by id (from op=own_accounts)."),
+        remove: z.array(z.number().int().positive()).max(50).optional(),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
         op: z.literal("undo"),
         batch_id: z.number().int().positive().describe("A batch_id from a write result or op=batches."),
         confirmation_token: tokenArg,
@@ -691,12 +782,59 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
                 accounts: c.accounts.map((a) => a.name),
                 examples: c.examples,
               })),
+              ...(r.own ? { yourAccount: `Це ваш рахунок: ${r.own.description}` } : {}),
               ...(r.hints.length ? { hints: r.hints } : {}),
               bankRowsMentioning: r.bankRows,
               ...(r.truncated ? { truncated: true } : {}),
               ...(dek ? {} : { note: NO_DEK_NOTE }),
             });
           }
+          case "own_accounts": {
+            if (!dek) return err("Unlock required: own accounts are encrypted.");
+            const list = await loadOwnAccounts(db, userId, dek);
+            return dataResponse({
+              own_accounts: list.map((a) => ({
+                id: a.id,
+                ...(a.iban ? { iban: maskIdentifier("iban", a.iban) } : {}),
+                ...(a.cardLast4 ? { card: `•••• ${a.cardLast4}` } : {}),
+                bank: a.bank,
+                label: a.label,
+                currency: a.currency,
+                owner: a.owner,
+                description: describeOwnAccount(a),
+              })),
+              howTo: "These are the user's own accounts and cards: never suggested as a merchant's requisites, transfers to them are not spend. Edit with op=own_accounts_edit (two-step, undoable).",
+            });
+          }
+          case "bulk_review": {
+            const o = await overview();
+            const c = buildBulkCandidates(o, { threshold: input.threshold });
+            const limit = input.limit ?? 500;
+            return dataResponse({
+              threshold: c.threshold,
+              rows: c.rows.slice(0, limit).map(bulkRowOut),
+              total: c.rows.length,
+              people: c.people.slice(0, 200).map(bulkRowOut),
+              left: c.left,
+              howTo: `Show the table to the user; they untick rows, edit names, confirm types (hints are never applied by themselves). Then op=bulk_create items=[{row_id, name?, merchant_type?}] (two-step, ONE batch, undoable 30 days; at most ${BULK_MAX} per set). People / ФОП are never in a set: decide them one by one (op=create / op=merge). Stored payees are not renamed: op=apply afterwards.`,
+              ...scanMeta(o),
+            });
+          }
+          case "bulk_create":
+            return await bulkCreate(
+              input.items.map((x) => ({ rowId: x.row_id, ...(x.name ? { name: x.name } : {}), ...(x.merchant_type != null ? { merchantType: x.merchant_type } : {}) })),
+              input.confirmation_token,
+            );
+          case "own_accounts_edit":
+            return await writeOp(
+              {
+                op: "own_accounts",
+                add: input.add,
+                update: input.update,
+                remove: input.remove,
+              },
+              input.confirmation_token,
+            );
           case "mine_identifiers": {
             if (!dek) return err("Unlock required: payees and notes are encrypted.");
             const directory = await loadDirectory(db, userId, dek);
@@ -719,6 +857,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               links: r.links.map((l) => ({ ref: l.ref, payee: l.payee, looksLike: { entity_id: l.entity.id, name: l.entity.name }, via: l.via, rows: l.rows })),
               scanned: r.scanned,
               truncated: r.truncated,
+              ...(r.ownSkipped ? { ownSkipped: r.ownSkipped, ownNote: "Requisites of the user's own accounts / cards are left out." } : {}),
               howTo: "Values are masked. To keep some, call op=propose_identifiers refs=[…] — they become DRAFT proposals the user approves (AI review page or op=approve). A card's last 4 digits are weak evidence: never treat them as proof on their own.",
             });
           }
@@ -750,6 +889,20 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return await writeOp({ op: "apply", entityIds: input.entity_ids }, input.confirmation_token);
           case "undo":
             return await writeOp({ op: "undo", batchId: input.batch_id }, input.confirmation_token);
+          case "suspicious": {
+            const o = await overview();
+            const list = suspiciousOf(o, { includeReviewed: input.include_reviewed });
+            return dataResponse({
+              entries: list.slice(0, input.limit ?? 100).map((x) => ({ entity_id: x.id, name: x.name, reasons: x.reasons.map((r) => r.reason), transactions: x.count, spellings: x.spellings })),
+              total: list.length,
+              howTo: "Nothing changes by itself. Ask the user, then: op=update name=… (rename), op=merge into_entity_id=… entity_ids=[id] (merge), op=delete entity_id=… (removes the entry; rows stay), or op=mark_reviewed entity_ids=[…] (checked; not listed again). All two-step, undoable.",
+              ...scanMeta(o),
+            });
+          }
+          case "mark_reviewed":
+            return await writeOp({ op: "mark_reviewed", entityIds: input.entity_ids, reviewed: input.reviewed }, input.confirmation_token);
+          case "delete":
+            return await writeOp({ op: "delete", entityId: input.entity_id }, input.confirmation_token);
           case "insights": {
             const directory = dek ? await loadDirectory(db, userId, dek) : [];
             const { currency, convert } = await makeSliceConverter(userId);
@@ -764,6 +917,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               recentDays: input.recent_days,
               limit: input.limit,
               vocab: vocabularyOf(await getPayeeSettings(db, userId)),
+              own: await loadOwnMatcher(db, userId, dek),
               ...(input.merchant_type || input.merchant_type_group_by
                 ? await (async () => {
                     const types = await loadMerchantTypes(db, userId);

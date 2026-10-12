@@ -2,6 +2,7 @@
  * Shared types and small renderers for the Payee Studio pages.
  */
 import { Badge } from "@/components/ui/badge";
+import type { StudioT, StudioTextKey } from "@/lib/payees/i18n";
 
 export type NamedCount = { id: number; name: string; count: number };
 export type TypeGuess = { type: string; confidence: number; isPerson: boolean; reason: string };
@@ -27,6 +28,8 @@ export type PayeeGroupRow = {
   brand?: { core: string; removed: string[]; typeOnly: boolean; hint?: { group: string; name: string } | null };
   /** P6: the bank's own service row (matched pattern). */
   bankOperation?: string | null;
+  /** P6.2: a transfer between own accounts (masked description of the account). */
+  ownAccount?: string | null;
 };
 
 export type PayeeClusterRow = {
@@ -56,7 +59,9 @@ export type EntityRow = {
   hasLogo?: boolean;
   /** P6: the entry's merchant type, and a suggestion when it has none. */
   merchantType?: { id: number; group: string; name: string } | null;
-  merchantTypeHint?: { group: string; name: string; reason: string } | null;
+  /** P6.2: `strength` weak = found through an alias; `merchantTypeMixed` = name and aliases disagree. */
+  merchantTypeHint?: { group: string; name: string; reason: string; strength?: "strong" | "weak"; field?: "name" | "alias"; matched?: string } | null;
+  merchantTypeMixed?: string | null;
   count: number;
   total: number;
   lastDate: string | null;
@@ -84,9 +89,13 @@ export type PayeeSettings = {
   typeWordsOff?: string[];
   bankOpsExtra?: string[];
   bankOpsOff?: string[];
+  /** P6.2: the Studio interface language. */
+  language?: "uk" | "en";
 };
 
 export type PayeesResponse = {
+  /** P6.2 (83): entries with a short / meaningless name to check. */
+  suspicious?: import("./suspicious-panel").SuspiciousRow[];
   draftCount?: number;
   lookalikeCount?: number;
   unrenamedRows?: number;
@@ -102,49 +111,51 @@ export type PayeesResponse = {
   undecryptable: number;
 };
 
-const TYPE_LABEL: Record<string, string> = {
-  retail: "Retail",
-  service: "Service",
-  bank: "Bank",
-  government: "Government",
-  person: "Person",
-  sole_proprietor: "Sole proprietor",
-  company: "Company",
-  other: "Other",
+const TYPE_LABEL: Record<string, StudioTextKey> = {
+  retail: "types.retail",
+  service: "types.service",
+  bank: "types.bank",
+  government: "types.government",
+  person: "types.person",
+  sole_proprietor: "types.sole_proprietor",
+  company: "types.company",
+  other: "types.other",
 };
 
 export const PAYEE_TYPE_OPTIONS = Object.keys(TYPE_LABEL);
 
-const BATCH_LABEL: Record<string, string> = {
-  create: "Added to directory",
-  update: "Edited",
-  alias_add: "Alias added",
-  alias_remove: "Alias removed",
-  alias_from_rule: "Aliases from a rule",
-  identifiers: "Requisites changed",
-  merge: "Merged",
-  split: "Split",
-  apply: "Payees renamed",
-  delete: "Removed from directory",
-  approve: "AI proposals accepted",
-  import_hint: "Canonical names on import",
-  autopilot: "Autopilot",
-  dictionary_import: "Dictionary imported",
-  move_remainder: "Payee renamed, rest kept as tag / note",
+const BATCH_LABEL: Record<string, StudioTextKey> = {
+  create: "batch.create",
+  update: "batch.update",
+  alias_add: "batch.alias_add",
+  alias_remove: "batch.alias_remove",
+  alias_from_rule: "batch.alias_from_rule",
+  identifiers: "batch.identifiers",
+  merge: "batch.merge",
+  split: "batch.split",
+  apply: "batch.apply",
+  delete: "batch.delete",
+  approve: "batch.approve",
+  import_hint: "batch.import_hint",
+  autopilot: "batch.autopilot",
+  dictionary_import: "batch.dictionary_import",
+  move_remainder: "batch.move_remainder",
 };
 
 /** "Merged · 12 rows · by AI (MCP)" */
-export function batchLabel(b: BatchRow): string {
-  const who = b.actor === "mcp" ? "by AI (MCP)" : b.actor === "autopilot" ? "by autopilot" : b.actor === "import" ? "on import" : "by you";
-  const rows = b.summary.rows ? ` · ${b.summary.rows} row${b.summary.rows === 1 ? "" : "s"}` : "";
-  return `${BATCH_LABEL[b.kind] ?? b.kind}${rows} · ${who}`;
+export function batchLabel(b: BatchRow, t: StudioT): string {
+  const who = t(b.actor === "mcp" ? "batch.byMcp" : b.actor === "autopilot" ? "batch.byAutopilot" : b.actor === "import" ? "batch.onImport" : "batch.byYou");
+  const rows = b.summary.rows ? ` · ${t("common.rows", { n: b.summary.rows })}` : "";
+  const kind = BATCH_LABEL[b.kind];
+  return `${kind ? t(kind) : b.kind}${rows} · ${who}`;
 }
 
-export function typeLabel(t: string): string {
-  return TYPE_LABEL[t] ?? t;
+export function typeLabel(type: string, t: StudioT): string {
+  const key = TYPE_LABEL[type];
+  return key ? t(key) : type;
 }
 
-export function confidenceBadge(c: number) {
+export function confidenceBadge(c: number, t: StudioT) {
   const pct = Math.round(c * 100);
   const tone =
     c >= 0.85
@@ -153,15 +164,15 @@ export function confidenceBadge(c: number) {
         ? "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"
         : "border-muted-foreground/30 text-muted-foreground";
   return (
-    <Badge variant="outline" className={tone} title="How sure the match is">
+    <Badge variant="outline" className={tone} title={t("common.confidenceTitle")}>
       {pct}%
     </Badge>
   );
 }
 
-export const needsDecisionBadge = (title?: string | null) => (
+export const needsDecisionBadge = (title: string | null | undefined, t: StudioT) => (
   <Badge variant="outline" className="border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300" title={title ?? undefined}>
-    Needs decision
+    {t("common.needsDecision")}
   </Badge>
 );
 

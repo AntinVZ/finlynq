@@ -299,7 +299,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
   }
   const fmt = (n: number) => Math.round(n * 100) / 100;
   // P6: no brand (only type words) or the bank's own rows → never proposed as a merchant.
-  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null;
+  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
   const unrecognized = o.groups
     .filter(proposable)
     .slice(0, limit)

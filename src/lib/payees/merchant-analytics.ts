@@ -39,6 +39,7 @@ import { payeeRemainder } from "./lookalikes";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import type { PayeeMatcher } from "./directory";
 import { bankOperationOf, type PayeeVocabulary } from "./type-words";
+import type { OwnMatcher } from "./own-accounts";
 
 export const MERCHANT_SCAN_BATCH = 5_000;
 export const MERCHANT_SCAN_MAX = 200_000;
@@ -168,6 +169,8 @@ export async function computeMerchantAnalytics(opts: {
   categoryNames?: Map<number, string>;
   /** P6 (B25): bank-operation patterns; those rows are not merchants and stay out of every ranking. */
   vocab?: PayeeVocabulary;
+  /** P6.2: own accounts / cards — transfers to them are not merchants. */
+  own?: OwnMatcher;
   batchSize?: number;
   maxRows?: number;
 }): Promise<MerchantAnalytics> {
@@ -216,6 +219,7 @@ export async function computeMerchantAnalytics(opts: {
         const m = matcher.match(spelling);
         if (!key) who = null;
         else if (m.kind !== "match" && !only && bankOperationOf(spelling, opts.vocab)) who = null;
+        else if (!only && opts.own && (opts.own.inText(spelling) || (m.kind === "match" && matcher.entity(m.entityId) && opts.own.forEntity(matcher.entity(m.entityId)!)))) who = null;
         else if (m.kind === "match") {
           const e = matcher.entity(m.entityId);
           const type = e?.type ?? "other";

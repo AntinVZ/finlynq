@@ -12,7 +12,9 @@ import { computeMerchantAnalytics, type Period } from "./merchant-analytics";
 import { computeLookalikes, describeRejections, loadRejections, rejectionPredicate } from "./lookalikes";
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import type { PayeeVocabulary } from "./type-words";
-import { loadMerchantTypes, suggestMerchantType, type MerchantType, type MerchantTypeRef } from "./merchant-types";
+import { entityMerchantTypeHints, loadMerchantTypes, type EntityTypeHint, type MerchantType, type MerchantTypeRef } from "./merchant-types";
+import { listSuspicious, type SuspiciousEntry } from "./suspicious";
+import { describeOwnAccount, loadOwnMatcher, type OwnMatcher } from "./own-accounts";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -42,7 +44,9 @@ export type EntitySummary = {
   hasLogo: boolean;
   /** P6 (B26): the entry's merchant type, and a suggestion for an untyped entry (never applied by itself). */
   merchantType: (MerchantTypeRef & { id: number }) | null;
-  merchantTypeHint: (MerchantTypeRef & { reason: string }) | null;
+  merchantTypeHint: (MerchantTypeRef & { reason: string; strength: EntityTypeHint["strength"]; field: EntityTypeHint["field"]; matched: string }) | null;
+  /** P6.2 (B29): the name and the aliases suggest different types — no automatic assignment. */
+  merchantTypeMixed: string | null;
   /** Transactions resolving to the entity, and their display-currency total. */
   count: number;
   total: number;
@@ -63,6 +67,8 @@ export type PayeeOverview = {
   vocab: PayeeVocabulary;
   /** P6: the merchant-type dictionary (the virtual starting set when the user has none). */
   merchantTypes: MerchantType[];
+  /** P6.2 (76): the user's own accounts / cards. */
+  own: OwnMatcher;
 };
 
 /** Scan, group and cluster every payee of a user, resolved against the directory. */
@@ -84,6 +90,8 @@ export async function loadPayeeOverview(opts: {
   const matcher = buildPayeeMatcher(directory);
   const vocab = vocabularyOf(await getPayeeSettings(executor, userId));
   const merchantTypes = await loadMerchantTypes(executor, userId);
+  const own = await loadOwnMatcher(executor, userId, dek);
+  const directoryById = new Map(directory.map((e) => [e.id, e]));
   const typeById = new Map(merchantTypes.filter((t) => t.id != null).map((t) => [t.id!, t]));
   const resolveEntity: EntityResolver =
     opts.resolveEntity ??
@@ -97,6 +105,12 @@ export async function loadPayeeOverview(opts: {
     convert,
     resolveEntity,
     vocab,
+    own,
+    ownOfEntity: (id) => {
+      const e = directoryById.get(id);
+      const hit = e ? own.forEntity(e) : null;
+      return hit ? describeOwnAccount(hit) : null;
+    },
   });
   const totals = new Map<number, { count: number; total: number; lastDate: string | null }>();
   for (const g of groups) {
@@ -122,10 +136,13 @@ export async function loadPayeeOverview(opts: {
         const t = e.merchantTypeId == null ? undefined : typeById.get(e.merchantTypeId);
         return t ? { id: t.id!, group: t.group, name: t.name } : null;
       })(),
-      merchantTypeHint: (() => {
-        if (e.merchantTypeId != null) return null;
-        const s = suggestMerchantType([e.name, ...e.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)], merchantTypes, { vocab });
-        return s ? { group: s.type.group, name: s.type.name, reason: s.reason } : null;
+      ...(() => {
+        if (e.merchantTypeId != null) return { merchantTypeHint: null, merchantTypeMixed: null };
+        const h = entityMerchantTypeHints(e, merchantTypes, { vocab });
+        return {
+          merchantTypeHint: h.hint ? { group: h.hint.group, name: h.hint.name, reason: h.hint.reason, strength: h.hint.strength, field: h.hint.field, matched: h.hint.matched } : null,
+          merchantTypeMixed: h.mixedReason,
+        };
       })(),
       count: totals.get(e.id)?.count ?? 0,
       total: Math.round((totals.get(e.id)?.total ?? 0) * 100) / 100,
@@ -144,6 +161,7 @@ export async function loadPayeeOverview(opts: {
     undecryptable: scan.undecryptable,
     vocab,
     merchantTypes,
+    own,
   };
 }
 
@@ -196,10 +214,11 @@ export async function loadMerchantAnalytics(opts: {
   const { executor, userId, dek } = opts;
   const display = opts.currency ?? (await getDisplayCurrency(userId));
   const vocab = vocabularyOf(await getPayeeSettings(executor, userId));
-  const [rateMap, directory, names] = await Promise.all([
+  const [rateMap, directory, names, own] = await Promise.all([
     getRateMap(display, userId),
     dek ? loadDirectory(executor, userId, dek) : Promise.resolve([]),
     loadPayeeNameMaps(executor, userId, dek),
+    loadOwnMatcher(executor, userId, dek),
   ]);
   return computeMerchantAnalytics({
     executor,
@@ -217,5 +236,23 @@ export async function loadMerchantAnalytics(opts: {
     asOf: opts.asOf,
     categoryNames: names.categories,
     vocab,
+    own,
   });
+}
+
+/** P6.2 (83): directory entries with a short / meaningless name, with their rows and spellings. Read only. */
+export function suspiciousOf(o: PayeeOverview, opts: { includeReviewed?: boolean } = {}): SuspiciousEntry[] {
+  const counts = new Map(o.entities.map((e) => [e.id, e.count]));
+  return listSuspicious(
+    o.directory,
+    (id) => ({
+      count: counts.get(id) ?? 0,
+      spellings: o.groups
+        .filter((g) => g.entityId === id)
+        .flatMap((g) => g.spellings.map((s) => ({ spelling: s.spelling, count: s.count })))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    }),
+    { includeReviewed: opts.includeReviewed, vocab: o.vocab },
+  );
 }

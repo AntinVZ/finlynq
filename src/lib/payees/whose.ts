@@ -13,7 +13,9 @@
  *      transaction_bank_links / bank_transaction_id) mentions it. The bank
  *      ledger is only READ.
  * A card's last 4 digits are WEAK: every payee with them is a candidate,
- * with hints to tell them apart (typical amount, dates, accounts). Nothing is
+ * with hints to tell them apart (typical amount, dates, accounts).
+ * P6.2 (76): a requisite from "Мої рахунки і картки" answers «ваш рахунок»
+ * (`own`, first hint): payments to it are transfers between own accounts. Nothing is
  * ever shown in full: requisites and example texts are masked.
  */
 import { sql } from "drizzle-orm";
@@ -21,6 +23,7 @@ import { normalizeDbRows } from "@/lib/db-utils";
 import { payeeMatchKey } from "./match-key";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { extractRequisites, maskSensitiveText, parseIdentifierQuery, type IdentifierQuery } from "./requisites";
+import { describeOwnAccount, loadOwnMatcher, type OwnAccount } from "./own-accounts";
 import { buildPayeeMatcher, findByIdentifier, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
 
 export type MatchedVia = "directory" | "text" | "bank";
@@ -139,6 +142,8 @@ export type WhoseCandidate = {
 export type WhoseReport = {
   query: { kind: IdentifierQuery["kind"]; masked: string; strength: "strong" | "weak" };
   candidates: WhoseCandidate[];
+  /** P6.2: the requisite is one of the user's own accounts / cards. */
+  own: (Pick<OwnAccount, "bank" | "label" | "currency" | "owner"> & { description: string }) | null;
   bankRows: number;
   hints: string[];
   scanned: number;
@@ -264,6 +269,10 @@ export async function findWhose(opts: {
     .sort((x, y) => Number(y.holdsRequisite) - Number(x.holdsRequisite) || y.transactions - x.transactions);
   const weak = im.query.kind === "card_last4";
   const hints: string[] = [];
+  const ownHit = (await loadOwnMatcher(executor, userId, dek)).byValue(im.query.kind, im.query.value);
+  if (ownHit) {
+    hints.push(`Це ваш рахунок: ${describeOwnAccount(ownHit)} («Мої рахунки і картки»). Платежі на нього — перекази між своїми рахунками, не витрати.`);
+  }
   if (weak && candidates.length > 1) {
     hints.push(`The last 4 digits ${im.query.value} belong to ${candidates.length} payees; tell them apart by the typical amount, the dates and the account you paid from:`);
     for (const c of candidates) {
@@ -275,6 +284,7 @@ export async function findWhose(opts: {
   return {
     query: { kind: im.query.kind, masked: im.query.masked, strength: weak ? "weak" : "strong" },
     candidates,
+    own: ownHit ? { bank: ownHit.bank, label: ownHit.label, currency: ownHit.currency, owner: ownHit.owner, description: describeOwnAccount(ownHit) } : null,
     bankRows: im.bankRows,
     hints,
     scanned,

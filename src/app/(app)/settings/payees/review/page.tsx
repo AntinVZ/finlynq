@@ -23,6 +23,7 @@ import { ArrowLeft } from "lucide-react";
 import { confidenceBadge, needsDecisionBadge } from "../_components/payee-ui";
 import { PayeeTypeLabel } from "../_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
+import { useStudioT } from "../_components/i18n";
 
 type Proposal = {
   id: number;
@@ -40,6 +41,7 @@ type Proposal = {
 };
 
 export default function PayeeReviewPage() {
+  const t = useStudioT();
   const { data, error, mutate } = useSWR<{ proposals: Proposal[] }>("/api/payees/proposals", jsonFetcher, { revalidateOnFocus: false });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [threshold, setThreshold] = useState(90);
@@ -63,16 +65,16 @@ export default function PayeeReviewPage() {
     const res = await fetch("/api/payees/proposals", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "reject", ids }) }).catch(() => null);
     setBusy(false);
     if (res?.ok) {
-      setStatus(`Rejected ${ids.length} proposal(s).`);
+      setStatus(t("review.rejected", { n: ids.length }));
       setSelected(new Set());
       await mutate();
-    } else setStatus("Couldn't reject the proposals.");
+    } else setStatus(t("review.rejectFailed"));
   }
 
   async function approved(r: OpPreview) {
     setApproving(null);
     setSelected(new Set());
-    setStatus(`Accepted. ${describeRows(r)} Undo it from Payees → Changes.`);
+    setStatus(t("review.accepted", { rows: describeRows(r, t) }));
     await mutate();
   }
 
@@ -80,66 +82,62 @@ export default function PayeeReviewPage() {
     <div className="max-w-5xl space-y-6">
       <div>
         <Link href="/settings/payees" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:underline">
-          <ArrowLeft className="h-3 w-3" /> Payees
+          <ArrowLeft className="h-3 w-3" /> {t("page.title")}
         </Link>
-        <h1 className="text-2xl font-bold tracking-tight mt-1">AI review</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">Payee clean-up proposed by your AI assistant. Nothing changes until you accept.</p>
+        <h1 className="text-2xl font-bold tracking-tight mt-1">{t("review.title")}</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">{t("review.subtitle")}</p>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Proposals</CardTitle>
-          <CardDescription>
-            Ask your assistant (connected over MCP) to review your payees: it reads a summary, proposes canonical names, types and
-            aliases with a reason and a confidence, and they land here. Accepting renames the stored payees to the canonical name —
-            always previewed first, and undoable for 30 days.
-          </CardDescription>
+          <CardTitle className="text-base">{t("review.proposals")}</CardTitle>
+          <CardDescription>{t("review.description")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <label className="inline-flex items-center gap-2">
-              Threshold
-              <input type="range" min={50} max={99} value={threshold} aria-label="Confidence threshold" onChange={(e) => setThreshold(Number(e.target.value))} />
+              {t("settings.threshold")}
+              <input type="range" min={50} max={99} value={threshold} aria-label={t("review.thresholdAria")} onChange={(e) => setThreshold(Number(e.target.value))} />
               <span className="tabular-nums w-10">{threshold}%</span>
             </label>
             <Button variant="outline" size="sm" disabled={!eligible.length} onClick={() => setSelected(new Set(eligible.map((p) => p.id)))}>
-              Select ≥ {threshold}% ({eligible.length})
+              {t("review.selectAbove", { pct: threshold, n: eligible.length })}
             </Button>
             <Button size="sm" disabled={!selected.size || busy} onClick={() => setApproving([...selected])}>
-              Accept selected{selected.size ? ` (${selected.size})` : ""}
+              {t("review.acceptSelected")}{selected.size ? ` (${selected.size})` : ""}
             </Button>
             <Button variant="outline" size="sm" disabled={!selected.size || busy} onClick={() => reject([...selected])}>
-              Reject selected
+              {t("review.rejectSelected")}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">“Select ≥ threshold” skips proposals that need a decision (people, sole proprietors) or carry a conflict note.</p>
+          <p className="text-xs text-muted-foreground">{t("review.selectNote")}</p>
           {status && <p className="text-sm text-emerald-600 dark:text-emerald-400">{status}</p>}
-          {error && <p className="text-sm text-destructive">Couldn&apos;t load proposals.</p>}
+          {error && <p className="text-sm text-destructive">{t("review.loadFailed")}</p>}
           {!data && !error ? (
-            <p className="text-sm text-muted-foreground">Loading…</p>
+            <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
           ) : proposals.length === 0 ? (
-            <p className="text-sm text-muted-foreground">No proposals waiting. Ask your AI assistant to “review my payees in Finlynq”.</p>
+            <p className="text-sm text-muted-foreground">{t("review.empty")}</p>
           ) : (
             <ul className="space-y-2">
               {proposals.map((p) => (
                 <li key={p.id} className="rounded-lg border p-3 text-sm space-y-1.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <input type="checkbox" aria-label={`Select proposal ${p.canonical}`} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
+                    <input type="checkbox" aria-label={t("review.selectProposal", { name: p.canonical })} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                     <span className="font-medium break-all">{p.canonical}</span>
                     <PayeeTypeLabel className="text-xs text-muted-foreground" type={p.type} />
-                    {confidenceBadge(p.confidence)}
-                    {p.needsDecision && needsDecisionBadge("Involves a private person or sole proprietor")}
+                    {confidenceBadge(p.confidence, t)}
+                    {p.needsDecision && needsDecisionBadge(t("review.personTitle"), t)}
                     {p.entityId != null && (
                       <Link href={`/settings/payees/${p.entityId}`} className="text-xs hover:underline">
-                        extends entry #{p.entityId}
+                        {t("review.extends", { id: p.entityId })}
                       </Link>
                     )}
                     <span className="ml-auto flex gap-1">
                       <Button size="sm" className="h-7 text-xs" onClick={() => setApproving([p.id])}>
-                        Accept…
+                        {t("review.acceptEllipsis")}
                       </Button>
                       <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy} onClick={() => reject([p.id])}>
-                        Reject
+                        {t("review.reject")}
                       </Button>
                     </span>
                   </div>
@@ -155,7 +153,7 @@ export default function PayeeReviewPage() {
                     </div>
                   )}
                   {p.identifiers.length > 0 && (
-                    <p className="text-xs text-muted-foreground">Requisites: {p.identifiers.map((i) => `${i.kind} ${i.kind === "card_last4" ? `•••• ${i.value}` : i.value}`).join(", ")}</p>
+                    <p className="text-xs text-muted-foreground">{t("review.requisites", { list: p.identifiers.map((i) => `${i.kind} ${i.kind === "card_last4" ? `•••• ${i.value}` : i.value}`).join(", ") })}</p>
                   )}
                   {p.notes.map((n) => (
                     <p key={n} className="text-xs text-amber-600 dark:text-amber-400">{n}</p>
@@ -169,15 +167,15 @@ export default function PayeeReviewPage() {
 
       {approving && (
         <OpDialog
-          title={`Accept ${approving.length} proposal(s)`}
+          title={t("review.acceptTitle", { n: approving.length })}
           body={{ action: "approve", ids: approving }}
           endpoint="/api/payees/proposals"
-          confirmLabel="Accept"
+          confirmLabel={t("review.accept")}
           onClose={() => setApproving(null)}
           onDone={approved}
         >
           {proposals.some((p) => approving.includes(p.id) && p.needsDecision) && (
-            <p className="text-xs text-rose-700 dark:text-rose-300">Includes a private person or sole proprietor — make sure it is right.</p>
+            <p className="text-xs text-rose-700 dark:text-rose-300">{t("review.personWarning")}</p>
           )}
         </OpDialog>
       )}

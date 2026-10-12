@@ -28,7 +28,7 @@ function renderEntityPage(response: unknown, settings: Record<string, unknown> =
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string }) => {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
-    if (url === "/api/payees/settings") return { ok: true, json: async () => settings };
+    if (url === "/api/payees/settings") return { ok: true, json: async () => ({ language: "en", ...settings }) };
     if (url === "/api/payees" && body) {
       return { ok: true, json: async () => ({ op: body.op, batchId: null, entity: null, created: false, aliasesAdded: [], aliasesRemoved: 0, identifiersAdded: [], identifiersRemoved: 0, entitiesRemoved: 0, rows: { total: 0, byTable: { transactions: 0, recurring: 0, staged: 0 }, changes: [], conflicts: [], truncated: false }, warnings: [], blocked: null }) };
     }

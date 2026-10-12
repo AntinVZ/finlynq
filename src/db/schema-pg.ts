@@ -2065,6 +2065,8 @@ export const payeeEntities = pgTable("payee_entities", {
   logo: text("logo"),
   // P6 (20261013_payee_merchant_types.sql): group → position; NULL = no type.
   merchantTypeId: integer("merchant_type_id").references((): AnyPgColumn => payeeMerchantTypes.id, { onDelete: "set null" }),
+  // P6.2 (20261014_payee_reviewed.sql): marked as checked in the "Перевірити" list; NULL = not checked.
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -2176,6 +2178,28 @@ export const payeeMerchantTypes = pgTable("payee_merchant_types", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("payee_merchant_types_user_group_name_idx").on(t.userId, t.groupName, t.name),
+]);
+
+// ─── Payee own accounts and cards (P6.2, item 76 / B27) ─────────────────────
+//
+// "Мої рахунки і картки": IBAN, the card's LAST 4 digits, bank and label are
+// user-DEK encrypted; currency and owner (me | spouse | business) are plain.
+// A full card number is never accepted. Changes go through payee batches.
+// Migration: scripts/migrations/20261015_payee_own_accounts.sql.
+export const payeeOwnAccounts = pgTable("payee_own_accounts", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  iban: text("iban"),
+  cardLast4: text("card_last4"),
+  bank: text("bank"),
+  label: text("label"),
+  currency: text("currency"),
+  owner: text("owner").notNull().default("me"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  index("payee_own_accounts_user_idx").on(t.userId),
+  check("payee_own_accounts_owner_check", sql`${t.owner} IN ('me', 'spouse', 'business')`),
+  check("payee_own_accounts_value_check", sql`${t.iban} IS NOT NULL OR ${t.cardLast4} IS NOT NULL`),
 ]);
 
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────

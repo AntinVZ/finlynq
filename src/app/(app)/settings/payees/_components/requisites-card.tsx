@@ -15,6 +15,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import type { StudioT, StudioTextKey } from "@/lib/payees/i18n";
+import { useStudioT } from "./i18n";
 
 export type Requisite = {
   id: number;
@@ -27,13 +29,15 @@ export type Requisite = {
   isActive: boolean;
 };
 
-export const REQUISITE_LABEL: Record<string, string> = {
-  iban: "IBAN accounts",
-  tax_id: "Tax id (ІПН / РНОКПП)",
-  edrpou: "EDRPOU",
-  card_last4: "Cards (last 4 digits)",
-  crypto_wallet: "Crypto wallets",
+export const REQUISITE_LABEL: Record<string, StudioTextKey> = {
+  iban: "requisites.kind.iban",
+  tax_id: "requisites.kind.tax_id",
+  edrpou: "requisites.kind.edrpou",
+  card_last4: "requisites.kind.card_last4",
+  crypto_wallet: "requisites.kind.crypto_wallet",
 };
+
+const kindLabel = (k: string, t: StudioT) => (REQUISITE_LABEL[k] ? t(REQUISITE_LABEL[k]) : k);
 
 const PERSONISH = new Set(["person", "sole_proprietor"]);
 
@@ -45,12 +49,12 @@ export function kindsForType(type: string): string[] {
 }
 
 /** A client-side hint while typing a code (the server checks the digits too). */
-export function codeTypeHint(kind: string, value: string, type: string): string | null {
+export function codeTypeHint(kind: string, value: string, type: string, t: StudioT): string | null {
   const d = value.replace(/\D/g, "");
-  if (kind === "tax_id" && d.length === 8) return "8 digits looks like an EDRPOU (a legal entity's code), not an ІПН.";
-  if (kind === "edrpou" && d.length === 10) return "10 digits looks like an ІПН / РНОКПП (a person or ФОП), not an EDRPOU.";
-  if (kind === "edrpou" && PERSONISH.has(type)) return "A ФОП or private person has no EDRPOU; if this is a company, change the type to Company.";
-  if (kind === "tax_id" && !PERSONISH.has(type) && type !== "other") return "An ІПН belongs to a person or ФОП; consider changing the type.";
+  if (kind === "tax_id" && d.length === 8) return t("requisites.hint.taxIdLooksEdrpou");
+  if (kind === "edrpou" && d.length === 10) return t("requisites.hint.edrpouLooksTaxId");
+  if (kind === "edrpou" && PERSONISH.has(type)) return t("requisites.hint.personNoEdrpou");
+  if (kind === "tax_id" && !PERSONISH.has(type) && type !== "other") return t("requisites.hint.taxIdForPerson");
   return null;
 }
 
@@ -72,22 +76,23 @@ export function RequisitesCard({
   allowedKinds: string[];
   onAction: (a: Action) => void;
 }) {
+  const t = useStudioT();
   const kinds = kindsForType(entityType).filter((k) => allowedKinds.includes(k));
   const [draft, setDraft] = useState({ kind: kinds[0] ?? "iban", value: "", label: "", bank: "", currency: "", isPrimary: false });
   const [editing, setEditing] = useState<{ id: number; label: string; bank: string; currency: string } | null>(null);
-  const hint = codeTypeHint(draft.kind, draft.value, entityType);
+  const hint = codeTypeHint(draft.kind, draft.value, entityType, t);
   const groups = [...new Set([...kinds, ...requisites.map((r) => r.kind)])].filter((k) => requisites.some((r) => r.kind === k));
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Requisites</CardTitle>
+        <CardTitle className="text-base">{t("requisites.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
-        {groups.length === 0 && <p className="text-xs text-muted-foreground">None yet.</p>}
+        {groups.length === 0 && <p className="text-xs text-muted-foreground">{t("requisites.empty")}</p>}
         {groups.map((k) => (
-          <section key={k} aria-label={REQUISITE_LABEL[k] ?? k}>
-            <h3 className="text-xs font-medium text-muted-foreground mb-1">{REQUISITE_LABEL[k] ?? k}</h3>
+          <section key={k} aria-label={kindLabel(k, t)}>
+            <h3 className="text-xs font-medium text-muted-foreground mb-1">{kindLabel(k, t)}</h3>
             <ul className="divide-y rounded-lg border">
               {requisites
                 .filter((r) => r.kind === k)
@@ -98,46 +103,46 @@ export function RequisitesCard({
                     {r.label && <span>{r.label}</span>}
                     {r.bank && <span className="text-xs text-muted-foreground">{r.bank}</span>}
                     {r.currency && <Badge variant="outline">{r.currency}</Badge>}
-                    {r.isPrimary && <Badge variant="secondary">Primary</Badge>}
-                    {!r.isActive && <Badge variant="outline">Inactive</Badge>}
+                    {r.isPrimary && <Badge variant="secondary">{t("requisites.primary")}</Badge>}
+                    {!r.isActive && <Badge variant="outline">{t("requisites.inactive")}</Badge>}
                     {editing?.id === r.id ? (
                       <span className="flex w-full flex-wrap items-center gap-1">
-                        <Input className="h-7 w-36 text-xs" aria-label="Label" placeholder="Label" value={editing.label} onChange={(e) => setEditing({ ...editing, label: e.target.value })} />
-                        <Input className="h-7 w-28 text-xs" aria-label="Bank" placeholder="Bank" value={editing.bank} onChange={(e) => setEditing({ ...editing, bank: e.target.value })} />
-                        <Input className="h-7 w-16 text-xs" aria-label="Currency" placeholder="UAH" value={editing.currency} onChange={(e) => setEditing({ ...editing, currency: e.target.value.toUpperCase() })} />
+                        <Input className="h-7 w-36 text-xs" aria-label={t("requisites.label")} placeholder={t("requisites.label")} value={editing.label} onChange={(e) => setEditing({ ...editing, label: e.target.value })} />
+                        <Input className="h-7 w-28 text-xs" aria-label={t("requisites.bank")} placeholder={t("requisites.bank")} value={editing.bank} onChange={(e) => setEditing({ ...editing, bank: e.target.value })} />
+                        <Input className="h-7 w-16 text-xs" aria-label={t("requisites.currency")} placeholder="UAH" value={editing.currency} onChange={(e) => setEditing({ ...editing, currency: e.target.value.toUpperCase() })} />
                         <Button
                           size="sm"
                           className="h-7 text-xs"
                           onClick={() => {
-                            onAction({ title: "Save requisite details", confirm: "Save", body: { op: "identifiers", entityId, update: [{ id: r.id, label: editing.label.trim() || null, bank: editing.bank.trim() || null, currency: editing.currency.trim() || null }] } });
+                            onAction({ title: t("requisites.saveDetails"), confirm: t("common.save"), body: { op: "identifiers", entityId, update: [{ id: r.id, label: editing.label.trim() || null, bank: editing.bank.trim() || null, currency: editing.currency.trim() || null }] } });
                             setEditing(null);
                           }}
                         >
-                          Save…
+                          {t("common.saveEllipsis")}
                         </Button>
-                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing(null)}>Cancel</Button>
+                        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing(null)}>{t("common.cancel")}</Button>
                       </span>
                     ) : (
                       <span className="ml-auto flex flex-wrap gap-1">
                         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing({ id: r.id, label: r.label ?? "", bank: r.bank ?? "", currency: r.currency ?? "" })}>
-                          Edit
+                          {t("common.edit")}
                         </Button>
                         {r.isActive && !r.isPrimary && (
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: "Make primary", confirm: "Save", body: { op: "identifiers", entityId, update: [{ id: r.id, isPrimary: true }] } })}>
-                            Make primary
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: t("requisites.makePrimary"), confirm: t("common.save"), body: { op: "identifiers", entityId, update: [{ id: r.id, isPrimary: true }] } })}>
+                            {t("requisites.makePrimary")}
                           </Button>
                         )}
                         {r.isActive ? (
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: "Mark inactive", confirm: "Deactivate", body: { op: "identifiers", entityId, deactivate: [r.id] } })}>
-                            Deactivate
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: t("requisites.markInactive"), confirm: t("requisites.deactivate"), body: { op: "identifiers", entityId, deactivate: [r.id] } })}>
+                            {t("requisites.deactivate")}
                           </Button>
                         ) : (
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: "Reactivate", confirm: "Save", body: { op: "identifiers", entityId, update: [{ id: r.id, isActive: true }] } })}>
-                            Reactivate
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => onAction({ title: t("requisites.reactivate"), confirm: t("common.save"), body: { op: "identifiers", entityId, update: [{ id: r.id, isActive: true }] } })}>
+                            {t("requisites.reactivate")}
                           </Button>
                         )}
-                        <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => onAction({ title: "Remove requisite", confirm: "Remove", body: { op: "identifiers", entityId, remove: [r.id] } })}>
-                          Remove
+                        <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => onAction({ title: t("requisites.removeTitle"), confirm: t("common.remove"), body: { op: "identifiers", entityId, remove: [r.id] } })}>
+                          {t("common.remove")}
                         </Button>
                       </span>
                     )}
@@ -148,33 +153,33 @@ export function RequisitesCard({
         ))}
         <div className="space-y-2 rounded-md border p-2">
           <div className="flex flex-wrap gap-2">
-            <select aria-label="Requisite kind" className="h-9 rounded-md border bg-background px-2 text-sm" value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
+            <select aria-label={t("requisites.kindAria")} className="h-9 rounded-md border bg-background px-2 text-sm" value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
               {kinds.map((k) => (
-                <option key={k} value={k}>{REQUISITE_LABEL[k] ?? k}</option>
+                <option key={k} value={k}>{kindLabel(k, t)}</option>
               ))}
             </select>
             <Input
               className="flex-1 min-w-48"
-              aria-label="Requisite value"
-              placeholder={draft.kind === "card_last4" ? "Last 4 digits (a full number is cut to 4)" : draft.kind === "tax_id" ? "10 digits" : draft.kind === "edrpou" ? "8 digits" : "Value"}
+              aria-label={t("requisites.valueAria")}
+              placeholder={t(draft.kind === "card_last4" ? "requisites.ph.card" : draft.kind === "tax_id" ? "requisites.ph.taxId" : draft.kind === "edrpou" ? "requisites.ph.edrpou" : "requisites.ph.value")}
               value={draft.value}
               onChange={(e) => setDraft({ ...draft, value: e.target.value })}
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <Input className="h-8 w-40" aria-label="New requisite label" placeholder="Label (optional)" value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
-            <Input className="h-8 w-32" aria-label="New requisite bank" placeholder="Bank (optional)" value={draft.bank} onChange={(e) => setDraft({ ...draft, bank: e.target.value })} />
-            <Input className="h-8 w-20" aria-label="New requisite currency" placeholder="UAH" value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value.toUpperCase() })} />
+            <Input className="h-8 w-40" aria-label={t("requisites.newLabel")} placeholder={t("requisites.labelOptional")} value={draft.label} onChange={(e) => setDraft({ ...draft, label: e.target.value })} />
+            <Input className="h-8 w-32" aria-label={t("requisites.newBank")} placeholder={t("requisites.bankOptional")} value={draft.bank} onChange={(e) => setDraft({ ...draft, bank: e.target.value })} />
+            <Input className="h-8 w-20" aria-label={t("requisites.newCurrency")} placeholder="UAH" value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value.toUpperCase() })} />
             <label className="inline-flex items-center gap-1 text-xs">
-              <input type="checkbox" checked={draft.isPrimary} onChange={(e) => setDraft({ ...draft, isPrimary: e.target.checked })} /> Primary
+              <input type="checkbox" checked={draft.isPrimary} onChange={(e) => setDraft({ ...draft, isPrimary: e.target.checked })} /> {t("requisites.primary")}
             </label>
             <Button
               size="sm"
               disabled={!draft.value.trim()}
               onClick={() => {
                 onAction({
-                  title: "Add requisite",
-                  confirm: "Add",
+                  title: t("requisites.addTitle"),
+                  confirm: t("common.add"),
                   body: {
                     op: "identifiers",
                     entityId,
@@ -184,13 +189,11 @@ export function RequisitesCard({
                 setDraft({ ...draft, value: "", label: "", bank: "", currency: "", isPrimary: false });
               }}
             >
-              Add…
+              {t("common.addEllipsis")}
             </Button>
           </div>
           {hint && <p className="text-xs text-amber-700 dark:text-amber-300">{hint}</p>}
-          <p className="text-xs text-muted-foreground">
-            Stored encrypted. Cards keep only their last 4 digits; IBAN, ІПН and EDRPOU identify a payee, the last 4 digits of a card only hint at one.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("requisites.footer")}</p>
         </div>
       </CardContent>
     </Card>

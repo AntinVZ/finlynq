@@ -17,6 +17,7 @@ import { formatCurrency } from "@/lib/currency";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
+import { useStudioT } from "./i18n";
 
 type Ref = { id: string; name: string; entityId: number | null };
 type Analytics = {
@@ -54,6 +55,7 @@ const who = (r: Ref) =>
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 
 export function MerchantAnalyticsPanel() {
+  const t = useStudioT();
   const [draft, setDraft] = useState({ from: "", to: "", name: "" });
   const [applied, setApplied] = useState(draft);
   const qs = new URLSearchParams({ view: "merchants", ...(applied.from ? { from: applied.from } : {}), ...(applied.to ? { to: applied.to } : {}), ...(applied.name.trim() ? { name: applied.name.trim() } : {}) });
@@ -65,39 +67,39 @@ export function MerchantAnalyticsPanel() {
   const maxBin = Math.max(1, ...(lead?.histogram.map((b) => b.count) ?? [1]));
 
   return (
-    <section className="space-y-4 border-t pt-4" aria-label="Merchant analyses">
+    <section className="space-y-4 border-t pt-4" aria-label={t("analytics.title")}>
       <div className="flex flex-wrap items-end gap-2">
-        <h3 className="text-sm font-medium mr-auto">Merchant analyses</h3>
+        <h3 className="text-sm font-medium mr-auto">{t("analytics.title")}</h3>
         <label className="text-xs">
-          From
-          <Input type="date" aria-label="Analyses from" className="h-8 w-36" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
+          {t("analytics.from")}
+          <Input type="date" aria-label={t("analytics.fromAria")} className="h-8 w-36" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
         </label>
         <label className="text-xs">
-          To
-          <Input type="date" aria-label="Analyses to" className="h-8 w-36" value={draft.to} onChange={(e) => setDraft({ ...draft, to: e.target.value })} />
+          {t("analytics.to")}
+          <Input type="date" aria-label={t("analytics.toAria")} className="h-8 w-36" value={draft.to} onChange={(e) => setDraft({ ...draft, to: e.target.value })} />
         </label>
         <label className="text-xs">
-          Payee
-          <Input aria-label="Analyses payee" placeholder="All payees" className="h-8 w-44" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
+          {t("analytics.payee")}
+          <Input aria-label={t("analytics.payeeAria")} placeholder={t("analytics.allPayees")} className="h-8 w-44" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
         </label>
         <Button size="sm" variant="outline" onClick={() => setApplied(draft)}>
-          Show
+          {t("analytics.show")}
         </Button>
       </div>
       {error ? (
-        <p className="text-sm text-destructive">Couldn&apos;t load the analyses.</p>
+        <p className="text-sm text-destructive">{t("analytics.loadFailed")}</p>
       ) : !data ? (
-        <p className="text-sm text-muted-foreground">Loading…</p>
+        <p className="text-sm text-muted-foreground">{t("common.loading")}</p>
       ) : (
         <div className="space-y-5 text-sm">
-          {data.truncated && <p className="text-xs text-amber-600 dark:text-amber-400">Very large ledger: only the first {data.scanned.toLocaleString("en-US")} transactions were analysed.</p>}
+          {data.truncated && <p className="text-xs text-amber-600 dark:text-amber-400">{t("analytics.truncated", { n: data.scanned.toLocaleString("en-US") })}</p>}
 
           <div>
-            <h4 className="font-medium mb-1">1. Receipt (payment size)</h4>
-            {!data.receipt.length ? empty("No payments.") : (
+            <h4 className="font-medium mb-1">{t("analytics.receipt")}</h4>
+            {!data.receipt.length ? empty(t("analytics.noPayments")) : (
               <>
                 <table className="w-full text-xs">
-                  <thead className="text-muted-foreground"><tr><th className="text-left py-1">Payee</th><th className="text-right">Payments</th><th className="text-right">Average</th><th className="text-right">Median</th><th className="text-right">Max</th><th className="text-right hidden sm:table-cell">Q1 · Q3</th></tr></thead>
+                  <thead className="text-muted-foreground"><tr><th className="text-left py-1">{t("analytics.payee")}</th><th className="text-right">{t("analytics.payments")}</th><th className="text-right">{t("analytics.average")}</th><th className="text-right">{t("analytics.median")}</th><th className="text-right">{t("analytics.max")}</th><th className="text-right hidden sm:table-cell">Q1 · Q3</th></tr></thead>
                   <tbody>
                     {data.receipt.map((r) => (
                       <tr key={r.id} className="border-t"><td className="py-1 pr-2">{who(r)}</td><td className="text-right tabular-nums">{r.payments}</td><td className="text-right tabular-nums">{money(r.average)}</td><td className="text-right tabular-nums">{money(r.median)}</td><td className="text-right tabular-nums">{money(r.max)}</td><td className="text-right tabular-nums hidden sm:table-cell">{money(r.quartiles[0])} · {money(r.quartiles[2])}</td></tr>
@@ -106,8 +108,8 @@ export function MerchantAnalyticsPanel() {
                 </table>
                 {lead && (
                   <div className="mt-2">
-                    <p className="text-xs text-muted-foreground">Payment sizes — {lead.name}</p>
-                    <div className="flex h-20 items-end gap-0.5" role="img" aria-label={`Histogram of payment sizes for ${lead.name}`}>
+                    <p className="text-xs text-muted-foreground">{t("analytics.sizes", { name: lead.name })}</p>
+                    <div className="flex h-20 items-end gap-0.5" role="img" aria-label={t("analytics.histogram", { name: lead.name })}>
                       {lead.histogram.map((b) => (
                         <div key={b.from} className="flex h-full flex-1 items-end" title={`${money(b.from)}–${money(b.to)}: ${b.count}`}>
                           <div className="w-full rounded-t bg-primary/70" style={{ height: `${(b.count / maxBin) * 100}%` }} />
@@ -121,24 +123,24 @@ export function MerchantAnalyticsPanel() {
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">2. Receipt trend</h4>
-            {!data.receiptTrend.length ? empty("Not enough payments (3+ needed).") : (
+            <h4 className="font-medium mb-1">{t("analytics.trend")}</h4>
+            {!data.receiptTrend.length ? empty(t("analytics.trendEmpty")) : (
               <ul className="space-y-0.5">
                 {data.receiptTrend.map((r) => (
-                  <li key={r.id} className="flex gap-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground tabular-nums">{r.months.length} months · {r.trendPct == null ? "—" : `${r.trendPct > 0 ? "+" : ""}${r.trendPct}%`}</span></li>
+                  <li key={r.id} className="flex gap-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground tabular-nums">{t("analytics.months", { n: r.months.length })} · {r.trendPct == null ? "—" : `${r.trendPct > 0 ? "+" : ""}${r.trendPct}%`}</span></li>
                 ))}
               </ul>
             )}
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">3. What changed: {data.change.period2.from} – {data.change.period2.to} vs {data.change.period1.from} – {data.change.period1.to}</h4>
+            <h4 className="font-medium mb-1">{t("analytics.change", { from2: data.change.period2.from, to2: data.change.period2.to, from1: data.change.period1.from, to1: data.change.period1.to })}</h4>
             <p className="text-xs text-muted-foreground mb-1">
-              Total {money(data.change.totals.total)} = more / fewer payments {money(data.change.totals.countEffect)} + bigger / smaller payments {money(data.change.totals.receiptEffect)}
+              {t("analytics.changeTotals", { total: money(data.change.totals.total), count: money(data.change.totals.countEffect), receipt: money(data.change.totals.receiptEffect) })}
             </p>
-            {!data.change.rows.length ? empty("No payments in either period.") : (
+            {!data.change.rows.length ? empty(t("analytics.changeEmpty")) : (
               <table className="w-full text-xs">
-                <thead className="text-muted-foreground"><tr><th className="text-left py-1">Payee</th><th className="text-right">Payments</th><th className="text-right">Count effect</th><th className="text-right">Receipt effect</th><th className="text-right">Total</th></tr></thead>
+                <thead className="text-muted-foreground"><tr><th className="text-left py-1">{t("analytics.payee")}</th><th className="text-right">{t("analytics.payments")}</th><th className="text-right">{t("analytics.countEffect")}</th><th className="text-right">{t("analytics.receiptEffect")}</th><th className="text-right">{t("analytics.total")}</th></tr></thead>
                 <tbody>
                   {data.change.rows.map((r) => (
                     <tr key={r.id} className="border-t"><td className="py-1 pr-2">{who(r)}</td><td className="text-right tabular-nums">{r.n1} → {r.n2}</td><td className="text-right tabular-nums">{money(r.countEffect)}</td><td className="text-right tabular-nums">{money(r.receiptEffect)}</td><td className="text-right tabular-nums">{money(r.total)}</td></tr>
@@ -150,40 +152,40 @@ export function MerchantAnalyticsPanel() {
 
           <div className="grid gap-4 sm:grid-cols-2">
             {([
-              ["4a. New", data.lifecycle.new.map((r) => [r, `since ${r.firstDate}`] as const)],
-              ["4b. Gone quiet", data.lifecycle.quiet.map((r) => [r, `last ${r.lastDate} · ${r.activeMonths} of 6 months before`] as const)],
-              ["4c. Back again", data.lifecycle.returned.map((r) => [r, `after ${r.silentMonths} silent months`] as const)],
-              ["4d. Churned", data.lifecycle.churned.map((r) => [r, `last ${r.lastDate}`] as const)],
+              [t("analytics.new"), data.lifecycle.new.map((r) => [r, t("common.since", { date: r.firstDate })] as const)],
+              [t("analytics.quiet"), data.lifecycle.quiet.map((r) => [r, `${t("common.last", { date: r.lastDate })} · ${t("analytics.activeMonths", { n: r.activeMonths })}`] as const)],
+              [t("analytics.returned"), data.lifecycle.returned.map((r) => [r, t("analytics.silentMonths", { n: r.silentMonths })] as const)],
+              [t("analytics.churned"), data.lifecycle.churned.map((r) => [r, t("common.last", { date: r.lastDate })] as const)],
             ] as const).map(([title, rows]) => (
               <div key={title}>
                 <h4 className="font-medium mb-1">{title}</h4>
-                {!rows.length ? empty("None.") : (
-                  <ul className="space-y-0.5">{rows.map(([r, t]) => <li key={r.id} className="flex gap-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">{t}</span></li>)}</ul>
+                {!rows.length ? empty(t("analytics.none")) : (
+                  <ul className="space-y-0.5">{rows.map(([r, text]) => <li key={r.id} className="flex gap-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">{text}</span></li>)}</ul>
                 )}
               </div>
             ))}
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">5. Regular payments</h4>
-            {!data.regular.length ? empty("No regular pattern.") : (
+            <h4 className="font-medium mb-1">{t("analytics.regular")}</h4>
+            {!data.regular.length ? empty(t("analytics.noRegular")) : (
               <ul className="divide-y rounded-lg border">
                 {data.regular.map((r) => (
-                  <li key={r.id} className="flex flex-wrap gap-x-3 p-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">every ~{r.intervalDays} days · {money(r.average)} · {money(r.yearlyCost)} a year · next ~{r.nextExpected}</span></li>
+                  <li key={r.id} className="flex flex-wrap gap-x-3 p-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">{t("analytics.every", { n: r.intervalDays })} · {money(r.average)} · {t("analytics.perYear", { amount: money(r.yearlyCost) })} · {t("common.next", { date: r.nextExpected })}</span></li>
                 ))}
               </ul>
             )}
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">6. Several categories</h4>
-            {!data.multiCategory.length ? empty("Every payee keeps to one category.") : (
+            <h4 className="font-medium mb-1">{t("analytics.multiCategory")}</h4>
+            {!data.multiCategory.length ? empty(t("analytics.noMultiCategory")) : (
               <ul className="space-y-1">
                 {data.multiCategory.map((r) => (
                   <li key={r.id}>
                     <span>{who(r)}</span>{" "}
                     <span className="text-xs text-muted-foreground">{r.categories.map((c) => `${c.name} ${pct(c.share)}`).join(" · ")}</span>
-                    <p className="text-xs text-muted-foreground">{r.hint} <Link className="underline" href="/settings/rules">Rules</Link></p>
+                    <p className="text-xs text-muted-foreground">{r.hint} <Link className="underline" href="/settings/rules">{t("analytics.rules")}</Link></p>
                   </li>
                 ))}
               </ul>
@@ -191,14 +193,14 @@ export function MerchantAnalyticsPanel() {
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">7. Business and personal</h4>
-            {!data.businessPersonal.length ? empty("No payee is both business and personal.") : (
+            <h4 className="font-medium mb-1">{t("analytics.businessPersonal")}</h4>
+            {!data.businessPersonal.length ? empty(t("analytics.noBusinessPersonal")) : (
               <ul className="space-y-0.5">
                 {data.businessPersonal.map((r) => (
                   <li key={r.id} className="flex flex-wrap gap-2">
                     <span className="min-w-0 flex-1">{who(r)}</span>
-                    <span className="text-xs text-muted-foreground">{r.business} business · {r.personal} personal ({pct(r.businessShare)} business)</span>
-                    <Link className="text-xs underline" href={buildTxDrillUrl({ search: r.name })}>Transactions</Link>
+                    <span className="text-xs text-muted-foreground">{t("analytics.businessSplit", { business: r.business, personal: r.personal, share: pct(r.businessShare) })}</span>
+                    <Link className="text-xs underline" href={buildTxDrillUrl({ search: r.name })}>{t("common.transactions")}</Link>
                   </li>
                 ))}
               </ul>
@@ -206,14 +208,14 @@ export function MerchantAnalyticsPanel() {
           </div>
 
           <div>
-            <h4 className="font-medium mb-1">8. People: paid and received</h4>
-            {!data.people.length ? empty("No private persons or sole proprietors.") : (
+            <h4 className="font-medium mb-1">{t("analytics.people")}</h4>
+            {!data.people.length ? empty(t("analytics.noPeople")) : (
               <ul className="space-y-2">
                 {data.people.map((r) => (
                   <li key={r.id} className="rounded-lg border p-2">
-                    <div className="flex flex-wrap gap-2"><span className="min-w-0 flex-1 font-medium">{who(r)}</span><span className="text-xs tabular-nums">paid {money(r.paid)} · received {money(r.received)} · net {money(r.net)}</span></div>
+                    <div className="flex flex-wrap gap-2"><span className="min-w-0 flex-1 font-medium">{who(r)}</span><span className="text-xs tabular-nums">{t("analytics.peopleTotals", { paid: money(r.paid), received: money(r.received), net: money(r.net) })}</span></div>
                     <ul className="mt-1 text-xs text-muted-foreground">
-                      {r.byPurpose.map((p) => <li key={p.purpose} className="flex gap-2"><span className="flex-1">{p.purpose}</span><span className="tabular-nums">{p.paid ? `paid ${money(p.paid)}` : ""}{p.paid && p.received ? " · " : ""}{p.received ? `received ${money(p.received)}` : ""}</span></li>)}
+                      {r.byPurpose.map((p) => <li key={p.purpose} className="flex gap-2"><span className="flex-1">{p.purpose}</span><span className="tabular-nums">{p.paid ? t("analytics.paid", { amount: money(p.paid) }) : ""}{p.paid && p.received ? " · " : ""}{p.received ? t("analytics.received", { amount: money(p.received) }) : ""}</span></li>)}
                     </ul>
                   </li>
                 ))}

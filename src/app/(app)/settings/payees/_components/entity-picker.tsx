@@ -16,6 +16,7 @@ import { useId, useMemo, useRef, useState } from "react";
 import { Input } from "@/components/ui/input";
 import { entityRanker } from "@/lib/payees/entity-search";
 import { PayeeTypeLabel, type MerchantTypeRef } from "./merchant-type-ui";
+import { useStudioT } from "./i18n";
 
 export type EntityOption = {
   id: number;
@@ -37,7 +38,7 @@ export function EntityPicker({
   value,
   onChange,
   clusterKeys,
-  label = "Existing payee",
+  label,
 }: {
   entities: readonly EntityOption[];
   value: number | null;
@@ -46,6 +47,8 @@ export function EntityPicker({
   clusterKeys?: readonly string[];
   label?: string;
 }) {
+  const t = useStudioT();
+  const fieldLabel = label ?? t("picker.label");
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const listId = useId();
@@ -67,12 +70,12 @@ export function EntityPicker({
     <div className="space-y-1.5 min-w-0">
       <Input
         role="combobox"
-        aria-label={label}
+        aria-label={fieldLabel}
         aria-expanded
         aria-controls={listId}
         aria-autocomplete="list"
         aria-activedescendant={shown.length ? optionId(activeIndex) : undefined}
-        placeholder="Search by name or alias…"
+        placeholder={t("picker.search")}
         value={query}
         onChange={(e) => {
           setQuery(e.target.value);
@@ -107,7 +110,7 @@ export function EntityPicker({
         id={listId}
         ref={listRef}
         role="listbox"
-        aria-label={label}
+        aria-label={fieldLabel}
         className="max-h-60 overflow-y-auto overscroll-contain rounded-md border divide-y text-sm"
       >
         {shown.map((r, i) => {
@@ -133,23 +136,23 @@ export function EntityPicker({
                 <span className="block text-xs text-muted-foreground break-words [overflow-wrap:anywhere]">
                   <PayeeTypeLabel merchantType={e.merchantType} type={e.type} />
                   {" · "}
-                  {e.count} row{e.count === 1 ? "" : "s"} · {e.aliasCount} alias{e.aliasCount === 1 ? "" : "es"}
-                  {r.via ? ` · via “${r.via}”` : ""}
+                  {t("common.rows", { n: e.count })} · {t("common.aliases", { n: e.aliasCount })}
+                  {r.via ? ` · ${t("picker.via", { via: r.via })}` : ""}
                 </span>
               </span>
               {r.similarity >= 0.6 && !query && (
-                <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground" title="Looks like the payees being merged">
-                  alike
+                <span className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground" title={t("picker.alikeTitle")}>
+                  {t("picker.alike")}
                 </span>
               )}
             </li>
           );
         })}
-        {!shown.length && <li className="px-2 py-3 text-xs text-muted-foreground">No payee matches “{query}”.</li>}
+        {!shown.length && <li className="px-2 py-3 text-xs text-muted-foreground">{t("picker.noMatch", { query })}</li>}
       </ul>
       <p className="text-xs text-muted-foreground break-words [overflow-wrap:anywhere]" aria-live="polite">
-        {selected ? <>Into: <span className="font-medium text-foreground">{selected.name}</span></> : "Pick a payee."}
-        {ranked.length > SHOWN ? ` Showing ${SHOWN} of ${ranked.length}; type to narrow.` : ""}
+        {selected ? <>{t("picker.into")} <span className="font-medium text-foreground">{selected.name}</span></> : t("picker.pick")}
+        {ranked.length > SHOWN ? ` ${t("picker.showing", { n: SHOWN, total: ranked.length })}` : ""}
       </p>
     </div>
   );

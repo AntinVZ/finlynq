@@ -20,7 +20,7 @@ import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { decryptRuleFields } from "@/lib/rules/crypto";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
-import { guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
+import { caseOnlyChange, guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
 import {
   ALIAS_MODES,
   buildPayeeMatcher,
@@ -58,12 +58,26 @@ import {
   formatMerchantType,
   insertMerchantType,
   sameMerchantType,
+  entityMerchantTypeHints,
   parseMerchantTypeText,
   validateMerchantTypeRef,
   type MerchantType,
   type MerchantTypeRef,
 } from "./merchant-types";
-import { brandCoreOfKey } from "./type-words";
+import { typeWordSynonymKeys } from "./type-words";
+import {
+  describeOwnAccount,
+  insertOwnAccount,
+  loadOwnAccounts,
+  normalizeOwnAccount,
+  OWN_ACCOUNTS_MAX,
+  updateOwnAccountRow,
+  buildOwnMatcher,
+  type OwnAccount,
+  type OwnAccountInput,
+  type OwnMatcher,
+} from "./own-accounts";
+import { getPayeeSettings, vocabularyOf } from "./settings";
 import { isPersonsMerchantGroup, payeeTypeForMerchantType } from "./payee-type";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
@@ -105,6 +119,10 @@ export type PayeeOp =
    * (a type word such as "ресторан"). `onlyUntyped` leaves typed entries alone.
    */
   | { op: "set_merchant_type"; merchantType: MerchantTypeInput; entityIds?: number[]; typeWord?: string; onlyUntyped?: boolean }
+  /** P6.2 (83): mark entries as checked (they leave the "Перевірити" list), or clear the mark. */
+  | { op: "mark_reviewed"; entityIds: number[]; reviewed?: boolean }
+  /** P6.2 (76): "Мої рахунки і картки" — add / edit / remove own accounts and cards (a full card number is refused). */
+  | { op: "own_accounts"; add?: OwnAccountInput[]; update?: Array<{ id: number } & OwnAccountInput>; remove?: number[] }
   | { op: "undo"; batchId: number }
   /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
   | { op: "bulk"; kind: string; ops: SingleOp[]; aliasSource?: string; labels?: string[] };
@@ -138,8 +156,14 @@ export type PayeeOpResult = {
   blocked: string | null;
   /** P6 (B23): why an apply renames nothing — never a silent 0. */
   emptyReason: string | null;
-  /** P6 (B26): entries whose merchant type changes ("Група → Позиція", null = none). */
-  typed: Array<{ id: number; name: string; from: string | null; to: string | null }>;
+  /** P6 (B26): entries whose merchant type changes ("Група → Позиція", null = none). P6.2: `via` = which field matched. */
+  typed: Array<{ id: number; name: string; from: string | null; to: string | null; via?: string }>;
+  /** P6.2 (B29): entries a type word reached but that are left alone, and why (alias-only match, mixed). */
+  skipped: Array<{ id: number; name: string; reason: string }>;
+  /** P6.2 (83): entries marked (true) or unmarked (false) as checked. */
+  reviewed: Array<{ id: number; name: string; reviewed: boolean }>;
+  /** P6.2 (76): own accounts / cards added, changed, removed (masked one-line descriptions). */
+  ownAccounts: { added: string[]; updated: string[]; removed: string[] };
   /** P6 (B26): dictionary changes. */
   merchantTypes: { added: string[]; updated: string[]; removed: string[] };
   /** Binds an MCP confirmation token to exactly these rows. */
@@ -258,6 +282,9 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     blocked: null,
     emptyReason: null,
     typed: [],
+    skipped: [],
+    reviewed: [],
+    ownAccounts: { added: [], updated: [], removed: [] },
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: `undo:${batchId}`,
   };
@@ -288,6 +315,9 @@ async function runOp(
     blocked: null,
     emptyReason: null,
     typed: [],
+    skipped: [],
+    reviewed: [],
+    ownAccounts: { added: [], updated: [], removed: [] },
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: "",
   };
@@ -320,6 +350,9 @@ async function runOp(
         journal.count("aliases_added");
       }
     };
+    // P6.2 (76): own accounts / cards, loaded once per batch.
+    let ownMatcher: OwnMatcher | null = null;
+    const ownOf = async (kind: string, value: string) => (ownMatcher ??= buildOwnMatcher(await loadOwnAccounts(btx, userId, dek))).byValue(kind, value);
     const addIdentifiers = async (entityId: number, ids: IdentifierInput[], entityType?: PayeeType) => {
       const self = entities.find((e) => e.id === entityId);
       const type = entityType ?? self?.type ?? "other";
@@ -333,6 +366,8 @@ async function runOp(
         await insertIdentifier(btx, userId, dek, { entityId, kind: i.kind, value, ...details });
         out.identifiersAdded.push({ kind: i.kind, masked: maskIdentifier(i.kind, value) });
         for (const w of identifierWarnings(i.kind, value, type)) if (!out.warnings.includes(w)) out.warnings.push(w);
+        const mine = await ownOf(i.kind, value);
+        if (mine) out.warnings.push(`${maskIdentifier(i.kind, value)} схоже на ваш рахунок (${describeOwnAccount(mine)}): платежі на нього — перекази між своїми рахунками, а не витрати. Перевірте, чи це справді реквізит контрагента.`);
         journal.count("identifiers_added");
       }
     };
@@ -378,12 +413,12 @@ async function runOp(
     /** P6.1: an explicit entity type wins; otherwise it follows the merchant type (people stay people). */
     const entityTypeFor = (explicit: string | undefined, name: string, typeId: number | null): PayeeType =>
       explicit && (PAYEE_TYPES as readonly string[]).includes(explicit) ? (explicit as PayeeType) : payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(name).type);
-    const setEntityType = async (e: PayeeEntity, typeId: number | null) => {
+    const setEntityType = async (e: PayeeEntity, typeId: number | null, via?: string) => {
       if (e.merchantTypeId === typeId) return;
       await journal.willModify([e.id]);
       const toPerson = isPersonsMerchantGroup(groupOfType(typeId)) && !PERSON_ENTITY_TYPES.has(e.type);
       await updateEntityRow(btx, userId, dek, e.id, { merchantTypeId: typeId, ...(toPerson ? { type: payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(e.name).type) } : {}) });
-      out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
+      out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId), ...(via ? { via } : {}) });
       journal.count("merchant_type_set");
     };
 
@@ -700,7 +735,7 @@ async function runOp(
             out.rows = {
               total: payeeWrites.length,
               byTable: { transactions: payeeWrites.length, recurring: 0, staged: 0 },
-              changes: [...changes.entries()].map(([from, count]) => ({ from, to: e.name, entityId: e.id, count })).sort((a, b) => b.count - a.count),
+              changes: [...changes.entries()].map(([from, count]) => ({ from, to: e.name, entityId: e.id, count, caseOnly: caseOnlyChange(from, e.name) })).sort((a, b) => b.count - a.count),
               conflicts: [],
               truncated: false,
             };
@@ -769,21 +804,108 @@ async function runOp(
           }
           case "set_merchant_type": {
             const typeId = await resolveMerchantType(op.merchantType);
-            let targets: PayeeEntity[];
+            let targets: Array<{ e: PayeeEntity; via?: string }>;
             if (op.entityIds?.length) {
-              targets = [...new Set(op.entityIds)].map((id) => entityOf(entities, id));
+              targets = [...new Set(op.entityIds)].map((id) => ({ e: entityOf(entities, id), via: "вибрано вручну" }));
             } else if (op.typeWord?.trim()) {
-              const word = payeeMatchKey(op.typeWord);
-              if (!word) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
-              // Whole-word match on the matching key of the name / exact aliases.
-              const has = (text: string) => ` ${payeeMatchKey(text)} `.includes(` ${word} `) || brandCoreOfKey(payeeMatchKey(text)).removed.some((w) => payeeMatchKey(w) === word);
-              targets = entities.filter((e) => has(e.name) || e.aliases.some((a) => a.mode === "exact" && has(a.pattern)));
+              const vocab = vocabularyOf(await getPayeeSettings(btx, userId));
+              // B30: the word and every type word that means the same (аптека → apteka, pharmacy…).
+              const words = typeWordSynonymKeys(op.typeWord, vocab);
+              if (!words.length) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
+              // Whole-word match on the matching key.
+              const has = (text: string) => {
+                const k = ` ${payeeMatchKey(text)} `;
+                return words.some((w) => k.includes(` ${w} `));
+              };
+              const types = await storedTypes();
+              targets = [];
+              for (const e of entities) {
+                // B29: only the canonical name decides; an alias match is a weak hint, shown but never assigned.
+                if (has(e.name)) {
+                  const h = entityMerchantTypeHints(e, types, { vocab });
+                  if (h.mixed) {
+                    if (!op.onlyUntyped || e.merchantTypeId == null) out.skipped.push({ id: e.id, name: e.name, reason: h.mixedReason! });
+                    continue;
+                  }
+                  targets.push({ e, via: `назва «${e.name}»` });
+                  continue;
+                }
+                const alias = e.aliases.find((a) => a.mode === "exact" && has(a.pattern));
+                if (alias && (!op.onlyUntyped || e.merchantTypeId == null)) {
+                  out.skipped.push({ id: e.id, name: e.name, reason: `збіг лише через alias “${alias.pattern}” — слабка підказка, не призначається` });
+                }
+              }
             } else {
               throw new PayeeDirectoryError("Name the payees (entityIds) or a type word (typeWord).");
             }
-            if (op.onlyUntyped) targets = targets.filter((e) => e.merchantTypeId == null);
-            for (const e of targets) await setEntityType(e, typeId);
+            if (op.onlyUntyped) targets = targets.filter((t) => t.e.merchantTypeId == null);
+            for (const t of targets) await setEntityType(t.e, typeId, t.via);
             if (!out.typed.length) out.warnings.push("Жоден запис не змінює тип.");
+            if (out.skipped.length) out.warnings.push(`${out.skipped.length} запис(ів) пропущено: збіг лише через alias або змішані підказки.`);
+            break;
+          }
+          case "mark_reviewed": {
+            const flag = op.reviewed !== false;
+            if (!op.entityIds?.length) throw new PayeeDirectoryError("Name the payees (entityIds).");
+            for (const id of [...new Set(op.entityIds)]) {
+              const e = entityOf(entities, id);
+              if (Boolean(e.reviewedAt) === flag) continue;
+              await journal.willModify([e.id]);
+              await updateEntityRow(btx, userId, dek, e.id, { reviewed: flag });
+              out.reviewed.push({ id: e.id, name: e.name, reviewed: flag });
+              journal.count(flag ? "entities_reviewed" : "entities_unreviewed");
+            }
+            if (!out.reviewed.length) out.warnings.push(flag ? "Ці записи вже позначені як перевірені." : "Ці записи й так не позначені.");
+            break;
+          }
+          case "own_accounts": {
+            const current = await loadOwnAccounts(btx, userId, dek);
+            const same = (a: Omit<OwnAccount, "id">, b: Omit<OwnAccount, "id">) => (a.iban != null && a.iban === b.iban) || (a.cardLast4 != null && a.cardLast4 === b.cardLast4 && a.owner === b.owner);
+            const removeIds = new Set(op.remove ?? []);
+            for (const id of removeIds) {
+              const a = current.find((x) => x.id === id);
+              if (!a) throw new PayeeDirectoryError(`Немає рахунку #${id} у списку «Мої рахунки і картки».`, "not_found");
+              await journal.willModifyOwn([id]);
+              await btx.execute(sql`DELETE FROM payee_own_accounts WHERE user_id = ${userId} AND id = ${id}`);
+              out.ownAccounts.removed.push(describeOwnAccount(a));
+              journal.count("own_accounts_removed");
+            }
+            for (const u of op.update ?? []) {
+              const a = current.find((x) => x.id === u.id);
+              if (!a || removeIds.has(u.id)) throw new PayeeDirectoryError(`Немає рахунку #${u.id} у списку «Мої рахунки і картки».`, "not_found");
+              const pick = <K extends keyof OwnAccountInput>(k: K, fallback: OwnAccountInput[K]) => (k in u ? u[k] : fallback);
+              const { warnings, ...next } = normalizeOwnAccount({
+                iban: pick("iban", a.iban),
+                card: pick("card", a.cardLast4),
+                bank: pick("bank", a.bank),
+                label: pick("label", a.label),
+                currency: pick("currency", a.currency),
+                owner: pick("owner", a.owner),
+              });
+              out.warnings.push(...warnings);
+              if (JSON.stringify(next) === JSON.stringify({ iban: a.iban, cardLast4: a.cardLast4, bank: a.bank, label: a.label, currency: a.currency, owner: a.owner })) continue;
+              await journal.willModifyOwn([a.id]);
+              await updateOwnAccountRow(btx, userId, dek, a.id, next);
+              out.ownAccounts.updated.push(describeOwnAccount(next));
+              journal.count("own_accounts_updated");
+            }
+            const kept = current.filter((x) => !removeIds.has(x.id));
+            for (const input of op.add ?? []) {
+              const { warnings, ...next } = normalizeOwnAccount(input);
+              out.warnings.push(...warnings);
+              if (kept.some((x) => same(x, next))) {
+                out.warnings.push(`${describeOwnAccount(next)} уже є у списку — пропущено.`);
+                continue;
+              }
+              if (kept.length >= OWN_ACCOUNTS_MAX) throw new PayeeDirectoryError(`У списку може бути щонайбільше ${OWN_ACCOUNTS_MAX} рахунків і карток.`);
+              const id = await insertOwnAccount(btx, userId, dek, next);
+              journal.createdOwn(id);
+              kept.push({ id, ...next });
+              out.ownAccounts.added.push(describeOwnAccount(next));
+              journal.count("own_accounts_added");
+            }
+            const changed = out.ownAccounts.added.length + out.ownAccounts.updated.length + out.ownAccounts.removed.length;
+            if (!changed) out.warnings.push("Нічого не змінюється.");
             break;
           }
           case "delete": {
@@ -828,6 +950,9 @@ async function runOp(
     // rolled back but its serial ids are spent, so the commit gets new ids.
     const who = out.created ? `new:${out.entity?.name ?? ""}` : `${out.entity?.id ?? ""}`;
     if (!out.fingerprint) out.fingerprint = `${root.op}:${who}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
+    const own = out.ownAccounts;
+    if (own.added.length || own.updated.length || own.removed.length) out.fingerprint += `:o:${createHash("sha256").update(JSON.stringify(own)).digest("hex").slice(0, 16)}`;
+    if (out.reviewed.length) out.fingerprint += `:r:${out.reviewed.map((r) => `${r.id}${r.reviewed ? "+" : "-"}`).join(",")}`;
     if (out.typed.length || out.merchantTypes.added.length || out.merchantTypes.updated.length || out.merchantTypes.removed.length) {
       const typed = out.typed.map((t) => [out.created && t.id === out.entity?.id ? `new:${t.name}` : t.id, t.from, t.to]);
       out.fingerprint += `:t:${createHash("sha256").update(JSON.stringify([typed, out.merchantTypes])).digest("hex").slice(0, 16)}`;
