@@ -58,6 +58,7 @@ import { findWhose } from "../../src/lib/payees/whose";
 import { loadPayeeNameMaps } from "../../src/lib/payees/scan";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
 import { describeOwnAccount, loadOwnAccounts, loadOwnMatcher } from "../../src/lib/payees/own-accounts";
+import { BULK_DEFAULT_THRESHOLD, BULK_MAX, buildBulkCandidates, commitBulkRegistry, type BulkItem, type BulkRow } from "../../src/lib/payees/bulk-registry";
 
 const ymdArg = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
@@ -291,6 +292,39 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     }
   }
 
+  /** P6.2 (82): create the chosen bulk rows as directory entries — two-step, one batch. */
+  async function bulkCreate(items: BulkItem[], token: string | undefined) {
+    if (!dek) return err("Unlock required: payee changes need the encryption key. Sign in to Finlynq in the browser, then retry.");
+    try {
+      const o = await overview();
+      const preview = await commitBulkRegistry({ executor: db, userId, dek, overview: o, items, actor: "mcp", dryRun: true });
+      const payload = { op: "bulk_create", items, fingerprint: preview.fingerprint, created: preview.bulk.created };
+      const out = (r: typeof preview) => ({ ...opOut(r), bulk: r.bulk });
+      if (!token) return dataResponse({ preview: true, ...out(preview), confirmationToken: signPreviewToken(userId, "manage_payees_bulk_create", payload) });
+      const check = verifyPreviewToken(token, userId, "manage_payees_bulk_create", payload);
+      if (!check.valid) return err(`Confirmation token invalid: ${check.reason}. The data may have changed; re-call without confirmation_token to refresh the preview.`);
+      const done = await commitBulkRegistry({ executor: db, userId, dek, overview: o, items, actor: "mcp" });
+      return dataResponse({
+        ...out(done),
+        next: `${done.bulk.pendingRows} stored row(s) still carry other spellings: preview op=apply entity_ids=[…] (or the web Apply) to rename them.`,
+        ...(done.batchId != null ? { undoWith: `manage_payees op=undo batch_id=${done.batchId} (within 30 days)` } : {}),
+      });
+    } catch (e) {
+      if (e instanceof PayeeDirectoryError || e instanceof PayeeBatchError) return err(e.message);
+      throw e;
+    }
+  }
+  const bulkRowOut = (r: BulkRow) => ({
+    row_id: r.rowId,
+    name: r.name,
+    ...(r.merchantTypeHint ? { merchant_type_hint: `${r.merchantTypeHint.group} → ${r.merchantTypeHint.name}`, hint_reason: r.merchantTypeHint.reason } : {}),
+    spellings: r.spellings.slice(0, 20),
+    rows: r.rows,
+    transactions: r.transactions,
+    confidence: r.confidence,
+    ...(r.personReason ? { person_reason: r.personReason } : {}),
+  });
+
   async function opEntity(entityId: number) {
     const o = await overview();
     const e = o.directory.find((x) => x.id === entityId);
@@ -378,7 +412,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, own_accounts_edit, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -624,6 +658,20 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         op: z.literal("own_accounts"),
       }),
       z.object({
+        op: z.literal("bulk_review"),
+        threshold: z.number().min(0).max(1).optional().describe(`Least cluster confidence (default ${BULK_DEFAULT_THRESHOLD}).`),
+        limit: z.number().int().positive().max(2000).optional().describe("Most rows (default 500)."),
+      }),
+      z.object({
+        op: z.literal("bulk_create"),
+        items: z
+          .array(z.object({ row_id: z.string().min(1).max(80), name: z.string().min(1).max(200).optional(), merchant_type: merchantTypeArg }))
+          .min(1)
+          .max(BULK_MAX)
+          .describe(`Rows from bulk_review the user kept (at most ${BULK_MAX}); name = edited name; merchant_type only when the user confirmed it.`),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
         op: z.literal("own_accounts_edit"),
         add: z.array(z.object(ownAccountArgs)).max(50).optional().describe("New own accounts / cards: iban and / or card (LAST 4 digits or a mask; a full number is refused)."),
         update: z.array(z.object({ id: z.number().int().positive(), ...ownAccountArgs })).max(50).optional().describe("Changed fields by id (from op=own_accounts)."),
@@ -758,6 +806,25 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               howTo: "These are the user's own accounts and cards: never suggested as a merchant's requisites, transfers to them are not spend. Edit with op=own_accounts_edit (two-step, undoable).",
             });
           }
+          case "bulk_review": {
+            const o = await overview();
+            const c = buildBulkCandidates(o, { threshold: input.threshold });
+            const limit = input.limit ?? 500;
+            return dataResponse({
+              threshold: c.threshold,
+              rows: c.rows.slice(0, limit).map(bulkRowOut),
+              total: c.rows.length,
+              people: c.people.slice(0, 200).map(bulkRowOut),
+              left: c.left,
+              howTo: `Show the table to the user; they untick rows, edit names, confirm types (hints are never applied by themselves). Then op=bulk_create items=[{row_id, name?, merchant_type?}] (two-step, ONE batch, undoable 30 days; at most ${BULK_MAX} per set). People / ФОП are never in a set: decide them one by one (op=create / op=merge). Stored payees are not renamed: op=apply afterwards.`,
+              ...scanMeta(o),
+            });
+          }
+          case "bulk_create":
+            return await bulkCreate(
+              input.items.map((x) => ({ rowId: x.row_id, ...(x.name ? { name: x.name } : {}), ...(x.merchant_type != null ? { merchantType: x.merchant_type } : {}) })),
+              input.confirmation_token,
+            );
           case "own_accounts_edit":
             return await writeOp(
               {

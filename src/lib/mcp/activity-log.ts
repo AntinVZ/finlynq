@@ -59,6 +59,7 @@ export const MCP_READ_OPS: ReadonlySet<string> = new Set([
   "whose",
   "suspicious",
   "own_accounts",
+  "bulk_review",
 ]);
 
 /** `op` as a safe label, or null (never echoes free text from the arguments). */

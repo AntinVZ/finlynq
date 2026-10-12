@@ -45,6 +45,8 @@ export type OpPreview = {
   merchantTypes?: { added: string[]; updated: string[]; removed: string[] };
   /** P6.2: own accounts / cards changed (masked descriptions). */
   ownAccounts?: { added: string[]; updated: string[]; removed: string[] };
+  /** P6.2: bulk registry fill — entries created, rows a later Apply renames. */
+  bulk?: { created: number; createdIds: number[]; pendingRows: number; entities: Array<{ rowId: string; name: string; aliases: number; merchantType: string | null }> };
 };
 
 const TABLE_LABEL = { transactions: "op.inTransactions", recurring: "op.inRecurring", staged: "op.inStaged" } as const;
@@ -146,10 +148,12 @@ export function OpDialog({
                   {preview.undo.removedEntities ? t("op.undoRemovesPayees", { n: preview.undo.removedEntities }) : ""}
                   {preview.undo.restoredEntities ? t("op.undoRestoresPayees", { n: preview.undo.restoredEntities }) : ""}.
                 </p>
+              ) : preview.bulk ? (
+                <p className="font-medium">{t("bulk.previewSummary", { n: preview.bulk.created, aliases: preview.aliasesAdded.length, rows: preview.bulk.pendingRows })}</p>
               ) : (
                 <p className="font-medium">{describeRows(preview, t)}</p>
               )}
-              {preview.aliasesAdded.length > 0 && (
+              {preview.aliasesAdded.length > 0 && !preview.bulk && (
                 <p className="text-xs text-muted-foreground">
                   {t("op.addsAliases", { n: preview.aliasesAdded.length, list: preview.aliasesAdded.map((a) => `“${a.pattern}”${a.mode !== "exact" ? ` (${a.mode})` : ""}`).join(", ") })}
                 </p>

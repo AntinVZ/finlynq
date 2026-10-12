@@ -60,6 +60,7 @@ import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
 import { OwnAccountsPanel } from "./_components/own-accounts-panel";
+import { BulkPanel, PeoplePanel } from "./_components/bulk-panel";
 import { useStudioT, type StudioT } from "./_components/i18n";
 import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
@@ -69,7 +70,7 @@ import { WhosePanel } from "./_components/whose-panel";
 
 const PAGE_SIZES = [25, 50] as const;
 
-type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "suspicious" | "requisites" | "changes" | "insights";
+type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "bulk" | "people" | "suspicious" | "requisites" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
@@ -330,6 +331,8 @@ export default function PayeesSettingsPage() {
     { id: "lookalikes", label: `${t("page.tab.lookalikes")}${data ? ` (${data.lookalikeCount ?? 0})` : ""}` },
     { id: "unrecognized", label: `${t("page.tab.unrecognized")}${data ? ` (${unrecognizedCount})` : ""}` },
     { id: "directory", label: `${t("page.tab.directory")}${data ? ` (${entities.length})` : ""}` },
+    { id: "bulk", label: t("bulk.tab") },
+    { id: "people", label: t("people.tab") },
     { id: "suspicious", label: `${t("suspicious.tab")}${data ? ` (${data.suspicious?.length ?? 0})` : ""}` },
     { id: "requisites", label: t("page.tab.requisites") },
     { id: "changes", label: t("page.tab.changes") },
@@ -468,6 +471,15 @@ export default function PayeesSettingsPage() {
             <p className="text-sm text-muted-foreground">{t("page.loading")}</p>
           ) : tab === "insights" ? (
             <InsightsPanel />
+          ) : tab === "bulk" ? (
+            <BulkPanel types={merchantTypes} onDone={() => mutate()} />
+          ) : tab === "people" ? (
+            <PeoplePanel
+              onAdd={(p) => {
+                const groups = p.keys.map((k) => groupsByKey.get(k)).filter((g): g is PayeeGroupRow => g != null);
+                if (groups.length) mergeGroups(t("people.addTitle", { name: p.name }), groups);
+              }}
+            />
           ) : tab === "suspicious" ? (
             <SuspiciousPanel rows={data?.suspicious ?? []} entities={entityOptions} onDone={(r) => done(r, t("suspicious.done"))} />
           ) : tab === "lookalikes" ? (
