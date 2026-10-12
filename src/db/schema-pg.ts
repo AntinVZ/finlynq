@@ -2059,6 +2059,9 @@ export const payeeEntities = pgTable("payee_entities", {
   note: text("note"),
   // A category HINT for the AI client / suggestions — never applied by itself.
   defaultCategoryId: integer("default_category_id").references(() => categories.id, { onDelete: "set null" }),
+  // P5c (20261012_payee_profile.sql): encrypted https URL and encrypted data: URI logo (PNG/JPEG/WebP ≤ 20 KB).
+  website: text("website"),
+  logo: text("logo"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -21,6 +21,7 @@ type PlanItem = {
   candidates: Array<{ id: number; name: string }>;
   newAliases: Array<{ pattern: string; mode: string }>;
   newIdentifiers: Array<{ kind: string; value: string }>;
+  newWebsite?: string | null;
   note: string | null;
 };
 type PlanResponse = { plan: PlanItem[]; errors: Array<{ index: number; error: string }>; counts: Record<string, number>; batchId?: number | null; error?: string };
@@ -133,6 +134,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
                     {ACTION_LABEL[p.action]}
                     {p.target ? ` “${p.target.name}”` : ""}
                     {p.newAliases.length ? ` · +${p.newAliases.length} alias(es)` : ""}
+                    {p.newWebsite ? ` · website ${p.newWebsite.replace(/^https:\/\//, "")}` : ""}
                   </span>
                   {(p.action === "conflict" || resolutions[String(p.index)]) && (
                     <select

@@ -46,6 +46,8 @@ export type EntityRow = {
   aliasCount: number;
   identifierCount: number;
   defaultCategoryId: number | null;
+  website?: string | null;
+  hasLogo?: boolean;
   count: number;
   total: number;
   lastDate: string | null;
@@ -149,3 +151,37 @@ export const needsDecisionBadge = (title?: string | null) => (
   </Badge>
 );
 
+
+/** Logo (served by /api/payees/[id]/logo) or the name's initials. */
+export function PayeeAvatar({ id, name, hasLogo, size = 24 }: { id: number; name: string; hasLogo?: boolean; size?: number }) {
+  const initials =
+    name
+      .replace(/^(?:ТОВ|ФОП|ПП|LLC|FOP)\s+/i, "")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((w) => w[0]?.toUpperCase() ?? "")
+      .join("") || "?";
+  if (hasLogo) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={`/api/payees/${id}/logo`} alt="" width={size} height={size} className="shrink-0 rounded object-contain bg-white" style={{ width: size, height: size }} />;
+  }
+  return (
+    <span
+      aria-hidden="true"
+      className="inline-flex shrink-0 items-center justify-center rounded bg-muted text-[10px] font-semibold text-muted-foreground"
+      style={{ width: size, height: size }}
+    >
+      {initials}
+    </span>
+  );
+}
+
+/** A merchant website link: opens in a new tab, no referrer, no follow. */
+export function WebsiteLink({ url, className }: { url: string; className?: string }) {
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer nofollow" className={className ?? "text-sm hover:underline break-all"}>
+      {url.replace(/^https:\/\//, "")}
+    </a>
+  );
+}

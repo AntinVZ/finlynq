@@ -32,3 +32,6 @@ export function expandPayeeFixtures(): Array<{ payee: string; amount: number; da
   }
   return out;
 }
+
+/** A 1×1 PNG (base64), for logo tests. */
+export const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";

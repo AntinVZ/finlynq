@@ -23,13 +23,16 @@ import { Badge } from "@/components/ui/badge";
 import { ArrowLeft } from "lucide-react";
 import { formatCurrency } from "@/lib/currency";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
-import { batchLabel, PAYEE_TYPE_OPTIONS, typeLabel, type BatchRow, type PayeeGroupRow, type PayeeSettings } from "../_components/payee-ui";
+import { batchLabel, PAYEE_TYPE_OPTIONS, PayeeAvatar, typeLabel, WebsiteLink, type BatchRow, type PayeeGroupRow, type PayeeSettings } from "../_components/payee-ui";
+
+const LOGO_MAX_BYTES = 20 * 1024;
+const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp"];
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
 type Identifier = { id: number; kind: string; value: string };
 type EntityResponse = {
-  entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; aliases: Alias[]; identifiers: Identifier[] };
+  entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; website: string | null; logo: string | null; aliases: Alias[]; identifiers: Identifier[] };
   spellings: PayeeGroupRow[];
   pending: { total: number; byTable: Record<string, number>; changes: Array<{ from: string; to: string; count: number }> };
   history: BatchRow[];
@@ -71,6 +74,8 @@ export default function PayeeEntityPage() {
   const [splitIds, setSplitIds] = useState<Set<number>>(new Set());
   const [splitName, setSplitName] = useState("");
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [website, setWebsite] = useState<string | null>(null);
+  const [logoError, setLogoError] = useState("");
   const { data: rules } = useSWR<Rule[]>(rulesOpen ? "/api/rules" : null, jsonFetcher, { revalidateOnFocus: false });
   const payeeRules = useMemo(() => (rules ?? []).filter((r) => r.conditions?.all?.some((c) => c.field === "payee" && c.value)), [rules]);
 
@@ -115,6 +120,7 @@ export default function PayeeEntityPage() {
           <ArrowLeft className="h-3 w-3" /> Payees
         </Link>
         <div className="flex flex-wrap items-center gap-2 mt-1">
+          <PayeeAvatar id={e.id} name={e.name} hasLogo={e.logo != null} size={36} />
           <h1 className="text-2xl font-bold tracking-tight break-all">{e.name}</h1>
           <Badge variant="outline">{typeLabel(e.type)}</Badge>
         </div>
@@ -192,6 +198,81 @@ export default function PayeeEntityPage() {
           </CardContent>
         </Card>
       )}
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">Website and logo</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3 text-sm">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-16 text-xs text-muted-foreground">Website</span>
+            {website === null ? (
+              <>
+                {e.website ? <WebsiteLink url={e.website} /> : <span className="text-xs text-muted-foreground">None</span>}
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setWebsite(e.website ?? "")}>
+                  {e.website ? "Change" : "Add"}
+                </Button>
+                {e.website && (
+                  <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => setAction({ title: "Remove the website", body: { op: "update", entityId: e.id, website: null, apply: false }, confirm: "Remove" })}>
+                    Remove
+                  </Button>
+                )}
+              </>
+            ) : (
+              <>
+                <Input className="max-w-sm" aria-label="Website" placeholder="example.com" value={website} onChange={(ev) => setWebsite(ev.target.value)} />
+                <Button
+                  size="sm"
+                  disabled={!website.trim()}
+                  onClick={() => {
+                    setAction({ title: "Save the website", body: { op: "update", entityId: e.id, website: website.trim(), apply: false }, confirm: "Save" });
+                    setWebsite(null);
+                  }}
+                >
+                  Save…
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setWebsite(null)}>Cancel</Button>
+              </>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="w-16 text-xs text-muted-foreground">Logo</span>
+            {e.logo ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={e.logo} alt={`${e.name} logo`} className="h-10 w-10 rounded border object-contain bg-white" />
+            ) : (
+              <span className="text-xs text-muted-foreground">None</span>
+            )}
+            <label className="inline-flex cursor-pointer items-center rounded-md border px-2 py-1 text-xs hover:bg-accent">
+              {e.logo ? "Replace…" : "Upload…"}
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="sr-only"
+                aria-label="Logo file"
+                onChange={(ev) => {
+                  const file = ev.target.files?.[0];
+                  ev.target.value = "";
+                  setLogoError("");
+                  if (!file) return;
+                  if (!LOGO_TYPES.includes(file.type)) return setLogoError("Use a PNG, JPEG or WebP image (SVG is not allowed).");
+                  if (file.size > LOGO_MAX_BYTES) return setLogoError(`The image is ${Math.ceil(file.size / 1024)} KB; the limit is 20 KB.`);
+                  const reader = new FileReader();
+                  reader.onload = () => setAction({ title: "Save the logo", body: { op: "update", entityId: e.id, logo: String(reader.result), apply: false }, confirm: "Save" });
+                  reader.readAsDataURL(file);
+                }}
+              />
+            </label>
+            {e.logo && (
+              <Button size="sm" variant="ghost" className="h-7 text-xs text-destructive" onClick={() => setAction({ title: "Remove the logo", body: { op: "update", entityId: e.id, logo: null, apply: false }, confirm: "Remove" })}>
+                Remove
+              </Button>
+            )}
+          </div>
+          {logoError && <p className="text-xs text-destructive">{logoError}</p>}
+          <p className="text-xs text-muted-foreground">PNG, JPEG or WebP up to 20 KB. Finlynq never looks sites or logos up online; your AI assistant can propose them.</p>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

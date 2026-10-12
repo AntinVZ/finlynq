@@ -101,6 +101,8 @@ function entityOut(e: PayeeEntity) {
     entity_id: e.id,
     name: e.name,
     type: e.type,
+    ...(e.website ? { website: e.website } : {}),
+    has_logo: e.logo != null,
     ...(e.note ? { note: e.note } : {}),
     default_category_id: e.defaultCategoryId,
     aliases: e.aliases.map((a) => ({ alias_id: a.id, pattern: a.pattern, mode: a.mode, source: a.source })),
@@ -306,7 +308,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list (view=all|unrecognized|entities), clusters, get, batches, insights, review (compact pack for you to analyse), proposals, explain (why two payees are or are not clustered), lookalikes (new spellings like a directory entry). AI workflow: review → propose (stores drafts, changes nothing) → the user approves (op=approve) or rejects. Writes: create, update, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview rows per table and get a token, then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -413,6 +415,15 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         b: z.string().min(1).describe("Second payee."),
       }),
       z.object({
+        op: z.literal("set_profile"),
+        entity_id: z.number().int().positive(),
+        website: z.string().nullable().optional().describe("http(s) address, stored as https://host/path; null clears. Skip people / sole proprietors."),
+        logo: z.string().nullable().optional().describe("data:image/png|jpeg|webp;base64,… ≤ 20 KB (no SVG); null clears."),
+        type: typeArg,
+        note: z.string().nullable().optional(),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
         op: z.literal("lookalikes"),
         limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 50)."),
       }),
@@ -444,6 +455,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               entity_id: z.number().int().positive().optional().describe("Extend this existing entry instead of creating one."),
               aliases: z.array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.enum(ALIAS_MODES).optional() })])).optional().describe("Exact spellings from review (or {pattern, mode})."),
               identifiers: z.array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string() })).optional(),
+              website: z.string().optional().describe("The merchant's website if you found it (web search). Not for people / sole proprietors."),
               reason: z.string().optional().describe("Why, in one sentence the user will read."),
               confidence: z.number().min(0).max(1).optional().describe("0–1."),
             }),
@@ -564,6 +576,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               ...scanMeta(o),
             });
           }
+          case "set_profile":
+            if (input.website === undefined && input.logo === undefined && input.type === undefined && input.note === undefined) return err("Pass website, logo, type or note.");
+            return await writeOp(
+              { op: "update", entityId: input.entity_id, website: input.website, logo: input.logo, type: input.type, note: input.note, apply: false },
+              input.confirmation_token,
+            );
           case "move_remainder":
             return await writeOp(
               { op: "move_remainder", entityId: input.entity_id, payees: input.payees, remainder: input.remainder, target: input.target },

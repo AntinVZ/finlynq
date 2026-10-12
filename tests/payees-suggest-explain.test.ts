@@ -13,6 +13,8 @@ const entity = (id: number, name: string, aliases: string[] = [], type: PayeeEnt
   type,
   note: null,
   defaultCategoryId: null,
+  website: null,
+  logo: null,
   createdAt: null,
   updatedAt: null,
   aliases: [

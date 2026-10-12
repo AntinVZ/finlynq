@@ -46,6 +46,7 @@ import {
   batchLabel,
   confidenceBadge,
   needsDecisionBadge,
+  PayeeAvatar,
   typeLabel,
   type BatchRow,
   type PayeeClusterRow,
@@ -419,6 +420,7 @@ export default function PayeesSettingsPage() {
               <ul className="divide-y rounded-lg border">
                 {pageEntities.map((e) => (
                   <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
+                    <PayeeAvatar id={e.id} name={e.name} hasLogo={e.hasLogo} />
                     <Link href={`/settings/payees/${e.id}`} className="font-medium hover:underline break-all">
                       {e.name}
                     </Link>

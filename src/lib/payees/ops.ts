@@ -42,6 +42,7 @@ import {
 } from "./directory";
 import { inTransaction, PayeeBatchError, runPayeeBatch, undoPayeeBatch, writeStoredPayees, writeTransactionColumn, type BatchActor, type RewriteTable, type UndoResult } from "./batches";
 import { encryptField } from "@/lib/crypto/envelope";
+import { normalizeLogo, normalizeWebsite } from "./profile";
 import { addTags } from "@/lib/tags";
 import { decodeStoredPayee, spellingOf } from "./scan";
 import { PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
@@ -52,8 +53,9 @@ export type AliasInput = { pattern: string; mode?: AliasMode };
 export type IdentifierInput = { kind: IdentifierKind; value: string };
 
 export type PayeeOp =
-  | { op: "create"; name: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; aliases?: AliasInput[]; identifiers?: IdentifierInput[]; apply?: boolean }
-  | { op: "update"; entityId: number; name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; apply?: boolean }
+  | { op: "create"; name: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; aliases?: AliasInput[]; identifiers?: IdentifierInput[]; apply?: boolean }
+  /** P5c: `website` / `logo` (null clears) — the merchant profile. */
+  | { op: "update"; entityId: number; name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; apply?: boolean }
   | { op: "alias_add"; entityId: number; aliases: AliasInput[]; apply?: boolean }
   | { op: "alias_remove"; entityId: number; aliasIds?: number[]; patterns?: string[] }
   | { op: "alias_from_rule"; ruleId: number; entityId?: number; apply?: boolean }
@@ -116,6 +118,8 @@ function entityOf(entities: PayeeEntity[], id: number): PayeeEntity {
   if (!e) throw new PayeeDirectoryError(`No payee entity #${id}.`, "not_found");
   return e;
 }
+
+const PERSON_ENTITY_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 
 const asType = (t: string | undefined, fallbackName: string): PayeeType =>
   t && (PAYEE_TYPES as readonly string[]).includes(t) ? (t as PayeeType) : guessPayeeType(fallbackName).type;
@@ -251,10 +255,11 @@ async function runOp(
         journal.count("identifiers_added");
       }
     };
-    const createEntity = async (name: string, type: PayeeType, extra: { note?: string | null; defaultCategoryId?: number | null } = {}, allowedOwners?: ReadonlySet<number>) => {
+    const createEntity = async (name: string, type: PayeeType, extra: { note?: string | null; defaultCategoryId?: number | null; website?: string | null } = {}, allowedOwners?: ReadonlySet<number>) => {
       const clean = validateEntityName(name);
       assertExactFree(entities, clean, undefined, allowedOwners);
-      const id = await insertEntity(btx, userId, dek, { name: clean, type, note: extra.note ?? null, defaultCategoryId: extra.defaultCategoryId ?? null });
+      const website = extra.website ? normalizeWebsite(extra.website) : null;
+      const id = await insertEntity(btx, userId, dek, { name: clean, type, note: extra.note ?? null, defaultCategoryId: extra.defaultCategoryId ?? null, website });
       journal.createdEntity(id);
       await insertAlias(btx, userId, dek, { entityId: id, pattern: clean, mode: "exact", source: "canonical" });
       out.created = true;
@@ -271,7 +276,7 @@ async function runOp(
       try {
         switch (op.op) {
           case "create": {
-            const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId });
+            const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId, website: op.website });
             await addAliases(id, op.aliases ?? [], src("manual"));
             await addIdentifiers(id, op.identifiers ?? []);
             if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
@@ -302,6 +307,19 @@ async function runOp(
               }
               patch.defaultCategoryId = op.defaultCategoryId;
             }
+            if (op.website !== undefined) {
+              patch.website = op.website?.trim() ? normalizeWebsite(op.website) : null;
+              if (patch.website === e.website) delete patch.website;
+            }
+            if (op.logo !== undefined) {
+              patch.logo = op.logo?.trim() ? normalizeLogo(op.logo) : null;
+              if (patch.logo === e.logo) delete patch.logo;
+            }
+            if ((patch.website || patch.logo) && PERSON_ENTITY_TYPES.has(patch.type ?? e.type)) {
+              out.warnings.push(`“${e.name}” is a private person or sole proprietor; a website or logo is usually for merchants.`);
+            }
+            if (patch.website !== undefined) journal.count("website_set");
+            if (patch.logo !== undefined) journal.count("logo_set");
             await updateEntityRow(btx, userId, dek, e.id, patch);
             if (renamed) {
               // The old canonical name stays as an alias, so rows already using it still resolve.

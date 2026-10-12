@@ -80,8 +80,19 @@ const dryRun = z.boolean().optional();
 const apply = z.boolean().optional();
 
 const postSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("create"), name, type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), aliases: z.array(alias).max(100).optional(), identifiers: z.array(identifier).max(20).optional(), apply, dryRun }),
-  z.object({ op: z.literal("update"), entityId: id, name: name.optional(), type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), apply, dryRun }),
+  z.object({ op: z.literal("create"), name, type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), website: z.string().max(500).nullable().optional(), aliases: z.array(alias).max(100).optional(), identifiers: z.array(identifier).max(20).optional(), apply, dryRun }),
+  z.object({
+    op: z.literal("update"),
+    entityId: id,
+    name: name.optional(),
+    type,
+    note: z.string().max(2000).nullable().optional(),
+    defaultCategoryId: id.nullable().optional(),
+    website: z.string().max(500).nullable().optional(),
+    logo: z.string().max(40_000).nullable().optional(),
+    apply,
+    dryRun,
+  }),
   z.object({ op: z.literal("alias_add"), entityId: id, aliases: z.array(alias).min(1).max(100), apply, dryRun }),
   z.object({ op: z.literal("alias_remove"), entityId: id, aliasIds: z.array(id).max(200).optional(), patterns: z.array(z.string().max(200)).max(200).optional(), dryRun }),
   z.object({ op: z.literal("alias_from_rule"), ruleId: id, entityId: id.optional(), apply, dryRun }),

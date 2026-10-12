@@ -5,7 +5,9 @@
  * File format (JSON, or the same structure as YAML):
  *   { format: "finlynq-payee-dictionary", version: 1, exportedAt,
  *     entries: [{ name, type, aliases: [{ pattern, mode }],
- *                 identifiers: [{ kind, value }] }] }
+ *                 identifiers: [{ kind, value }], website? }] }
+ * P5c: `website` is exported (merchants only) and imported (set when the
+ * matching entry has none); logos are never exported.
  *
  * EXPORT keeps only what is safe to share: entities, their aliases and types,
  * and public identifiers of legal entities (EDRPOU; an IBAN only for
@@ -26,6 +28,7 @@ import { z } from "zod";
 import { guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
 import { ALIAS_MODES, IDENTIFIER_KINDS, normalizeIdentifier, validateAlias, validateEntityName, type AliasMode, type IdentifierKind, type PayeeEntity } from "./directory";
 import type { SingleOp } from "./ops";
+import { normalizeWebsite } from "./profile";
 
 export const DICTIONARY_FORMAT = "finlynq-payee-dictionary";
 export const DICTIONARY_VERSION = 1;
@@ -36,6 +39,8 @@ export type DictionaryEntry = {
   type: PayeeType;
   aliases: Array<{ pattern: string; mode: AliasMode }>;
   identifiers: Array<{ kind: IdentifierKind; value: string }>;
+  /** P5c: the merchant's website (never a logo). */
+  website?: string;
 };
 export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; entries: DictionaryEntry[] };
 
@@ -65,7 +70,7 @@ export function buildDictionary(entities: PayeeEntity[], now = new Date()): Paye
       if (i.kind === "edrpou" || (i.kind === "iban" && IBAN_SHAREABLE_TYPES.has(e.type))) identifiers.push({ kind: i.kind, value: i.value });
       else skipped.identifiers++;
     }
-    entries.push({ name: e.name, type: e.type, aliases, identifiers });
+    entries.push({ name: e.name, type: e.type, aliases, identifiers, ...(e.website ? { website: e.website } : {}) });
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), entries, skipped };
@@ -90,6 +95,7 @@ export function dictionaryToYaml(d: PayeeDictionary): string {
     for (const a of e.aliases) out.push(`      - pattern: ${q(a.pattern)}`, `        mode: ${q(a.mode)}`);
     out.push(e.identifiers.length ? "    identifiers:" : "    identifiers: []");
     for (const i of e.identifiers) out.push(`      - kind: ${q(i.kind)}`, `        value: ${q(i.value)}`);
+    if (e.website) out.push(`    website: ${q(e.website)}`);
   }
   return out.join("\n") + "\n";
 }
@@ -197,6 +203,7 @@ const fileSchema = z.object({
         type: z.string().optional(),
         aliases: z.array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.string().optional() })])).optional(),
         identifiers: z.array(z.object({ kind: z.string(), value: z.union([z.string(), z.number()]) })).optional(),
+        website: z.string().nullable().optional(),
       }),
     )
     .max(DICTIONARY_MAX_ENTRIES),
@@ -234,7 +241,8 @@ export function parseDictionary(text: string): { entries: DictionaryEntry[]; err
         if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new Error(`unknown identifier kind "${i.kind}"`);
         identifiers.push({ kind: i.kind as IdentifierKind, value: normalizeIdentifier(i.kind as IdentifierKind, String(i.value)) });
       }
-      entries.push({ name, type, aliases, identifiers });
+      const website = e.website?.trim() && type !== "person" && type !== "sole_proprietor" ? normalizeWebsite(e.website) : undefined;
+      entries.push({ name, type, aliases, identifiers, ...(website ? { website } : {}) });
     } catch (err) {
       errors.push({ index, error: err instanceof Error ? err.message : String(err) });
     }
@@ -256,6 +264,8 @@ export type ImportPlanItem = {
   candidates: Array<{ id: number; name: string }>;
   newAliases: Array<{ pattern: string; mode: AliasMode }>;
   newIdentifiers: Array<{ kind: IdentifierKind; value: string }>;
+  /** P5c: a website the entry brings (set only when the directory entry has none). */
+  newWebsite: string | null;
   note: string | null;
 };
 
@@ -270,7 +280,7 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
     const hits = new Map<number, PayeeEntity>();
     for (const p of [entry.name, ...entry.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)]) for (const o of owners(p)) hits.set(o.id, o);
     const candidates = [...hits.values()].map((e) => ({ id: e.id, name: e.name }));
-    const base: ImportPlanItem = { index, name: entry.name, type: entry.type, action: "create", target: null, candidates, newAliases: [], newIdentifiers: [], note: null };
+    const base: ImportPlanItem = { index, name: entry.name, type: entry.type, action: "create", target: null, candidates, newAliases: [], newIdentifiers: [], newWebsite: null, note: null };
     const res = resolutions[index];
     let target: PayeeEntity | null = null;
     if (res === "skip") return { ...base, action: "skip" };
@@ -302,17 +312,19 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
     if (target && !owners(entry.name).some((o) => o.id === target!.id)) newAliases.unshift({ pattern: entry.name, mode: "exact" });
     const newIdentifiers = entry.identifiers.filter((i) => !(target?.identifiers ?? []).some((x) => x.kind === i.kind && x.value === i.value));
     if (target) {
-      const nothing = newAliases.length === 0 && newIdentifiers.length === 0;
+      const newWebsite = entry.website && !target.website ? entry.website : null;
+      const nothing = newAliases.length === 0 && newIdentifiers.length === 0 && !newWebsite;
       return {
         ...base,
         action: nothing ? "unchanged" : "merge",
         target: { id: target.id, name: target.name },
         newAliases,
         newIdentifiers,
+        newWebsite,
         note: target.type !== entry.type ? `Type differs (directory: ${target.type}); the directory keeps its type.` : null,
       };
     }
-    return { ...base, action: "create", newAliases, newIdentifiers };
+    return { ...base, action: "create", newAliases, newIdentifiers, newWebsite: entry.website ?? null };
   });
 }
 
@@ -323,7 +335,7 @@ export function dictionaryImportOps(plan: ImportPlanItem[]): { ops: SingleOp[]; 
   for (const p of plan) {
     const label = `entry #${p.index + 1} ("${p.name}")`;
     if (p.action === "create") {
-      ops.push({ op: "create", name: p.name, type: p.type, aliases: p.newAliases, identifiers: p.newIdentifiers, apply: false });
+      ops.push({ op: "create", name: p.name, type: p.type, aliases: p.newAliases, identifiers: p.newIdentifiers, website: p.newWebsite, apply: false });
       labels.push(label);
     } else if (p.action === "merge" && p.target) {
       if (p.newAliases.length) {
@@ -332,6 +344,10 @@ export function dictionaryImportOps(plan: ImportPlanItem[]): { ops: SingleOp[]; 
       }
       if (p.newIdentifiers.length) {
         ops.push({ op: "identifiers", entityId: p.target.id, add: p.newIdentifiers });
+        labels.push(label);
+      }
+      if (p.newWebsite) {
+        ops.push({ op: "update", entityId: p.target.id, website: p.newWebsite, apply: false });
         labels.push(label);
       }
     }

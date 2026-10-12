@@ -79,7 +79,7 @@ async function snapshot(tx: PayeeExecutor, userId: string, ids: number[]): Promi
   if (!ids.length) return { entities: [], aliases: [], identifiers: [] };
   const q = async (query: SQL) => normalizeDbRows<StoredRow>(await tx.execute(query)).map(toJsonRow);
   return {
-    entities: await q(sql`SELECT id, name, type, note, default_category_id, created_at, updated_at FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(ids)}) FOR UPDATE`),
+    entities: await q(sql`SELECT id, name, type, note, default_category_id, website, logo, created_at, updated_at FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(ids)}) FOR UPDATE`),
     aliases: await q(sql`SELECT id, entity_id, pattern, mode, key_hash, source, created_at FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
     identifiers: await q(sql`SELECT id, entity_id, kind, value, created_at FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
   };
@@ -362,9 +362,10 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       await tx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(entityIds)})`);
       for (const e of undo.before.entities) {
         await tx.execute(sql`
-          INSERT INTO payee_entities (id, user_id, name, type, note, default_category_id, created_at, updated_at)
+          INSERT INTO payee_entities (id, user_id, name, type, note, default_category_id, website, logo, created_at, updated_at)
           VALUES (${Number(e.id)}, ${userId}, ${e.name as string}, ${e.type as string}, ${(e.note as string | null) ?? null},
                   (SELECT id FROM categories WHERE id = ${e.default_category_id == null ? null : Number(e.default_category_id)} AND user_id = ${userId}),
+                  ${(e.website as string | null) ?? null}, ${(e.logo as string | null) ?? null},
                   ${e.created_at as string}::timestamptz, ${e.updated_at as string}::timestamptz)`);
       }
       for (const a of undo.before.aliases) {

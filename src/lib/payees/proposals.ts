@@ -34,6 +34,7 @@ import {
   type IdentifierKind,
 } from "./directory";
 import { executePayeeOp, type PayeeOpResult, type SingleOp } from "./ops";
+import { normalizeWebsite } from "./profile";
 import type { BatchActor } from "./batches";
 import type { PayeeOverview } from "./service";
 import type { PayeeExecutor } from "./scan";
@@ -47,6 +48,8 @@ export type ProposalInput = {
   entityId?: number;
   aliases?: Array<string | { pattern: string; mode?: string }>;
   identifiers?: Array<{ kind: string; value: string }>;
+  /** P5c: the merchant's website (found by the AI client, e.g. by web search). */
+  website?: string;
   reason?: string;
   confidence?: number;
 };
@@ -57,6 +60,8 @@ export type ProposalPayload = {
   entityId: number | null;
   aliases: Array<{ pattern: string; mode: AliasMode }>;
   identifiers: Array<{ kind: IdentifierKind; value: string }>;
+  /** P5c: normalized https URL. Never kept for a private person / sole proprietor. */
+  website?: string | null;
   reason: string;
   /** Plain-language problems found when it was submitted (e.g. an alias owned elsewhere). */
   notes: string[];
@@ -98,8 +103,14 @@ export function normalizeProposal(input: ProposalInput): { payload: ProposalPayl
   const people = names.filter((n) => guessPayeeType(n).isPerson);
   const needsDecision = type === "person" || type === "sole_proprietor" || people.length > 0;
   const reason = String(input.reason ?? "").replace(/\s+/g, " ").trim().slice(0, 1000);
+  const notes: string[] = [];
+  let website: string | null = null;
+  if (input.website?.trim()) {
+    if (type === "person" || type === "sole_proprietor") notes.push("Website skipped: private persons and sole proprietors don't get one.");
+    else website = normalizeWebsite(input.website);
+  }
   return {
-    payload: { canonical, type, entityId: input.entityId ?? null, aliases, identifiers, reason, notes: [] },
+    payload: { canonical, type, entityId: input.entityId ?? null, aliases, identifiers, website, reason, notes },
     confidence,
     needsDecision,
   };
@@ -192,10 +203,11 @@ function proposalOps(p: Proposal): SingleOp[] {
     const ops: SingleOp[] = [];
     if (p.aliases.length) ops.push({ op: "alias_add", entityId: p.entityId, aliases: p.aliases });
     if (p.identifiers.length) ops.push({ op: "identifiers", entityId: p.entityId, add: p.identifiers });
+    if (p.website) ops.push({ op: "update", entityId: p.entityId, website: p.website, apply: false });
     if (!ops.length) ops.push({ op: "apply", entityIds: [p.entityId] });
     return ops;
   }
-  return [{ op: "create", name: p.canonical, type: p.type, aliases: p.aliases, identifiers: p.identifiers }];
+  return [{ op: "create", name: p.canonical, type: p.type, aliases: p.aliases, identifiers: p.identifiers, website: p.website ?? null }];
 }
 
 /**
@@ -260,6 +272,7 @@ export function proposalOut(p: Proposal) {
     ...(p.entityId != null ? { entity_id: p.entityId } : {}),
     aliases: p.aliases,
     identifiers: p.identifiers.map((i) => ({ kind: i.kind, value: maskIdentifier(i.kind, i.value) })),
+    ...(p.website ? { website: p.website } : {}),
     reason: p.reason,
     confidence: p.confidence,
     needsDecision: p.needsDecision,
@@ -326,7 +339,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     },
     unrecognized,
     clusters,
-    directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type })),
+    directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, has_website: e.website != null })),
     currency: o.currency,
   };
 }

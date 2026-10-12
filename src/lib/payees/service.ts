@@ -31,6 +31,9 @@ export type EntitySummary = {
   aliasCount: number;
   identifierCount: number;
   defaultCategoryId: number | null;
+  /** P5c: has a website / a logo (the logo itself is served by /api/payees/[id]/logo). */
+  website: string | null;
+  hasLogo: boolean;
   /** Transactions resolving to the entity, and their display-currency total. */
   count: number;
   total: number;
@@ -95,6 +98,8 @@ export async function loadPayeeOverview(opts: {
       aliasCount: e.aliases.length,
       identifierCount: e.identifiers.length,
       defaultCategoryId: e.defaultCategoryId,
+      website: e.website,
+      hasLogo: e.logo != null,
       count: totals.get(e.id)?.count ?? 0,
       total: Math.round((totals.get(e.id)?.total ?? 0) * 100) / 100,
       lastDate: totals.get(e.id)?.lastDate ?? null,

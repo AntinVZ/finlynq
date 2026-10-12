@@ -15,7 +15,7 @@ import { detectRecurrence } from "@/lib/payees/insights";
 import type { PayeeEntity } from "@/lib/payees/directory";
 
 const ent = (id: number, name: string, type: PayeeEntity["type"], aliases: Array<[string, string?, string?]> = [], identifiers: Array<[string, string]> = []): PayeeEntity => ({
-  id, name, type, note: "private note", defaultCategoryId: 3, createdAt: null, updatedAt: null,
+  id, name, type, note: "private note", defaultCategoryId: 3, website: null, logo: null, createdAt: null, updatedAt: null,
   aliases: [{ id: id * 100, entityId: id, pattern: name, mode: "exact", source: "canonical", createdAt: null },
     ...aliases.map(([pattern, mode = "exact", source = "manual"], i) => ({ id: id * 100 + i + 1, entityId: id, pattern, mode: mode as "exact", source, createdAt: null }))],
   identifiers: identifiers.map(([kind, value], i) => ({ id: id * 10 + i, entityId: id, kind: kind as "iban", value, createdAt: null })),
