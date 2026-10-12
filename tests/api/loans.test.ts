@@ -28,8 +28,6 @@ vi.mock("@/lib/auth/require-auth", () => ({
   requireAuth: vi.fn(async () => ({ authenticated: true, context: { userId: "default", method: "passphrase" as const, mfaVerified: false, dek: Buffer.alloc(32, 0xaa), sessionId: "test-session-jti" } })),
 }));
 
-// The loans surface is DevModeGuard-gated; without this mock every request
-// 404s before reaching the handler (the mocked settings query returns []).
 
 const mockGenerateAmortization = vi.fn();
 const mockExtraPaymentImpact = vi.fn();
