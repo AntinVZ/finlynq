@@ -9,13 +9,12 @@
  * Body: { from, to, dryRun? }. dryRun returns how many categories would move
  * and whether `to` already exists; nothing is written.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
 import { normalizeDbRows } from "@/lib/db-utils";
-import { requireAuth } from "@/lib/auth/require-auth";
-import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
+import { apiHandler } from "@/lib/api-handler";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
 
 const bodySchema = z.object({
@@ -31,13 +30,10 @@ async function countInGroup(userId: string, group: string): Promise<number> {
   return Number(rows[0]?.n ?? 0);
 }
 
-export async function POST(request: NextRequest) {
-  const auth = await requireAuth(request); if (!auth.authenticated) return auth.response;
-  const { userId } = auth.context;
-  try {
-    const parsed = validateBody(await request.json(), bodySchema);
-    if (parsed.error) return parsed.error;
-    const { from, to, dryRun } = parsed.data;
+export const POST = apiHandler(
+  { auth: "auth", raw: true, body: bodySchema, fallbackMessage: "Failed to rename group" },
+  async ({ userId, body }) => {
+    const { from, to, dryRun } = body;
 
     const affected = await countInGroup(userId, from);
     const targetCount = from === to ? 0 : await countInGroup(userId, to);
@@ -51,8 +47,5 @@ export async function POST(request: NextRequest) {
     );
     invalidateUserTxCache(userId);
     return NextResponse.json({ ...preview, updated: rows.length });
-  } catch (error: unknown) {
-    await logApiError("POST", "/api/categories/groups", error, userId);
-    return NextResponse.json({ error: safeErrorMessage(error, "Failed to rename group") }, { status: 500 });
-  }
-}
+  },
+);

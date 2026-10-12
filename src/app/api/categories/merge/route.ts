@@ -9,12 +9,11 @@
  * The SQL is the shared core in src/lib/categories/merge.ts — the same code
  * MCP `manage_categories` op:"merge" runs.
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
-import { requireEncryption } from "@/lib/auth/require-encryption";
-import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
+import { apiHandler } from "@/lib/api-handler";
 import { isPgErrorCode, normalizeDbRows } from "@/lib/db-utils";
 import {
   countBudgetMonthConflicts,
@@ -30,13 +29,19 @@ const bodySchema = z.object({
   dryRun: z.boolean().optional(),
 });
 
-export async function POST(request: NextRequest) {
-  const auth = await requireEncryption(request); if (!auth.ok) return auth.response;
-  const { userId } = auth;
-  try {
-    const parsed = validateBody(await request.json(), bodySchema);
-    if (parsed.error) return parsed.error;
-    const { sourceId, targetId, dryRun } = parsed.data;
+/** A unique-index clash during the repoint (e.g. two budgets for one month) → 409. */
+function mergeConflict(error: unknown): NextResponse | null {
+  if (!isPgErrorCode(error, "23505")) return null;
+  return NextResponse.json(
+    { error: "The merge would create a duplicate (for example two budgets for the same month). Nothing was changed.", code: "conflict" },
+    { status: 409 },
+  );
+}
+
+export const POST = apiHandler(
+  { auth: "encryption", raw: true, body: bodySchema, mapError: mergeConflict, fallbackMessage: "Failed to merge categories" },
+  async ({ userId, body }) => {
+    const { sourceId, targetId, dryRun } = body;
     if (sourceId === targetId) {
       return NextResponse.json({ error: "Source and target are the same category — nothing to merge." }, { status: 400 });
     }
@@ -76,14 +81,5 @@ export async function POST(request: NextRequest) {
     const repointed = await mergeCategoryInto(db, userId, sourceId, targetId);
     invalidateUserTxCache(userId);
     return NextResponse.json({ merged: true, sourceId, targetId, repointed });
-  } catch (error: unknown) {
-    if (isPgErrorCode(error, "23505")) {
-      return NextResponse.json(
-        { error: "The merge would create a duplicate (for example two budgets for the same month). Nothing was changed.", code: "conflict" },
-        { status: 409 },
-      );
-    }
-    await logApiError("POST", "/api/categories/merge", error, userId);
-    return NextResponse.json({ error: safeErrorMessage(error, "Failed to merge categories") }, { status: 500 });
-  }
-}
+  },
+);

@@ -33,11 +33,10 @@
  * tagged rows (lib/transactions/tag-ops.ts) and write through the shared
  * batch writer (user-scoped, `updated_at` bumped).
  */
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { z } from "zod";
-import { requireEncryption } from "@/lib/auth/require-encryption";
+import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
-import { validateBody, safeErrorMessage, logApiError } from "@/lib/validate";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
 import { BUSINESS_PARAM, parseBusinessParam } from "@/lib/reports/business-filter";
 import { getDisplayCurrency, getRateMap } from "@/lib/fx-service";
@@ -57,37 +56,29 @@ import {
   type TagOp,
 } from "@/lib/transactions/tag-ops";
 
-export async function GET(request: NextRequest) {
-  const auth = await requireEncryption(request);
-  if (!auth.ok) return auth.response;
-  const { userId, dek } = auth;
-  try {
-    const business = parseBusinessParam(request.nextUrl.searchParams.get(BUSINESS_PARAM));
-    const scan = await scanTaggedRows({ executor: db, userId, dek, business });
-    const summaries = summarizeTags(scan.rows);
-    const currency = await getDisplayCurrency(userId);
-    const rateMap = await getRateMap(currency, userId);
-    const toTotal = (slices: TagSlice[]) =>
-      Math.round(slices.reduce((sum, s) => sum + convertReportingSlice(s, currency, rateMap), 0) * 100) / 100;
-    const tags = summaries.map(({ slices, ...t }) => ({ ...t, total: toTotal(slices) }));
-    const tree =
-      request.nextUrl.searchParams.get("tree") === "1"
-        ? buildTagTree(scan.rows).map(({ slices, ...n }) => ({ ...n, total: toTotal(slices) }))
-        : undefined;
-    return NextResponse.json({
-      tags,
-      ...(tree ? { tree } : {}),
-      currency,
-      business,
-      scanned: scan.scanned,
-      truncated: scan.truncated,
-      ...(scan.undecryptable > 0 ? { undecryptable: scan.undecryptable } : {}),
-    });
-  } catch (error) {
-    await logApiError("GET", "/api/tags", error, userId);
-    return NextResponse.json({ error: safeErrorMessage(error, "Failed to load tags") }, { status: 500 });
-  }
-}
+export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load tags" }, async ({ request, userId, dek }) => {
+  const business = parseBusinessParam(request.nextUrl.searchParams.get(BUSINESS_PARAM));
+  const scan = await scanTaggedRows({ executor: db, userId, dek: dek!, business });
+  const summaries = summarizeTags(scan.rows);
+  const currency = await getDisplayCurrency(userId);
+  const rateMap = await getRateMap(currency, userId);
+  const toTotal = (slices: TagSlice[]) =>
+    Math.round(slices.reduce((sum, s) => sum + convertReportingSlice(s, currency, rateMap), 0) * 100) / 100;
+  const tags = summaries.map(({ slices, ...t }) => ({ ...t, total: toTotal(slices) }));
+  const tree =
+    request.nextUrl.searchParams.get("tree") === "1"
+      ? buildTagTree(scan.rows).map(({ slices, ...n }) => ({ ...n, total: toTotal(slices) }))
+      : undefined;
+  return NextResponse.json({
+    tags,
+    ...(tree ? { tree } : {}),
+    currency,
+    business,
+    scanned: scan.scanned,
+    truncated: scan.truncated,
+    ...(scan.undecryptable > 0 ? { undecryptable: scan.undecryptable } : {}),
+  });
+});
 
 const tagName = z.string().max(200);
 const tagNames = z.union([tagName, z.array(tagName).max(500)]);
@@ -103,20 +94,14 @@ const postSchema = z.discriminatedUnion("op", [
 const tooLargeError = () =>
   `This would change more transactions than one tag operation can safely cover (limit ${TAG_OP_MAX_ROWS.toLocaleString("en-US")}).`;
 
-export async function POST(request: NextRequest) {
-  const auth = await requireEncryption(request);
-  if (!auth.ok) return auth.response;
-  const { userId, dek } = auth;
+export const POST = apiHandler(
+  { auth: "encryption", raw: true, body: postSchema, fallbackMessage: "Tag update failed" },
+  async ({ userId, dek: maybeDek, body: input }) => {
+    const dek = maybeDek!;
 
-  const body = await request.json().catch(() => null);
-  const parsed = validateBody(body, postSchema);
-  if (parsed.error) return parsed.error;
-  const input = parsed.data;
-
-  // Branch rename and spelling cleanup reuse the scan + the shared batch
-  // writer; only the per-row transform differs.
-  if (input.op === "rename_prefix" || input.op === "normalize") {
-    try {
+    // Branch rename and spelling cleanup reuse the scan + the shared batch
+    // writer; only the per-row transform differs.
+    if (input.op === "rename_prefix" || input.op === "normalize") {
       const scan = await scanTaggedRows({ executor: db, userId, dek });
       let transform: (tags: string) => string;
       let summary: Record<string, unknown> & { affected: number; tooLarge: boolean; truncated: boolean; ids?: number[] };
@@ -139,22 +124,17 @@ export async function POST(request: NextRequest) {
       const res = await runTagTransform({ executor: db, userId, dek, transform, ids });
       if (res.changed > 0) invalidateUserTxCache(userId);
       return NextResponse.json({ ...publicSummary, changed: res.changed });
-    } catch (error) {
-      await logApiError("POST", "/api/tags", error, userId);
-      return NextResponse.json({ error: safeErrorMessage(error, "Tag update failed") }, { status: 500 });
     }
-  }
 
-  const raw: TagOp =
-    input.op === "rename"
-      ? { op: "rename", from: input.tag, to: input.newName }
-      : input.op === "merge"
-        ? { op: "merge", from: typeof input.tags === "string" ? [input.tags] : input.tags, to: input.into }
-        : { op: "delete", tags: typeof input.tags === "string" ? [input.tags] : input.tags };
-  const norm = normalizeTagOp(raw);
-  if (!norm.ok) return NextResponse.json({ error: norm.error }, { status: 400 });
+    const raw: TagOp =
+      input.op === "rename"
+        ? { op: "rename", from: input.tag, to: input.newName }
+        : input.op === "merge"
+          ? { op: "merge", from: typeof input.tags === "string" ? [input.tags] : input.tags, to: input.into }
+          : { op: "delete", tags: typeof input.tags === "string" ? [input.tags] : input.tags };
+    const norm = normalizeTagOp(raw);
+    if (!norm.ok) return NextResponse.json({ error: norm.error }, { status: 400 });
 
-  try {
     const scan = await scanTaggedRows({ executor: db, userId, dek });
     const plan = planTagOp(norm.op, scan);
     const summary = {
@@ -166,20 +146,10 @@ export async function POST(request: NextRequest) {
     };
     if (input.dryRun) return NextResponse.json(summary);
     if (plan.tooLarge || plan.truncated) {
-      return NextResponse.json(
-        {
-          ...summary,
-          error: tooLargeError(),
-          code: "tag_op_too_large",
-        },
-        { status: 409 },
-      );
+      return NextResponse.json({ ...summary, error: tooLargeError(), code: "tag_op_too_large" }, { status: 409 });
     }
     const res = await runTagOp({ executor: db, userId, dek, op: norm.op, ids: plan.ids });
     if (res.changed > 0) invalidateUserTxCache(userId);
     return NextResponse.json({ ...summary, changed: res.changed });
-  } catch (error) {
-    await logApiError("POST", "/api/tags", error, userId);
-    return NextResponse.json({ error: safeErrorMessage(error, "Tag update failed") }, { status: 500 });
-  }
-}
+  },
+);
