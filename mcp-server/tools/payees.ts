@@ -51,7 +51,7 @@ import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
-import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
+import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, suspiciousOf, type PayeeOverview } from "../../src/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
 import { mineIdentifiers, proposeMined } from "../../src/lib/payees/mine";
 import { findWhose } from "../../src/lib/payees/whose";
@@ -155,6 +155,7 @@ function opOut(r: PayeeOpResult) {
     ...(r.blocked ? { blocked: r.blocked } : {}),
     ...(r.emptyReason ? { emptyReason: r.emptyReason } : {}),
     ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to, ...(t.via ? { matched_by: t.via } : {}) })) } : {}),
+    ...(r.reviewed.length ? { reviewed: r.reviewed.map((x) => ({ entity_id: x.id, name: x.name, reviewed: x.reviewed })) } : {}),
     ...(r.skipped.length ? { merchantTypeSkipped: r.skipped.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, reason: t.reason })) } : {}),
     ...(r.merchantTypes.added.length || r.merchantTypes.updated.length || r.merchantTypes.removed.length ? { merchantTypes: r.merchantTypes } : {}),
   };
@@ -367,7 +368,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, mine_identifiers, whose (who has this card / IBAN / code), dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -594,6 +595,22 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         proposal_ids: z.array(z.number().int().positive()).min(1).max(1000),
       }),
       z.object({
+        op: z.literal("suspicious"),
+        include_reviewed: z.boolean().optional().describe("Also list entries already marked as checked."),
+        limit: z.number().int().positive().max(1000).optional().describe("Most entries (default 100)."),
+      }),
+      z.object({
+        op: z.literal("mark_reviewed"),
+        entity_ids: z.array(z.number().int().positive()).min(1).max(500),
+        reviewed: z.boolean().optional().describe("false clears the mark (default true)."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("delete"),
+        entity_id: z.number().int().positive().describe("The directory entry to remove; its transactions keep their payees as they are."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
         op: z.literal("undo"),
         batch_id: z.number().int().positive().describe("A batch_id from a write result or op=batches."),
         confirmation_token: tokenArg,
@@ -756,6 +773,20 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return await writeOp({ op: "apply", entityIds: input.entity_ids }, input.confirmation_token);
           case "undo":
             return await writeOp({ op: "undo", batchId: input.batch_id }, input.confirmation_token);
+          case "suspicious": {
+            const o = await overview();
+            const list = suspiciousOf(o, { includeReviewed: input.include_reviewed });
+            return dataResponse({
+              entries: list.slice(0, input.limit ?? 100).map((x) => ({ entity_id: x.id, name: x.name, reasons: x.reasons.map((r) => r.reason), transactions: x.count, spellings: x.spellings })),
+              total: list.length,
+              howTo: "Nothing changes by itself. Ask the user, then: op=update name=… (rename), op=merge into_entity_id=… entity_ids=[id] (merge), op=delete entity_id=… (removes the entry; rows stay), or op=mark_reviewed entity_ids=[…] (checked; not listed again). All two-step, undoable.",
+              ...scanMeta(o),
+            });
+          }
+          case "mark_reviewed":
+            return await writeOp({ op: "mark_reviewed", entityIds: input.entity_ids, reviewed: input.reviewed }, input.confirmation_token);
+          case "delete":
+            return await writeOp({ op: "delete", entityId: input.entity_id }, input.confirmation_token);
           case "insights": {
             const directory = dek ? await loadDirectory(db, userId, dek) : [];
             const { currency, convert } = await makeSliceConverter(userId);

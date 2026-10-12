@@ -12,6 +12,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { OpDialog, type OpPreview } from "./op-dialog";
 import { typeLabel } from "./payee-ui";
+import { useStudioT } from "./i18n";
 
 export type MerchantTypeOption = { id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null };
 export type MerchantTypeRef = { group: string; name: string };
@@ -35,11 +36,12 @@ export function merchantTypeLabel(t: MerchantTypeRef | null | undefined): string
  * it has none yet, the old entity type, dimmed.
  */
 export function PayeeTypeLabel({ merchantType, type, className = "" }: { merchantType?: MerchantTypeRef | null; type?: string | null; className?: string }) {
+  const t = useStudioT();
   if (merchantType) return <span className={className}>{merchantTypeLabel(merchantType)}</span>;
   if (!type) return null;
   return (
-    <span className={`${className} opacity-60`} title="Тип мерчанта ще не призначено">
-      {typeLabel(type)}
+    <span className={`${className} opacity-60`} title={t("types.notAssigned")}>
+      {typeLabel(type, t)}
     </span>
   );
 }
@@ -60,8 +62,8 @@ export function MerchantTypeSelect({
   types,
   value,
   onChange,
-  label = "Тип мерчанта",
-  emptyLabel = "— без типу —",
+  label,
+  emptyLabel,
   className = "h-9 rounded-md border bg-background px-2 text-sm",
 }: {
   types: readonly MerchantTypeOption[];
@@ -71,9 +73,10 @@ export function MerchantTypeSelect({
   emptyLabel?: string;
   className?: string;
 }) {
+  const t = useStudioT();
   return (
-    <select aria-label={label} className={className} value={value ? keyOf(value) : ""} onChange={(e) => onChange(refOf(e.target.value))}>
-      <option value="">{emptyLabel}</option>
+    <select aria-label={label ?? t("types.merchantType")} className={className} value={value ? keyOf(value) : ""} onChange={(e) => onChange(refOf(e.target.value))}>
+      <option value="">{emptyLabel ?? t("types.none")}</option>
       {groupMerchantTypes(types).map((g) =>
         g.items.length === 1 && g.items[0].name === g.group ? (
           <option key={g.group} value={keyOf(g.items[0])}>
@@ -81,9 +84,9 @@ export function MerchantTypeSelect({
           </option>
         ) : (
           <optgroup key={g.group} label={g.group}>
-            {g.items.map((t) => (
-              <option key={keyOf(t)} value={keyOf(t)}>
-                {t.name}
+            {g.items.map((x) => (
+              <option key={keyOf(x)} value={keyOf(x)}>
+                {x.name}
               </option>
             ))}
           </optgroup>
@@ -106,6 +109,7 @@ export function SetMerchantTypeDialog({
   onClose: () => void;
   onDone: (r: OpPreview) => void;
 }) {
+  const t = useStudioT();
   const [mode, setMode] = useState<"selected" | "word">(entityIds.length ? "selected" : "word");
   const [value, setValue] = useState<MerchantTypeRef | null>(null);
   const [word, setWord] = useState("");
@@ -119,21 +123,21 @@ export function SetMerchantTypeDialog({
         ? { op: "set_merchant_type", merchantType: value, typeWord: word.trim(), onlyUntyped }
         : null;
   return (
-    <OpDialog title="Призначити тип мерчанта" body={body} onClose={onClose} onDone={onDone} confirmLabel="Призначити">
-      <div className="flex flex-wrap gap-3 text-sm" role="radiogroup" aria-label="Кому">
+    <OpDialog title={t("types.setTitle")} body={body} onClose={onClose} onDone={onDone} confirmLabel={t("types.setConfirm")}>
+      <div className="flex flex-wrap gap-3 text-sm" role="radiogroup" aria-label={t("types.setTarget")}>
         <label className={`inline-flex items-center gap-1.5 ${entityIds.length ? "" : "opacity-50"}`}>
-          <input type="radio" disabled={!entityIds.length} checked={mode === "selected"} onChange={() => setMode("selected")} /> Вибраним ({entityIds.length})
+          <input type="radio" disabled={!entityIds.length} checked={mode === "selected"} onChange={() => setMode("selected")} /> {t("types.setSelected", { n: entityIds.length })}
         </label>
         <label className="inline-flex items-center gap-1.5">
-          <input type="radio" checked={mode === "word"} onChange={() => setMode("word")} /> За словом-типом
+          <input type="radio" checked={mode === "word"} onChange={() => setMode("word")} /> {t("types.setByWord")}
         </label>
       </div>
       {mode === "word" && (
-        <Input aria-label="Слово-тип" placeholder="ресторан, аптека, АЗС…" value={word} onChange={(e) => setWord(e.target.value)} />
+        <Input aria-label={t("types.word")} placeholder={t("types.wordPlaceholder")} value={word} onChange={(e) => setWord(e.target.value)} />
       )}
-      <MerchantTypeSelect types={types} value={value} onChange={setValue} emptyLabel="— прибрати тип —" className="h-9 w-full rounded-md border bg-background px-2 text-sm" />
+      <MerchantTypeSelect types={types} value={value} onChange={setValue} emptyLabel={t("types.clear")} className="h-9 w-full rounded-md border bg-background px-2 text-sm" />
       <label className="inline-flex items-center gap-1.5 text-xs">
-        <input type="checkbox" checked={onlyUntyped} onChange={(e) => setOnlyUntyped(e.target.checked)} /> Лише записи без типу
+        <input type="checkbox" checked={onlyUntyped} onChange={(e) => setOnlyUntyped(e.target.checked)} /> {t("types.onlyUntyped")}
       </label>
     </OpDialog>
   );
@@ -149,6 +153,7 @@ export function MerchantTypesEditor({
   onClose: () => void;
   onDone: (r: OpPreview) => void;
 }) {
+  const t = useStudioT();
   const [change, setChange] = useState<{ title: string; body: Record<string, unknown> } | null>(null);
   const [group, setGroup] = useState("");
   const [name, setName] = useState("");
@@ -156,47 +161,47 @@ export function MerchantTypesEditor({
   const virtual = types.some((t) => t.id == null);
   if (change) {
     return (
-      <OpDialog title={change.title} body={change.body} onClose={() => setChange(null)} onDone={onDone} confirmLabel="Зберегти" />
+      <OpDialog title={change.title} body={change.body} onClose={() => setChange(null)} onDone={onDone} confirmLabel={t("common.save")} />
     );
   }
   return (
-    <OpDialog title="Типи мерчантів" body={null} onClose={onClose} onDone={onDone}>
+    <OpDialog title={t("types.editorTitle")} body={null} onClose={onClose} onDone={onDone}>
       <p className="text-xs text-muted-foreground">
-        Один тип на мерчанта: група → позиція. Зв&apos;язок із категоріями необов&apos;язковий. {virtual ? "Це стартовий набір; він збережеться під час першої зміни." : ""}
+        {t("types.editorIntro")} {virtual ? t("types.editorStarter") : ""}
       </p>
       <ul className="max-h-72 overflow-y-auto divide-y rounded-md border text-sm">
         {groupMerchantTypes(types).map((g) => (
           <li key={g.group} className="p-2">
             <p className="font-medium">{g.group}</p>
             <ul className="mt-1 space-y-1">
-              {g.items.map((t) => (
-                <li key={`${t.group}:${t.name}`} className="flex flex-wrap items-center gap-2 text-xs">
-                  {rename && rename.id === t.id ? (
+              {g.items.map((x) => (
+                <li key={`${x.group}:${x.name}`} className="flex flex-wrap items-center gap-2 text-xs">
+                  {rename && rename.id === x.id ? (
                     <>
-                      <Input aria-label="Група" className="h-7 w-40 text-xs" value={rename.group} onChange={(e) => setRename({ ...rename, group: e.target.value })} />
-                      <Input aria-label="Позиція" className="h-7 w-40 text-xs" value={rename.name} onChange={(e) => setRename({ ...rename, name: e.target.value })} />
+                      <Input aria-label={t("types.group")} className="h-7 w-40 text-xs" value={rename.group} onChange={(e) => setRename({ ...rename, group: e.target.value })} />
+                      <Input aria-label={t("types.position")} className="h-7 w-40 text-xs" value={rename.name} onChange={(e) => setRename({ ...rename, name: e.target.value })} />
                       <Button
                         size="sm"
                         className="h-7 text-xs"
                         disabled={!rename.group.trim()}
-                        onClick={() => setChange({ title: `Перейменувати «${merchantTypeLabel(t)}»`, body: { op: "merchant_types", update: [{ id: t.id, group: rename.group.trim(), name: rename.name.trim() || rename.group.trim() }] } })}
+                        onClick={() => setChange({ title: t("types.renameTitle", { name: merchantTypeLabel(x) }), body: { op: "merchant_types", update: [{ id: x.id, group: rename.group.trim(), name: rename.name.trim() || rename.group.trim() }] } })}
                       >
-                        Перевірити
+                        {t("types.check")}
                       </Button>
                       <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setRename(null)}>
-                        Скасувати
+                        {t("common.cancel")}
                       </Button>
                     </>
                   ) : (
                     <>
-                      <span className="flex-1 break-all">{t.name}</span>
-                      {t.id != null && (
+                      <span className="flex-1 break-all">{x.name}</span>
+                      {x.id != null && (
                         <>
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setRename({ id: t.id!, group: t.group, name: t.name })}>
-                            Перейменувати
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setRename({ id: x.id!, group: x.group, name: x.name })}>
+                            {t("types.rename")}
                           </Button>
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setChange({ title: `Видалити «${merchantTypeLabel(t)}»`, body: { op: "merchant_types", remove: [t.id] } })}>
-                            Видалити
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setChange({ title: t("types.removeTitle", { name: merchantTypeLabel(x) }), body: { op: "merchant_types", remove: [x.id] } })}>
+                            {t("types.remove")}
                           </Button>
                         </>
                       )}
@@ -209,19 +214,19 @@ export function MerchantTypesEditor({
         ))}
       </ul>
       <div className="grid gap-2 sm:grid-cols-[1fr_1fr_auto]">
-        <Input aria-label="Група нового типу" placeholder="Група" value={group} onChange={(e) => setGroup(e.target.value)} list="merchant-type-groups" />
+        <Input aria-label={t("types.newGroup")} placeholder={t("types.group")} value={group} onChange={(e) => setGroup(e.target.value)} list="merchant-type-groups" />
         <datalist id="merchant-type-groups">
           {groupMerchantTypes(types).map((g) => (
             <option key={g.group} value={g.group} />
           ))}
         </datalist>
-        <Input aria-label="Позиція нового типу" placeholder="Позиція (необов'язково)" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input aria-label={t("types.newPosition")} placeholder={t("types.positionOptional")} value={name} onChange={(e) => setName(e.target.value)} />
         <Button
           size="sm"
           disabled={!group.trim()}
-          onClick={() => setChange({ title: "Додати тип", body: { op: "merchant_types", add: [{ group: group.trim(), ...(name.trim() ? { name: name.trim() } : {}) }] } })}
+          onClick={() => setChange({ title: t("types.addTitle"), body: { op: "merchant_types", add: [{ group: group.trim(), ...(name.trim() ? { name: name.trim() } : {}) }] } })}
         >
-          Додати
+          {t("types.add")}
         </Button>
       </div>
     </OpDialog>

@@ -61,6 +61,8 @@ export type PayeeEntity = {
   logo: string | null;
   /** P6 (B26): `payee_merchant_types.id`, or null = no type. */
   merchantTypeId: number | null;
+  /** P6.2 (83): when a person marked the entry as checked ("Перевірити" list); null / absent = not checked. */
+  reviewedAt?: string | null;
   createdAt: string | null;
   updatedAt: string | null;
   aliases: PayeeAlias[];
@@ -97,7 +99,7 @@ const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOStrin
 export async function loadDirectory(executor: PayeeExecutor, userId: string, dek: Buffer | null): Promise<PayeeEntity[]> {
   const ents = normalizeDbRows<Record<string, unknown>>(
     await executor.execute(sql`
-      SELECT id, name, type, note, default_category_id, website, logo, merchant_type_id, created_at, updated_at
+      SELECT id, name, type, note, default_category_id, website, logo, merchant_type_id, reviewed_at, created_at, updated_at
       FROM payee_entities WHERE user_id = ${userId} ORDER BY id`),
   );
   const byId = new Map<number, PayeeEntity>();
@@ -112,6 +114,7 @@ export async function loadDirectory(executor: PayeeExecutor, userId: string, dek
       website: dec(dek, r.website),
       logo: dec(dek, r.logo),
       merchantTypeId: r.merchant_type_id == null ? null : Number(r.merchant_type_id),
+      reviewedAt: iso(r.reviewed_at),
       createdAt: iso(r.created_at),
       updatedAt: iso(r.updated_at),
       aliases: [],
@@ -417,7 +420,7 @@ export async function updateEntityRow(
   userId: string,
   dek: Buffer,
   id: number,
-  patch: { name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; merchantTypeId?: number | null },
+  patch: { name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; merchantTypeId?: number | null; reviewed?: boolean },
 ): Promise<void> {
   const sets = [];
   if (patch.name !== undefined) sets.push(sql`name = ${enc(dek, patch.name)}`);
@@ -427,6 +430,7 @@ export async function updateEntityRow(
   if (patch.website !== undefined) sets.push(sql`website = ${patch.website ? enc(dek, patch.website) : null}`);
   if (patch.logo !== undefined) sets.push(sql`logo = ${patch.logo ? enc(dek, patch.logo) : null}`);
   if (patch.merchantTypeId !== undefined) sets.push(sql`merchant_type_id = ${patch.merchantTypeId}`);
+  if (patch.reviewed !== undefined) sets.push(patch.reviewed ? sql`reviewed_at = NOW()` : sql`reviewed_at = NULL`);
   if (!sets.length) return;
   sets.push(sql`updated_at = NOW()`);
   await executor.execute(sql`UPDATE payee_entities SET ${sql.join(sets, sql`, `)} WHERE id = ${id} AND user_id = ${userId}`);

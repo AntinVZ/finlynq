@@ -27,6 +27,7 @@ function setup() {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { body?: string }) => {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
+    if (url === "/api/payees/settings") return { ok: true, json: async () => ({ language: "en" }) };
     if (url === "/api/payees/proposals" && !body) return { ok: true, json: async () => ({ proposals }) };
     if (body?.action === "approve") {
       return {

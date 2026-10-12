@@ -2065,6 +2065,8 @@ export const payeeEntities = pgTable("payee_entities", {
   logo: text("logo"),
   // P6 (20261013_payee_merchant_types.sql): group → position; NULL = no type.
   merchantTypeId: integer("merchant_type_id").references((): AnyPgColumn => payeeMerchantTypes.id, { onDelete: "set null" }),
+  // P6.2 (20261014_payee_reviewed.sql): marked as checked in the "Перевірити" list; NULL = not checked.
+  reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

@@ -31,7 +31,7 @@
  */
 
 import { useMemo, useState } from "react";
-import useSWR from "swr";
+import useSWR, { mutate as globalMutate } from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -58,6 +58,8 @@ import { groupMerchantTypes, merchantTypeLabel, MerchantTypesEditor, PayeeTypeLa
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
+import { SuspiciousPanel } from "./_components/suspicious-panel";
+import { useStudioT, type StudioT } from "./_components/i18n";
 import { PayeeDrawer } from "./_components/payee-drawer";
 import { ExplainDialog } from "./_components/explain-dialog";
 import { LookalikesPanel } from "./_components/lookalikes-panel";
@@ -66,7 +68,7 @@ import { WhosePanel } from "./_components/whose-panel";
 
 const PAGE_SIZES = [25, 50] as const;
 
-type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "requisites" | "changes" | "insights";
+type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "suspicious" | "requisites" | "changes" | "insights";
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
@@ -96,6 +98,7 @@ function mergeTypeHint(
   groups: readonly PayeeGroupRow[],
   sourceEntities: readonly EntityRow[],
   types: ReadonlyArray<{ group: string; name: string }>,
+  t: StudioT,
 ): { group: string; name: string; reason: string } | null {
   const known = (t: { group: string; name: string } | null | undefined) =>
     t ? (types.find((x) => x.group === t.group && x.name === t.name) ?? types.find((x) => x.name === t.name) ?? null) : null;
@@ -104,19 +107,19 @@ function mergeTypeHint(
     return k ? { group: k.group, name: k.name, reason } : null;
   };
   for (const e of sourceEntities) {
-    const h = pick(e.merchantType, `тип запису «${e.name}»`);
+    const h = pick(e.merchantType, t("page.hint.entryType", { name: e.name }));
     if (h) return h;
   }
   for (const g of groups) {
-    const h = g.brand?.hint ? pick(g.brand.hint, `слово-тип «${g.brand.removed[0] ?? ""}»`) : null;
+    const h = g.brand?.hint ? pick(g.brand.hint, t("page.hint.typeWord", { word: g.brand.removed[0] ?? "" })) : null;
     if (h) return h;
   }
   if (groups.some((g) => g.bankOperation)) {
-    const h = pick({ group: "Банківські операції", name: "Банківські операції" }, "банківська операція");
+    const h = pick({ group: "Банківські операції", name: "Банківські операції" }, t("page.hint.bankOperation"));
     if (h) return h;
   }
   if (groups.length && groups.every((g) => g.type.isPerson)) {
-    const h = pick({ group: PERSONS_MERCHANT_GROUP, name: PERSONS_MERCHANT_GROUP }, "схоже на особу або ФОП");
+    const h = pick({ group: PERSONS_MERCHANT_GROUP, name: PERSONS_MERCHANT_GROUP }, t("page.hint.person"));
     if (h) return h;
   }
   for (const e of sourceEntities) {
@@ -129,6 +132,7 @@ function mergeTypeHint(
 }
 
 export default function PayeesSettingsPage() {
+  const t = useStudioT();
   const [tabChoice, setTab] = useState<Tab | null>(null);
   const [pageState, setPageState] = useState({ key: "", page: 0 });
   const [pageSize, setPageSize] = useState<number>(25);
@@ -145,7 +149,7 @@ export default function PayeesSettingsPage() {
   const [status, setStatus] = useState("");
 
   const { data, error: loadErr, mutate } = useSWR<PayeesResponse>("/api/payees", jsonFetcher, { revalidateOnFocus: false });
-  const loadError = loadErr ? "Couldn't load payees." : "";
+  const loadError = loadErr ? t("page.loadFailed") : "";
   // Open on Clusters when there are merge candidates, else on Unrecognized.
   const tab: Tab = tabChoice ?? (data && data.clusters.length === 0 ? "unrecognized" : "clusters");
   // The page resets whenever the tab, the search or the page size changes.
@@ -224,9 +228,9 @@ export default function PayeesSettingsPage() {
       suggestedType: cluster?.suggestedType.type ?? lead?.type.type ?? "other",
       warning:
         people.length && people.length < groups.length
-          ? "This mixes a private person or sole proprietor with other payees. People are never merged automatically — only continue if they really are the same counterparty."
+          ? t("page.mixWarning")
           : cluster?.decisionReason ?? null,
-      typeHint: mergeTypeHint(groups, entityIds.map((id) => entities.find((e) => e.id === id)).filter((e): e is EntityRow => e != null), merchantTypes),
+      typeHint: mergeTypeHint(groups, entityIds.map((id) => entities.find((e) => e.id === id)).filter((e): e is EntityRow => e != null), merchantTypes, t),
       clusterKeys: groups.map((g) => g.key),
     });
   }
@@ -234,13 +238,13 @@ export default function PayeesSettingsPage() {
   async function done(r: OpPreview, message?: string) {
     setAction(null);
     setSelected(new Set());
-    setStatus(message ?? (r.undo ? `Undone: restored ${r.undo.restoredRows} row(s).` : `Saved. ${describeRows(r)}`));
+    setStatus(message ?? (r.undo ? t("common.undone", { n: r.undo.restoredRows }) : t("common.saved", { rows: describeRows(r, t) })));
     await mutate();
   }
 
   async function saveSettings(patch: Record<string, unknown>) {
     await fetch("/api/payees/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).catch(() => null);
-    await mutate();
+    await Promise.all([mutate(), globalMutate("/api/payees/settings")]);
   }
 
   const spellingsBadge = (g: PayeeGroupRow) =>
@@ -250,7 +254,7 @@ export default function PayeesSettingsPage() {
         className="ml-2 border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"
         title={g.spellings.map((s) => `"${s.spelling}" × ${s.count}`).join(", ")}
       >
-        {g.spellings.length} spellings
+        {t("page.spellingsBadge", { n: g.spellings.length })}
       </Badge>
     ) : null;
   const payeeLink = (g: PayeeGroupRow) =>
@@ -268,44 +272,44 @@ export default function PayeesSettingsPage() {
       <span className={g.type.confidence < 0.5 ? "text-muted-foreground" : undefined} title={g.type.reason}>
         <PayeeTypeLabel merchantType={g.entityId != null ? entityById.get(g.entityId)?.merchantType : null} type={g.type.type} />
       </span>
-      {g.type.isPerson && g.entityId == null && needsDecisionBadge(g.type.reason)}
+      {g.type.isPerson && g.entityId == null && needsDecisionBadge(g.type.reason, t)}
       {g.bankOperation && (
-        <Badge variant="outline" className="text-[10px]" title={`Службовий рядок банку («${g.bankOperation}»): не мерчант, не входить у топи витрат`}>
-          Банківські операції
+        <Badge variant="outline" className="text-[10px]" title={t("page.bankOpTitle", { op: g.bankOperation })}>
+          {t("page.bankOp")}
         </Badge>
       )}
       {g.brand?.typeOnly && !g.bankOperation && (
-        <Badge variant="outline" className="text-[10px]" title={`Лише слова-типи (${g.brand.removed.join(", ")}): без бренду не кластеризується і не пропонується як мерчант`}>
-          без бренду
+        <Badge variant="outline" className="text-[10px]" title={t("page.noBrandTitle", { words: g.brand.removed.join(", ") })}>
+          {t("page.noBrand")}
         </Badge>
       )}
     </span>
   );
   const rowAction = (g: PayeeGroupRow) =>
     g.entityId == null ? (
-      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => mergeGroups(`Add “${g.name}” to the directory`, [g])}>
-        Add to directory
+      <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => mergeGroups(t("page.addTitle", { name: g.name }), [g])}>
+        {t("common.addToDirectory")}
       </Button>
     ) : null;
   const checkbox = (g: PayeeGroupRow) => (
-    <input type="checkbox" aria-label={`Select ${g.name}`} checked={selected.has(g.key)} onChange={() => toggle(g.key)} />
+    <input type="checkbox" aria-label={t("page.select", { name: g.name })} checked={selected.has(g.key)} onChange={() => toggle(g.key)} />
   );
 
   const pager = (total: number) =>
     total > PAGE_SIZES[0] ? (
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="Pages">
+      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label={t("page.pages")}>
         <span className="tabular-nums">
-          {page * pageSize + 1}–{Math.min(total, (page + 1) * pageSize)} of {total}
+          {t("page.range", { from: page * pageSize + 1, to: Math.min(total, (page + 1) * pageSize), total })}
         </span>
         <Button variant="outline" size="sm" className="h-7 text-xs" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-          Previous
+          {t("page.previous")}
         </Button>
         <Button variant="outline" size="sm" className="h-7 text-xs" disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>
-          Next
+          {t("page.next")}
         </Button>
         <label className="ml-auto inline-flex items-center gap-1">
-          Per page
-          <select aria-label="Rows per page" className="h-7 rounded-md border bg-background px-1" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
+          {t("page.perPage")}
+          <select aria-label={t("page.rowsPerPage")} className="h-7 rounded-md border bg-background px-1" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
             {PAGE_SIZES.map((n) => (
               <option key={n} value={n}>{n}</option>
             ))}
@@ -315,38 +319,37 @@ export default function PayeesSettingsPage() {
     ) : null;
 
   const tabs: Array<{ id: Tab; label: string }> = [
-    { id: "all", label: `All${data ? ` (${data.groups.filter((g) => g.key).length})` : ""}` },
-    { id: "clusters", label: `Clusters${data ? ` (${data.clusters.length})` : ""}` },
-    { id: "lookalikes", label: `Look-alikes${data ? ` (${data.lookalikeCount ?? 0})` : ""}` },
-    { id: "unrecognized", label: `Unrecognized${data ? ` (${unrecognizedCount})` : ""}` },
-    { id: "directory", label: `Directory${data ? ` (${entities.length})` : ""}` },
-    { id: "requisites", label: "Requisites" },
-    { id: "changes", label: "Changes" },
-    { id: "insights", label: "Insights" },
+    { id: "all", label: `${t("page.tab.all")}${data ? ` (${data.groups.filter((g) => g.key).length})` : ""}` },
+    { id: "clusters", label: `${t("page.tab.clusters")}${data ? ` (${data.clusters.length})` : ""}` },
+    { id: "lookalikes", label: `${t("page.tab.lookalikes")}${data ? ` (${data.lookalikeCount ?? 0})` : ""}` },
+    { id: "unrecognized", label: `${t("page.tab.unrecognized")}${data ? ` (${unrecognizedCount})` : ""}` },
+    { id: "directory", label: `${t("page.tab.directory")}${data ? ` (${entities.length})` : ""}` },
+    { id: "suspicious", label: `${t("suspicious.tab")}${data ? ` (${data.suspicious?.length ?? 0})` : ""}` },
+    { id: "requisites", label: t("page.tab.requisites") },
+    { id: "changes", label: t("page.tab.changes") },
+    { id: "insights", label: t("page.tab.insights") },
   ];
 
   return (
     <div className="max-w-6xl space-y-6">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
-          <h1 className="text-2xl font-bold tracking-tight">Payees</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            Every merchant, service and person you pay or get paid by, with the spellings they come in
-          </p>
+          <h1 className="text-2xl font-bold tracking-tight">{t("page.title")}</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">{t("page.subtitle")}</p>
         </div>
-        <Button variant="outline" size="sm" aria-label="Studio settings" title="Studio settings" onClick={() => setSettingsOpen(true)}>
+        <Button variant="outline" size="sm" aria-label={t("page.settingsAria")} title={t("page.settingsAria")} onClick={() => setSettingsOpen(true)}>
           <Settings2 className="h-4 w-4" />
-          <span className="ml-1 hidden sm:inline">Settings</span>
+          <span className="ml-1 hidden sm:inline">{t("page.settings")}</span>
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7" aria-label="Summary">
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7" aria-label={t("page.summary")}>
         {[
-          { label: "Payees", value: data ? String(payeeCount) : "…", onClick: () => setTab("all") },
-          { label: "Not in directory", value: data ? String(unrecognizedCount) : "…", onClick: () => setTab("unrecognized") },
-          { label: "Merge candidates", value: data ? String(data.clusters.length) : "…", onClick: () => setTab("clusters") },
-          { label: "New look-alikes", value: data ? String(data.lookalikeCount ?? 0) : "…", onClick: () => setTab("lookalikes") },
-          { label: "Auto-replace", value: data ? (data.settings.importHint ? "ON" : "OFF") : "…", onClick: () => setSettingsOpen(true) },
+          { label: t("page.title"), value: data ? String(payeeCount) : "…", onClick: () => setTab("all") },
+          { label: t("page.sum.notInDirectory"), value: data ? String(unrecognizedCount) : "…", onClick: () => setTab("unrecognized") },
+          { label: t("page.sum.mergeCandidates"), value: data ? String(data.clusters.length) : "…", onClick: () => setTab("clusters") },
+          { label: t("page.sum.newLookalikes"), value: data ? String(data.lookalikeCount ?? 0) : "…", onClick: () => setTab("lookalikes") },
+          { label: t("page.sum.autoReplace"), value: data ? (data.settings.importHint ? t("page.on") : t("page.off")) : "…", onClick: () => setSettingsOpen(true) },
         ].map((c) => (
           <button key={c.label} type="button" onClick={c.onClick} className="rounded-lg border p-2 text-left hover:bg-accent/50">
             <span className="block text-xs text-muted-foreground">{c.label}</span>
@@ -354,81 +357,75 @@ export default function PayeesSettingsPage() {
           </button>
         ))}
         <Link href="/settings/payees/review" className="rounded-lg border p-2 hover:bg-accent/50">
-          <span className="block text-xs text-muted-foreground">AI assistant</span>
+          <span className="block text-xs text-muted-foreground">{t("page.aiAssistant")}</span>
           <span className="flex items-center gap-1 text-sm font-medium">
-            Review with AI
-            {data?.draftCount ? <Badge variant="secondary">{data.draftCount} waiting</Badge> : null}
+            {t("page.reviewWithAi")}
+            {data?.draftCount ? <Badge variant="secondary">{t("page.waiting", { n: data.draftCount })}</Badge> : null}
           </span>
         </Link>
       </div>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Payee Studio</CardTitle>
-          <CardDescription>
-            Names that differ only in letter case, apostrophes, Latin/Cyrillic spelling or card-terminal noise
-            (store codes, city, long numbers) are shown as one payee. Clusters are names that only look alike —
-            check the reasons before merging. People are never merged automatically. Merging renames the stored
-            payees to one canonical name (the old spellings are kept as aliases); bank statement rows are never
-            changed, and every change can be undone for 30 days.
-          </CardDescription>
+          <CardTitle className="text-base">{t("page.studio")}</CardTitle>
+          <CardDescription>{t("page.intro")}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex flex-wrap rounded-md border p-0.5" role="tablist" aria-label="Payee views">
-              {tabs.map((t) => (
+            <div className="inline-flex flex-wrap rounded-md border p-0.5" role="tablist" aria-label={t("page.views")}>
+              {tabs.map((x) => (
                 <Button
-                  key={t.id}
+                  key={x.id}
                   role="tab"
-                  aria-selected={tab === t.id}
-                  variant={tab === t.id ? "secondary" : "ghost"}
+                  aria-selected={tab === x.id}
+                  variant={tab === x.id ? "secondary" : "ghost"}
                   size="sm"
                   className="h-7 text-xs"
-                  onClick={() => setTab(t.id)}
+                  onClick={() => setTab(x.id)}
                 >
-                  {t.label}
+                  {x.label}
                 </Button>
               ))}
             </div>
             <div className="relative flex-1 min-w-48">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input className="pl-8" placeholder="Search payees…" value={query} onChange={(e) => setQuery(e.target.value)} />
+              <Input className="pl-8" placeholder={t("page.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {(tab === "all" || tab === "unrecognized") && (
               <Button
                 variant="outline"
                 size="sm"
                 disabled={selectedGroups.length < 2}
-                onClick={() => mergeGroups(`Merge ${selectedGroups.length} payees`, selectedGroups)}
+                onClick={() => mergeGroups(t("page.mergeTitle", { n: selectedGroups.length }), selectedGroups)}
               >
-                Merge selected{selectedGroups.length >= 2 ? ` (${selectedGroups.length})` : ""}
+                {t("page.mergeSelected")}{selectedGroups.length >= 2 ? ` (${selectedGroups.length})` : ""}
               </Button>
             )}
             {(tab === "all" || tab === "unrecognized" || tab === "clusters") && (
               <Button
                 variant="ghost"
                 size="sm"
-                title="Why are two payees (not) clustered?"
+                title={t("page.explainTitle")}
                 onClick={() => setExplain({ a: selectedGroups[0]?.name ?? "", b: selectedGroups[1]?.name ?? "" })}
               >
-                Explain…
+                {t("common.explain")}
               </Button>
             )}
             {tab === "directory" && entities.length > 0 && (
               <Button variant="outline" size="sm" onClick={() => setAction({ kind: "applyAll" })}>
-                Apply directory to payees
+                {t("page.applyDirectory")}
               </Button>
             )}
             {tab === "directory" && (
               <>
                 <select
-                  aria-label="Фільтр за типом"
+                  aria-label={t("page.typeFilter")}
                   className="h-8 rounded-md border bg-background px-2 text-xs"
                   value={typeFilter}
                   onChange={(ev) => setTypeFilter(ev.target.value)}
                 >
-                  <option value="">Усі типи</option>
-                  <option value="none">Без типу</option>
+                  <option value="">{t("page.allTypes")}</option>
+                  <option value="none">{t("page.untyped")}</option>
                   {groupMerchantTypes(merchantTypes).map((g) => (
                     <option key={g.group} value={g.group}>
                       {g.group}
@@ -436,10 +433,10 @@ export default function PayeesSettingsPage() {
                   ))}
                 </select>
                 <Button variant="outline" size="sm" disabled={!entities.length} onClick={() => setAction({ kind: "setType" })}>
-                  Призначити тип{pickedEntities.size ? ` (${pickedEntities.size})` : ""}…
+                  {t("page.setType")}{pickedEntities.size ? ` (${pickedEntities.size})` : ""}…
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => setAction({ kind: "types" })}>
-                  Типи мерчантів…
+                  {t("page.merchantTypes")}
                 </Button>
               </>
             )}
@@ -449,22 +446,24 @@ export default function PayeesSettingsPage() {
           {loadError && <p className="text-sm text-destructive">{loadError}</p>}
           {data && data.truncated.length > 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              Some tables have more rows than this page reads at once ({data.truncated.join(", ")}); counts may be incomplete.
+              {t("page.truncated", { list: data.truncated.join(", ") })}
             </p>
           )}
           {data && data.undecryptable > 0 && (
             <p className="text-xs text-amber-600 dark:text-amber-400">
-              {data.undecryptable} payee value(s) couldn&apos;t be decrypted and are not shown.
+              {t("page.undecryptable", { n: data.undecryptable })}
             </p>
           )}
           {blank && blank.count > 0 && (tab === "all" || tab === "unrecognized") && (
-            <p className="text-xs text-muted-foreground">{blank.count} transaction(s) have no payee.</p>
+            <p className="text-xs text-muted-foreground">{t("page.blank", { n: blank.count })}</p>
           )}
 
           {!data && !loadError ? (
-            <p className="text-sm text-muted-foreground">Loading… (payees are decrypted and grouped on the server; large ledgers take a few seconds)</p>
+            <p className="text-sm text-muted-foreground">{t("page.loading")}</p>
           ) : tab === "insights" ? (
             <InsightsPanel />
+          ) : tab === "suspicious" ? (
+            <SuspiciousPanel rows={data?.suspicious ?? []} entities={entityOptions} onDone={(r) => done(r, t("suspicious.done"))} />
           ) : tab === "lookalikes" ? (
             <LookalikesPanel onChanged={() => mutate()} />
           ) : tab === "requisites" ? (
@@ -474,22 +473,22 @@ export default function PayeesSettingsPage() {
             </div>
           ) : tab === "clusters" ? (
             clusters.length === 0 ? (
-              <p className="text-sm text-muted-foreground">{query ? "No clusters match." : "No look-alike payees found."}</p>
+              <p className="text-sm text-muted-foreground">{query ? t("page.noClustersMatch") : t("page.noClusters")}</p>
             ) : (
               <ul className="space-y-2">
                 {clusters.map((c) => (
                   <li key={c.id} className="rounded-lg border p-3 text-sm space-y-2">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{c.suggestedName || "—"}</span>
-                      {confidenceBadge(c.confidence)}
+                      {confidenceBadge(c.confidence, t)}
                       <PayeeTypeLabel
                         className="text-xs text-muted-foreground"
-                        merchantType={c.keys.map((k) => groupsByKey.get(k)?.entityId).map((id) => (id != null ? entityById.get(id)?.merchantType : null)).find((t) => t) ?? null}
+                        merchantType={c.keys.map((k) => groupsByKey.get(k)?.entityId).map((id) => (id != null ? entityById.get(id)?.merchantType : null)).find((x) => x) ?? null}
                         type={c.suggestedType.type}
                       />
-                      {c.needsDecision && needsDecisionBadge(c.decisionReason)}
+                      {c.needsDecision && needsDecisionBadge(c.decisionReason, t)}
                       <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                        {c.count} tx · {formatCurrency(c.total, currency)}
+                        {t("common.tx", { n: c.count })} · {formatCurrency(c.total, currency)}
                       </span>
                     </div>
                     <ul className="text-xs text-muted-foreground list-disc pl-5">
@@ -514,13 +513,13 @@ export default function PayeesSettingsPage() {
                         className="h-7 text-xs"
                         onClick={() =>
                           mergeGroups(
-                            `Merge into one payee`,
+                            t("page.mergeOne"),
                             c.keys.map((k) => groupsByKey.get(k)).filter((g): g is PayeeGroupRow => !!g),
                             c,
                           )
                         }
                       >
-                        Merge…
+                        {t("page.mergeEllipsis")}
                       </Button>
                     </div>
                   </li>
@@ -530,7 +529,7 @@ export default function PayeesSettingsPage() {
           ) : tab === "directory" ? (
             entityRows.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                {query ? "No directory entries match." : "The directory is empty. Add payees from All, Unrecognized or Clusters."}
+                {query ? t("page.noEntriesMatch") : t("page.directoryEmpty")}
               </p>
             ) : (
               <>
@@ -539,7 +538,7 @@ export default function PayeesSettingsPage() {
                   <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
                     <input
                       type="checkbox"
-                      aria-label={`Вибрати ${e.name}`}
+                      aria-label={t("page.select", { name: e.name })}
                       checked={pickedEntities.has(e.id)}
                       onChange={() =>
                         setPickedEntities((prev) => {
@@ -555,20 +554,20 @@ export default function PayeesSettingsPage() {
                       {e.name}
                     </Link>
                     {!e.merchantType && <PayeeTypeLabel className="text-xs text-muted-foreground" type={e.type} />}
-                    <span className="text-xs" title="Тип мерчанта">
-                      Тип:{" "}
+                    <span className="text-xs" title={t("types.merchantType")}>
+                      {t("page.typeLabel")}{" "}
                       {e.merchantType ? (
                         merchantTypeLabel(e.merchantType)
                       ) : e.merchantTypeMixed ? (
-                        <span className="text-amber-600 dark:text-amber-400" title={`${e.merchantTypeMixed}; автоматично не призначається`}>
-                          — (змішаний)
+                        <span className="text-amber-600 dark:text-amber-400" title={t("page.mixedTitle", { reason: e.merchantTypeMixed })}>
+                          — ({t("page.mixed")})
                         </span>
                       ) : e.merchantTypeHint ? (
                         <span
                           className={`text-muted-foreground ${e.merchantTypeHint.strength === "weak" ? "opacity-70 italic" : ""}`}
-                          title={`Підказка (${e.merchantTypeHint.reason}); призначається лише після підтвердження`}
+                          title={t("page.hintTitle", { reason: e.merchantTypeHint.reason })}
                         >
-                          — ({e.merchantTypeHint.strength === "weak" ? "слабка підказка" : "підказка"}: {merchantTypeLabel(e.merchantTypeHint)}
+                          — ({e.merchantTypeHint.strength === "weak" ? t("page.weakHintLower") : t("page.hintLower")}: {merchantTypeLabel(e.merchantTypeHint)}
                           {e.merchantTypeHint.strength === "weak" ? `, ${e.merchantTypeHint.reason}` : ""})
                         </span>
                       ) : (
@@ -576,12 +575,12 @@ export default function PayeesSettingsPage() {
                       )}
                     </span>
                     <span className="text-xs text-muted-foreground">
-                      {e.aliasCount} alias{e.aliasCount === 1 ? "" : "es"}
-                      {data?.settings.advancedMode && e.identifierCount ? ` · ${e.identifierCount} requisite(s)` : ""}
+                      {t("common.aliases", { n: e.aliasCount })}
+                      {data?.settings.advancedMode && e.identifierCount ? ` · ${t("page.requisitesCount", { n: e.identifierCount })}` : ""}
                     </span>
                     <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                      {e.count} tx · {formatCurrency(e.total, currency)}
-                      {e.lastDate ? ` · last ${e.lastDate}` : ""}
+                      {t("common.tx", { n: e.count })} · {formatCurrency(e.total, currency)}
+                      {e.lastDate ? ` · ${t("common.last", { date: e.lastDate })}` : ""}
                     </span>
                   </li>
                 ))}
@@ -591,23 +590,23 @@ export default function PayeesSettingsPage() {
             )
           ) : tab === "changes" ? (
             (data?.batches ?? []).length === 0 ? (
-              <p className="text-sm text-muted-foreground">No changes yet.</p>
+              <p className="text-sm text-muted-foreground">{t("common.noChanges")}</p>
             ) : (
               <ul className="divide-y rounded-lg border">
                 {(data?.batches ?? []).map((b) => (
                   <li key={b.id} className="flex flex-wrap items-center gap-2 p-3 text-sm">
                     <span className="font-medium">#{b.id}</span>
-                    <span>{batchLabel(b)}</span>
+                    <span>{batchLabel(b, t)}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">{b.createdAt.slice(0, 16).replace("T", " ")}</span>
                     <span className="ml-auto">
                       {b.undoneAt ? (
-                        <span className="text-xs text-muted-foreground">Undone</span>
+                        <span className="text-xs text-muted-foreground">{t("common.undoneBadge")}</span>
                       ) : b.canUndo ? (
                         <Button variant="outline" size="sm" className="h-7 text-xs" onClick={() => setAction({ kind: "undo", batch: b })}>
-                          Undo
+                          {t("common.undo")}
                         </Button>
                       ) : (
-                        <span className="text-xs text-muted-foreground">Older than 30 days</span>
+                        <span className="text-xs text-muted-foreground">{t("page.olderThan30")}</span>
                       )}
                     </span>
                   </li>
@@ -615,7 +614,7 @@ export default function PayeesSettingsPage() {
               </ul>
             )
           ) : rows.length === 0 ? (
-            <p className="text-sm text-muted-foreground">{query ? "No payees match." : tab === "unrecognized" ? "Every payee is in the directory." : "No payees yet."}</p>
+            <p className="text-sm text-muted-foreground">{query ? t("page.noPayeesMatch") : tab === "unrecognized" ? t("page.allInDirectory") : t("page.noPayees")}</p>
           ) : (
             <>
               {/* Phones: one card per payee */}
@@ -631,7 +630,7 @@ export default function PayeesSettingsPage() {
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">{typeCell(g)}</p>
                         <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-                          {g.count} tx · {formatCurrency(g.total, currency)} · {g.firstDate ?? "—"} → {g.lastDate ?? "—"}
+                          {t("common.tx", { n: g.count })} · {formatCurrency(g.total, currency)} · {g.firstDate ?? "—"} → {g.lastDate ?? "—"}
                         </p>
                         {g.categories.length > 0 && (
                           <p className="text-xs text-muted-foreground truncate">{g.categories.map((c) => c.name).join(", ")}</p>
@@ -649,28 +648,28 @@ export default function PayeesSettingsPage() {
                       <th className="w-8 py-2" />
                       <th className="py-2 pr-2">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("name")}>
-                          Payee {sortIcon("name")}
+                          {t("analytics.payee")} {sortIcon("name")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">Type</th>
+                      <th className="py-2 pr-2">{t("common.type")}</th>
                       <th className="py-2 pr-2 text-right">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("count")}>
-                          Transactions {sortIcon("count")}
+                          {t("common.transactions")} {sortIcon("count")}
                         </button>
                       </th>
                       <th className="py-2 pr-2 text-right">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("total")}>
-                          Total ({currency}) {sortIcon("total")}
+                          {t("page.totalCol", { currency })} {sortIcon("total")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">First</th>
+                      <th className="py-2 pr-2">{t("common.first")}</th>
                       <th className="py-2 pr-2">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("lastDate")}>
-                          Last {sortIcon("lastDate")}
+                          {t("common.lastDate")} {sortIcon("lastDate")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">Accounts</th>
-                      <th className="py-2 pr-2">Categories</th>
+                      <th className="py-2 pr-2">{t("common.accounts")}</th>
+                      <th className="py-2 pr-2">{t("page.categories")}</th>
                       <th className="py-2" />
                     </tr>
                   </thead>
@@ -684,15 +683,15 @@ export default function PayeesSettingsPage() {
                             {spellingsBadge(g)}
                           </div>
                           {g.entityName && g.entityName !== g.name && (
-                            <p className="text-xs text-muted-foreground">as &ldquo;{g.name}&rdquo;</p>
+                            <p className="text-xs text-muted-foreground">{t("page.asSpelling", { name: g.name })}</p>
                           )}
                         </td>
                         <td className="py-2 pr-2 text-xs">{typeCell(g)}</td>
                         <td className="py-2 pr-2 text-right tabular-nums">
                           {g.count}
                           {g.rows > g.count && (
-                            <span className="block text-xs text-muted-foreground" title="Rows in recurring, staged, pending and bank-ledger tables">
-                              +{g.rows - g.count} other
+                            <span className="block text-xs text-muted-foreground" title={t("page.otherRowsTitle")}>
+                              {t("common.otherRows", { n: g.rows - g.count })}
                             </span>
                           )}
                         </td>
@@ -709,7 +708,7 @@ export default function PayeesSettingsPage() {
               </div>
               {pager(rows.length)}
               {data && data.totalGroups > data.groups.length && (
-                <p className="text-xs text-muted-foreground">Showing the {data.groups.length} most used of {data.totalGroups} payees.</p>
+                <p className="text-xs text-muted-foreground">{t("page.showingMostUsed", { n: data.groups.length, total: data.totalGroups })}</p>
               )}
             </>
           )}
@@ -726,7 +725,7 @@ export default function PayeesSettingsPage() {
           onClose={() => setDrawer(null)}
           onAdd={(g) => {
             setDrawer(null);
-            mergeGroups(`Add “${g.name}” to the directory`, [g]);
+            mergeGroups(t("page.addTitle", { name: g.name }), [g]);
           }}
           onExplain={(g) => {
             setDrawer(null);
@@ -753,13 +752,13 @@ export default function PayeesSettingsPage() {
       )}
       {action?.kind === "undo" && (
         <OpDialog
-          title={`Undo change #${action.batch.id}`}
+          title={t("common.undoTitle", { id: action.batch.id })}
           body={{ op: "undo", batchId: action.batch.id }}
           onClose={() => setAction(null)}
           onDone={(r) => done(r)}
-          confirmLabel="Undo"
+          confirmLabel={t("common.undo")}
         >
-          <p className="text-xs text-muted-foreground">{batchLabel(action.batch)}</p>
+          <p className="text-xs text-muted-foreground">{batchLabel(action.batch, t)}</p>
         </OpDialog>
       )}
       {action?.kind === "setType" && (
@@ -769,16 +768,14 @@ export default function PayeesSettingsPage() {
           onClose={() => setAction(null)}
           onDone={(r) => {
             setPickedEntities(new Set());
-            void done(r, `Тип змінено в ${r.typed?.length ?? 0} запис(ах).`);
+            void done(r, t("page.typeChanged", { n: r.typed?.length ?? 0 }));
           }}
         />
       )}
-      {action?.kind === "types" && <MerchantTypesEditor types={merchantTypes} onClose={() => setAction(null)} onDone={(r) => done(r, "Типи мерчантів збережено.")} />}
+      {action?.kind === "types" && <MerchantTypesEditor types={merchantTypes} onClose={() => setAction(null)} onDone={(r) => done(r, t("page.typesSaved"))} />}
       {action?.kind === "applyAll" && (
-        <OpDialog title="Apply the directory to stored payees" body={{ op: "apply" }} onClose={() => setAction(null)} onDone={(r) => done(r)} confirmLabel="Rename">
-          <p className="text-xs text-muted-foreground">
-            Every payee that matches a directory entry is renamed to its canonical name.
-          </p>
+        <OpDialog title={t("page.applyTitle")} body={{ op: "apply" }} onClose={() => setAction(null)} onDone={(r) => done(r)} confirmLabel={t("common.rename")}>
+          <p className="text-xs text-muted-foreground">{t("page.applyNote")}</p>
         </OpDialog>
       )}
     </div>

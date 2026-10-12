@@ -13,6 +13,7 @@ import { computeLookalikes, describeRejections, loadRejections, rejectionPredica
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import type { PayeeVocabulary } from "./type-words";
 import { entityMerchantTypeHints, loadMerchantTypes, type EntityTypeHint, type MerchantType, type MerchantTypeRef } from "./merchant-types";
+import { listSuspicious, type SuspiciousEntry } from "./suspicious";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -223,4 +224,21 @@ export async function loadMerchantAnalytics(opts: {
     categoryNames: names.categories,
     vocab,
   });
+}
+
+/** P6.2 (83): directory entries with a short / meaningless name, with their rows and spellings. Read only. */
+export function suspiciousOf(o: PayeeOverview, opts: { includeReviewed?: boolean } = {}): SuspiciousEntry[] {
+  const counts = new Map(o.entities.map((e) => [e.id, e.count]));
+  return listSuspicious(
+    o.directory,
+    (id) => ({
+      count: counts.get(id) ?? 0,
+      spellings: o.groups
+        .filter((g) => g.entityId === id)
+        .flatMap((g) => g.spellings.map((s) => ({ spelling: s.spelling, count: s.count })))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 10),
+    }),
+    { includeReviewed: opts.includeReviewed, vocab: o.vocab },
+  );
 }

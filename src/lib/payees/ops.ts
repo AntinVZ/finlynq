@@ -107,6 +107,8 @@ export type PayeeOp =
    * (a type word such as "ресторан"). `onlyUntyped` leaves typed entries alone.
    */
   | { op: "set_merchant_type"; merchantType: MerchantTypeInput; entityIds?: number[]; typeWord?: string; onlyUntyped?: boolean }
+  /** P6.2 (83): mark entries as checked (they leave the "Перевірити" list), or clear the mark. */
+  | { op: "mark_reviewed"; entityIds: number[]; reviewed?: boolean }
   | { op: "undo"; batchId: number }
   /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
   | { op: "bulk"; kind: string; ops: SingleOp[]; aliasSource?: string; labels?: string[] };
@@ -144,6 +146,8 @@ export type PayeeOpResult = {
   typed: Array<{ id: number; name: string; from: string | null; to: string | null; via?: string }>;
   /** P6.2 (B29): entries a type word reached but that are left alone, and why (alias-only match, mixed). */
   skipped: Array<{ id: number; name: string; reason: string }>;
+  /** P6.2 (83): entries marked (true) or unmarked (false) as checked. */
+  reviewed: Array<{ id: number; name: string; reviewed: boolean }>;
   /** P6 (B26): dictionary changes. */
   merchantTypes: { added: string[]; updated: string[]; removed: string[] };
   /** Binds an MCP confirmation token to exactly these rows. */
@@ -263,6 +267,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     emptyReason: null,
     typed: [],
     skipped: [],
+    reviewed: [],
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: `undo:${batchId}`,
   };
@@ -294,6 +299,7 @@ async function runOp(
     emptyReason: null,
     typed: [],
     skipped: [],
+    reviewed: [],
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: "",
   };
@@ -815,6 +821,20 @@ async function runOp(
             if (out.skipped.length) out.warnings.push(`${out.skipped.length} запис(ів) пропущено: збіг лише через alias або змішані підказки.`);
             break;
           }
+          case "mark_reviewed": {
+            const flag = op.reviewed !== false;
+            if (!op.entityIds?.length) throw new PayeeDirectoryError("Name the payees (entityIds).");
+            for (const id of [...new Set(op.entityIds)]) {
+              const e = entityOf(entities, id);
+              if (Boolean(e.reviewedAt) === flag) continue;
+              await journal.willModify([e.id]);
+              await updateEntityRow(btx, userId, dek, e.id, { reviewed: flag });
+              out.reviewed.push({ id: e.id, name: e.name, reviewed: flag });
+              journal.count(flag ? "entities_reviewed" : "entities_unreviewed");
+            }
+            if (!out.reviewed.length) out.warnings.push(flag ? "Ці записи вже позначені як перевірені." : "Ці записи й так не позначені.");
+            break;
+          }
           case "delete": {
             const e = entityOf(entities, op.entityId);
             await journal.willModify([e.id]);
@@ -857,6 +877,7 @@ async function runOp(
     // rolled back but its serial ids are spent, so the commit gets new ids.
     const who = out.created ? `new:${out.entity?.name ?? ""}` : `${out.entity?.id ?? ""}`;
     if (!out.fingerprint) out.fingerprint = `${root.op}:${who}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
+    if (out.reviewed.length) out.fingerprint += `:r:${out.reviewed.map((r) => `${r.id}${r.reviewed ? "+" : "-"}`).join(",")}`;
     if (out.typed.length || out.merchantTypes.added.length || out.merchantTypes.updated.length || out.merchantTypes.removed.length) {
       const typed = out.typed.map((t) => [out.created && t.id === out.entity?.id ? `new:${t.name}` : t.id, t.from, t.to]);
       out.fingerprint += `:t:${createHash("sha256").update(JSON.stringify([typed, out.merchantTypes])).digest("hex").slice(0, 16)}`;
