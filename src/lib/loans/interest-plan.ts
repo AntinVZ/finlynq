@@ -83,6 +83,104 @@ export function matchInterestToSchedule(
   return { booked, unmatched };
 }
 
+/** How many of the most recent booked payments a verdict is based on. */
+export const ASSESSMENT_MAX_PERIODS = 3;
+/** Booked payments older than this are never part of a verdict. */
+export const ASSESSMENT_LOOKBACK_DAYS = 365;
+/** Fewer booked payments than this is not a pattern, so no verdict. */
+const ASSESSMENT_MIN_PERIODS = 2;
+
+export type InterestAssessment =
+  | { status: "insufficient"; periods: number }
+  | {
+      /**
+       * in_line: booked matches the schedule. over / under: the lender charged
+       * more / less, by a steady factor. inconsistent: it differs, but not by
+       * a steady factor, so no single rate explains it.
+       */
+      status: "in_line" | "over" | "under" | "inconsistent";
+      /** Booked payments the verdict is based on. */
+      periods: number;
+      /** First and last payment date in that window. */
+      from: string;
+      to: string;
+      booked: number;
+      calculated: number;
+      /** booked / calculated over the window. */
+      ratio: number;
+      /** The annual rate that would have produced the booked interest, when the factor is steady. */
+      suggestedRate: number | null;
+      /** Set when every payment in the window was charged the same amount while the schedule's figures differ. */
+      fixedAmount: number | null;
+    };
+
+/**
+ * Compare what the lender actually charged with what the schedule calculates,
+ * and say whether the loan's rate looks wrong.
+ *
+ * Deliberately short-sighted: only the most recent booked payments count
+ * (`ASSESSMENT_MAX_PERIODS`, never older than `ASSESSMENT_LOOKBACK_DAYS`). An
+ * extra payment or a change to the loan's terms shifts every later period, so
+ * an older payment can differ from today's schedule for a perfectly good
+ * reason and must not drive the verdict or the suggestion. Callers that show
+ * the result must say which window it covers.
+ *
+ * `suggestedRate` relies on interest being proportional to the rate for a
+ * given balance: if the lender charged k times the calculated figure, the
+ * rate that explains it is k times the loan's. It is only offered when the
+ * factor is steady across the window (each within 5% of the median).
+ */
+export function assessBookedInterest(
+  schedule: readonly InterestScheduleRow[],
+  booked: ReadonlyMap<string, BookedInterest>,
+  today: string,
+  annualRate: number,
+): InterestAssessment {
+  const oldest = dayNumber(today) - ASSESSMENT_LOOKBACK_DAYS;
+  const window = schedule
+    .filter(
+      (r) =>
+        r.date <= today &&
+        dayNumber(r.date) >= oldest &&
+        r.interest >= MIN_INTEREST &&
+        booked.has(r.date),
+    )
+    .slice(-ASSESSMENT_MAX_PERIODS);
+  if (window.length < ASSESSMENT_MIN_PERIODS) {
+    return { status: "insufficient", periods: window.length };
+  }
+
+  const pairs = window.map((r) => ({ calc: r.interest, got: booked.get(r.date)!.amount }));
+  const bookedTotal = round2(pairs.reduce((s, p) => s + p.got, 0));
+  const calcTotal = round2(pairs.reduce((s, p) => s + p.calc, 0));
+  const ratios = pairs.map((p) => p.got / p.calc).sort((a, b) => a - b);
+  const mid = Math.floor(ratios.length / 2);
+  const median = ratios.length % 2 ? ratios[mid] : (ratios[mid - 1] + ratios[mid]) / 2;
+  const steady = ratios.every((x) => Math.abs(x - median) <= 0.05 * median);
+  // Within 2%, or a cent per payment, is rounding rather than a different rate.
+  const inLine =
+    Math.abs(bookedTotal - calcTotal) <= Math.max(0.02 * calcTotal, 0.01 * pairs.length);
+
+  const base = {
+    periods: window.length,
+    from: window[0].date,
+    to: window[window.length - 1].date,
+    booked: bookedTotal,
+    calculated: calcTotal,
+    ratio: calcTotal > 0 ? bookedTotal / calcTotal : 1,
+  };
+  if (inLine) return { status: "in_line", ...base, suggestedRate: null, fixedAmount: null };
+
+  const sameCharge = pairs.every((p) => Math.abs(p.got - pairs[0].got) <= 0.01);
+  const calcVaries = Math.max(...pairs.map((p) => p.calc)) - Math.min(...pairs.map((p) => p.calc)) > 0.01;
+  const fixedAmount = sameCharge && calcVaries ? round2(pairs[0].got) : null;
+
+  const rate = steady && annualRate > 0 ? round2(annualRate * median) : null;
+  const suggestedRate = rate != null && rate !== round2(annualRate) ? rate : null;
+  const status = !steady ? "inconsistent" : base.ratio > 1 ? "over" : "under";
+  return { status, ...base, suggestedRate, fixedAmount };
+}
+
 /**
  * Schedule rows whose payment date has arrived and whose interest is not in
  * the ledger yet. `bookedDates` is the key set of `matchInterestToSchedule`.

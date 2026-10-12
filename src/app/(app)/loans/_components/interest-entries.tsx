@@ -18,12 +18,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Combobox, type ComboboxItemShape } from "@/components/ui/combobox";
+import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { formatCurrency } from "@/lib/currency";
 import { parseSaveError } from "@/lib/save-error";
 import { todayISO } from "@/lib/utils/date";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import {
+  ASSESSMENT_MAX_PERIODS,
+  assessBookedInterest,
   dueUnpostedInterest,
   matchInterestToSchedule,
   type InterestScheduleRow,
@@ -36,11 +39,20 @@ export function LoanInterestEntries({
   loan,
   schedule,
   onPosted,
+  onRateChanged,
 }: {
-  loan: { id: number; currency: string; accountId: number | null; accountName: string | null };
+  loan: {
+    id: number;
+    currency: string;
+    annualRate: number;
+    accountId: number | null;
+    accountName: string | null;
+  };
   schedule: InterestScheduleRow[];
   /** Called after entries are created, so the page can refresh the loan's balance. */
   onPosted?: () => void;
+  /** Called after the suggested rate is saved, so the page can rebuild the schedule. */
+  onRateChanged?: (annualRate: number) => void;
 }) {
   const [entries, setEntries] = useState<InterestTx[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -50,6 +62,9 @@ export function LoanInterestEntries({
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  // The suggested rate awaiting confirmation, or null when the dialog is closed.
+  const [rateToApply, setRateToApply] = useState<number | null>(null);
+  const [rateSaving, setRateSaving] = useState(false);
 
   // `category` previews the ledger under that category; "" uses the loan's own.
   const load = useCallback(
@@ -125,6 +140,10 @@ export function LoanInterestEntries({
     () => dueUnpostedInterest(schedule, new Set(booked.keys()), today),
     [schedule, booked, today],
   );
+  const assessment = useMemo(
+    () => assessBookedInterest(schedule, booked, today, loan.annualRate),
+    [schedule, booked, today, loan.annualRate],
+  );
   // Everything that has come due, newest first, plus the next upcoming payment
   // so a user booking slightly ahead of the due date can still do it.
   const rows = useMemo(() => {
@@ -175,6 +194,29 @@ export function LoanInterestEntries({
     }
   }
 
+  async function applyRate() {
+    if (rateToApply == null || rateSaving) return;
+    setRateSaving(true);
+    setError("");
+    try {
+      const res = await fetch("/api/loans", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: loan.id, annualRate: rateToApply }),
+      });
+      if (!res.ok) {
+        setError(await parseSaveError(res, "Could not change the rate."));
+        return;
+      }
+      onRateChanged?.(rateToApply);
+    } catch {
+      setError("Could not reach the server. The rate was not changed.");
+    } finally {
+      setRateSaving(false);
+      setRateToApply(null);
+    }
+  }
+
   if (loan.accountId == null) {
     return (
       <p className="text-sm text-muted-foreground">
@@ -218,6 +260,69 @@ export function LoanInterestEntries({
       </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+
+      {assessment.status !== "insufficient" && (
+        <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+          {assessment.status === "in_line" ? (
+            <p>
+              Your last {assessment.periods} booked payments match this schedule (booked{" "}
+              {formatCurrency(assessment.booked, loan.currency)}, calculated{" "}
+              {formatCurrency(assessment.calculated, loan.currency)}).
+            </p>
+          ) : (
+            <div className="space-y-2">
+              <p className="font-medium">
+                {assessment.status === "inconsistent"
+                  ? "Booked interest does not follow this schedule."
+                  : `Your lender charged ${assessment.status === "over" ? "more" : "less"} than this schedule calculates.`}
+              </p>
+              <p className="text-muted-foreground">
+                Over your last {assessment.periods} booked payments ({assessment.from} to {assessment.to}): booked{" "}
+                <span className="font-mono text-foreground">{formatCurrency(assessment.booked, loan.currency)}</span>, calculated{" "}
+                <span className="font-mono text-foreground">{formatCurrency(assessment.calculated, loan.currency)}</span>
+                {assessment.status === "inconsistent"
+                  ? ". The gap is not steady from one payment to the next, so no single rate explains it."
+                  : `, which is ${assessment.ratio.toFixed(2)} times the calculated interest.`}
+              </p>
+              {assessment.fixedAmount != null && (
+                <p className="text-muted-foreground">
+                  Each of those payments was charged the same{" "}
+                  {formatCurrency(assessment.fixedAmount, loan.currency)}, which looks like a fixed
+                  interest amount rather than a rate.
+                </p>
+              )}
+              {assessment.suggestedRate != null && (
+                <div className="flex flex-wrap items-center gap-3">
+                  <p className="text-muted-foreground">
+                    A rate of about <span className="font-mono text-foreground">{assessment.suggestedRate}%</span>{" "}
+                    would produce what was charged. The loan is set to{" "}
+                    <span className="font-mono text-foreground">{loan.annualRate}%</span>.
+                  </p>
+                  <Button size="sm" variant="outline" onClick={() => setRateToApply(assessment.suggestedRate)}>
+                    Use {assessment.suggestedRate}%
+                  </Button>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                Only the {ASSESSMENT_MAX_PERIODS} most recent booked payments from the last 12 months are
+                compared. An extra payment or a change to the loan shifts every later payment, so older
+                ones can differ from today&apos;s schedule for good reason.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={rateToApply != null}
+        onOpenChange={(open) => { if (!open) setRateToApply(null); }}
+        title={`Change the rate to ${rateToApply ?? ""}%?`}
+        description={`This recalculates the whole schedule from ${loan.annualRate}% to ${rateToApply ?? ""}%. Interest and payments already booked are not changed.`}
+        confirmLabel={`Use ${rateToApply ?? ""}%`}
+        busy={rateSaving}
+        busyLabel="Saving…"
+        onConfirm={() => void applyRate()}
+      />
 
       <div className="max-h-96 overflow-auto">
         <Table>

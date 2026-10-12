@@ -229,22 +229,38 @@ Known limits:
   generating, or by entering the interest by hand.
 - Nothing posts automatically on the due date; generation is one click.
 
-### Planned: booked versus calculated (owner direction, 2026-10-12)
+### Booked versus calculated (2026-10-12)
 
-The Interest entries tab already shows the per-period difference. The next
-step is to tell the user whether the lender is charging more or less than the
-schedule says, and to suggest loan settings that fit what is actually charged.
-Constraints the owner set, which any implementation must honour:
+The Interest entries tab compares what the lender charged with what the
+schedule calculates and says whether the loan's rate looks wrong. The pure
+`assessBookedInterest` ([interest-plan.ts](../src/lib/loans/interest-plan.ts))
+returns one of: `insufficient` (fewer than two recent booked payments, nothing
+is shown), `in_line`, `over`, `under` (charged more or less by a steady
+factor), or `inconsistent` (it differs, but not by a steady factor).
 
-- **Judge on recent periods only** (for example the last 3 or the last 12
-  months). An extra payment or a change to the loan's terms changes every later
-  period, so older periods can legitimately differ from today's schedule and
-  must not drive the verdict or the suggestion.
-- **Say so when it is shown.** Wherever the comparison surfaces (the dashboard
-  was named), state the window it is based on and that earlier periods may
-  differ for those reasons.
-- A suggestion is a recommendation the user accepts, never a silent change to
-  the loan.
+The owner's rules, which the function and the panel both honour:
+
+- **Judge on recent payments only.** At most the `ASSESSMENT_MAX_PERIODS` (3)
+  most recent booked payments, never older than `ASSESSMENT_LOOKBACK_DAYS`
+  (365), and never one that has not come due. An extra payment or a change to
+  the loan's terms shifts every later period, so an older payment can
+  legitimately differ from today's schedule and must not drive the verdict.
+- **Say so where it is shown.** The panel names the window (count and dates)
+  and states why older payments are left out.
+- **A suggestion is accepted, never applied silently.** `suggestedRate` is
+  offered only when the factor is steady (each payment within 5% of the
+  median): if the lender charged k times the calculated figure, the rate that
+  explains it is k times the loan's. "Use N%" goes through a confirm dialog
+  and `PUT /api/loans`, then the schedule is rebuilt. Booked entries are never
+  touched.
+
+Within 2% (or a cent per payment) is treated as rounding and reads as in line.
+`fixedAmount` is set when every payment in the window was charged the same
+figure while the schedule's figures differ, which points at a fixed charge
+rather than a rate.
+
+Still to do: surface the verdict on the dashboard (with the same window
+wording), and expose it to MCP.
 
 ## Deferred (Phase 4 — tracked on FINLYNQ-136)
 

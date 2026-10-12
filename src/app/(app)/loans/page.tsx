@@ -656,7 +656,13 @@ function LoansPageContent() {
                 </div>
               </TabsContent>
               <TabsContent value="entries">
-                <LoanInterestEntries loan={selectedLoan} schedule={amort.schedule} onPosted={load} />
+                <LoanInterestEntries
+                  loan={selectedLoan}
+                  schedule={amort.schedule}
+                  onPosted={load}
+                  // Rebuild this panel's schedule at the new rate, and the cards above it.
+                  onRateChanged={(annualRate) => { void viewAmortization({ ...selectedLoan, annualRate }); void load(); }}
+                />
               </TabsContent>
               <TabsContent value="whatif">
                 <p className="text-sm text-muted-foreground mb-4">What if you added extra monthly payments? Amounts are in {selectedLoan.currency}.</p>
