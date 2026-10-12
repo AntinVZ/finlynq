@@ -11,7 +11,7 @@
  *
  * Both report the comparable yearly rate, which is the honest figure: the same
  * 5,220 of interest on 30,000 over five years reads as 3.48% a year quoted
- * flat, and costs about 6.4% a year on the balance actually owed.
+ * flat, and costs about 6.5% a year on the balance actually owed.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";

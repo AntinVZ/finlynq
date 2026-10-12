@@ -184,7 +184,7 @@ difference is visible, every calculated schedule returns
 **`effectiveAnnualRate`**: the yearly rate on the balance owed that a loan with
 this payment and length carries. For `rate` it is the loan's own rate; for the
 other two it is the comparable figure. The feedback loan (30,000 over 60 months,
-5,220 of interest) is 3.48% a year quoted flat and about 6.4% effective. The
+5,220 of interest) is 3.48% a year quoted flat and about 6.5% effective. The
 loan card labels it "Effective rate".
 
 Rules:

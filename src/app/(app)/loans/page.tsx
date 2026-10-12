@@ -526,7 +526,8 @@ function LoansPageContent() {
                   <Label>Interest</Label>
                   <Select value={form.interestMethod} onValueChange={(v) => { setForm({ ...form, interestMethod: v ?? "rate" }); setErrors({ ...errors, annualRate: "" }); }}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
+                    {/* Wider than its narrow trigger, so the longer labels are not clipped. */}
+                    <SelectContent className="min-w-60">
                       {INTEREST_METHOD_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
                     </SelectContent>
                   </Select>
