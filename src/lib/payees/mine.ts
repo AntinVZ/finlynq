@@ -71,7 +71,7 @@ type Internal = { s: MinedSuggestion; value: string };
 
 const PAGES: Record<"transactions" | "bank", (userId: string, after: string | null, size: number) => SQL> = {
   transactions: (userId, after, size) => sql`
-    SELECT id::text AS id, date, payee, note, NULL AS tier FROM transactions
+    SELECT id, date, payee, note, NULL AS tier FROM transactions
     WHERE user_id = ${userId} ${after != null ? sql`AND id > ${Number(after)}` : sql``} ORDER BY id LIMIT ${size}`,
   bank: (userId, after, size) => sql`
     SELECT id::text AS id, date, payee, note, encryption_tier AS tier FROM bank_transactions

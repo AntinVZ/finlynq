@@ -146,6 +146,7 @@ function opOut(r: PayeeOpResult) {
     ...(r.undo ? { undo: r.undo } : {}),
     ...(r.warnings.length ? { warnings: r.warnings } : {}),
     ...(r.blocked ? { blocked: r.blocked } : {}),
+    ...(r.emptyReason ? { emptyReason: r.emptyReason } : {}),
   };
 }
 

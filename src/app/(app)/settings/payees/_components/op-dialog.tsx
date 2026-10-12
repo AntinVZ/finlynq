@@ -34,6 +34,8 @@ export type OpPreview = {
   undo?: { restoredRows: number; skippedRows: number; restoredEntities: number; removedEntities: number };
   warnings: string[];
   blocked: string | null;
+  /** Why an apply renames nothing (P6). */
+  emptyReason?: string | null;
 };
 
 const TABLE_LABEL = { transactions: "transactions", recurring: "recurring transactions", staged: "staged imports" } as const;
@@ -161,6 +163,7 @@ export function OpDialog({
               {preview.warnings.map((w) => (
                 <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>
               ))}
+              {preview.emptyReason && <p className="text-xs text-amber-600 dark:text-amber-400">{preview.emptyReason}</p>}
               {preview.blocked && <p className="text-xs text-destructive">{preview.blocked}</p>}
               <p className="text-xs text-muted-foreground">Bank statement rows are never changed. You can undo this for 30 days.</p>
             </div>

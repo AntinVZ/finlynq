@@ -47,8 +47,9 @@ import { inTransaction, PayeeBatchError, runPayeeBatch, undoPayeeBatch, writeSto
 import { encryptField } from "@/lib/crypto/envelope";
 import { normalizeLogo, normalizeWebsite } from "./profile";
 import { addTags } from "@/lib/tags";
+import { normalizeForMatch } from "@/lib/text-normalize";
 import { decodeStoredPayee, spellingOf } from "./scan";
-import { PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
+import { explainEmptyApply, PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
 import type { PayeeExecutor } from "./scan";
 import { invalidatePayeeSuggest } from "./suggest";
 
@@ -108,6 +109,8 @@ export type PayeeOpResult = {
   warnings: string[];
   /** Why the op can't be committed as is (too many rows, truncated scan). */
   blocked: string | null;
+  /** P6 (B23): why an apply renames nothing — never a silent 0. */
+  emptyReason: string | null;
   /** Binds an MCP confirmation token to exactly these rows. */
   fingerprint: string;
 };
@@ -151,6 +154,9 @@ function cleanIdentifierDetails(d: IdentifierDetails): IdentifierDetails {
 
 const asType = (t: string | undefined, fallbackName: string): PayeeType =>
   t && (PAYEE_TYPES as readonly string[]).includes(t) ? (t as PayeeType) : guessPayeeType(fallbackName).type;
+
+/** Two alias spellings that differ only in case, spacing or apostrophes. */
+const sameSpelling = (a: string, b: string) => normalizeForMatch(a) === normalizeForMatch(b);
 
 const asMode = (m: string | undefined): AliasMode => (m && (ALIAS_MODES as readonly string[]).includes(m) ? (m as AliasMode) : "exact");
 
@@ -219,6 +225,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     undo,
     warnings: undo.skippedRows ? [`${undo.skippedRows} row(s) were changed after this batch and are left as they are.`] : [],
     blocked: null,
+    emptyReason: null,
     fingerprint: `undo:${batchId}`,
   };
 }
@@ -246,6 +253,7 @@ async function runOp(
     rows: emptyRows(),
     warnings: [],
     blocked: null,
+    emptyReason: null,
     fingerprint: "",
   };
   const kind = root.op === "bulk" ? root.kind : root.op;
@@ -263,8 +271,12 @@ async function runOp(
         const pattern = validateAlias(a.pattern, mode);
         if (mode === "exact") {
           assertExactFree(entities, pattern, entityId, allowedOwners);
-          if (self?.aliases.some((x) => x.mode === "exact" && payeeMatchKey(x.pattern) === payeeMatchKey(pattern))) continue;
-          if (out.aliasesAdded.some((x) => x.mode === "exact" && payeeMatchKey(x.pattern) === payeeMatchKey(pattern))) continue;
+          // P6 (B23): every distinct spelling is kept as its own exact alias, even
+          // when its key equals one already there ("McDonalds 127" next to
+          // "McDonald's"), so the profile lists what the entity covers. Only the
+          // same spelling (case / spacing / apostrophes) is skipped.
+          const same = (x: { mode: string; pattern: string }) => x.mode === "exact" && sameSpelling(x.pattern, pattern);
+          if (self?.aliases.some(same) || out.aliasesAdded.some(same)) continue;
         } else if (self?.aliases.some((x) => x.mode === mode && x.pattern === pattern)) {
           continue;
         }
@@ -616,6 +628,11 @@ async function runOp(
       if (plan.tooLarge) out.blocked = `This would rename ${plan.total.toLocaleString("en-US")} rows; one change can cover at most ${PAYEE_APPLY_MAX_ROWS.toLocaleString("en-US")}. Apply fewer payees at a time.`;
       else if (plan.truncated) out.blocked = "The payee scan stopped early (very large ledger); apply fewer payees at a time.";
       if (plan.conflicts.length) out.warnings.push(`${plan.conflicts.length} spelling(s) match more than one payee and are left alone.`);
+      out.emptyReason = explainEmptyApply(plan, (id) => dir.find((d) => d.id === id)?.name);
+      const near = plan.diagnostics.nearMisses;
+      if (plan.total > 0 && near.length) {
+        out.warnings.push(`Ще ${near.length} схожих написань без aliases не змінюються, наприклад ${near.slice(0, 3).map((n) => `«${n.payee}»`).join(", ")}.`);
+      }
       if (!out.blocked) await runPayeeApply({ tx: btx, journal, userId, dek, matcher, plan });
       if (out.entity) {
         const fresh = dir.find((d) => d.id === out.entity!.id);
@@ -628,7 +645,7 @@ async function runOp(
   return out;
 }
 
-/** Collapse duplicate exact aliases (same key) and identifiers on one entity. */
+/** Collapse duplicate exact aliases (same spelling) and identifiers on one entity. */
 async function dedupeEntity(tx: PayeeExecutor, userId: string, dek: Buffer, entityId: number): Promise<void> {
   const dir = await loadDirectory(tx, userId, dek);
   const e = dir.find((x) => x.id === entityId);
@@ -637,7 +654,7 @@ async function dedupeEntity(tx: PayeeExecutor, userId: string, dek: Buffer, enti
   const dropAliases: number[] = [];
   // Canonical first so it is the one kept.
   for (const a of [...e.aliases].sort((x, y) => Number(y.source === "canonical") - Number(x.source === "canonical"))) {
-    const k = a.mode === "exact" ? `e:${payeeMatchKey(a.pattern)}` : `${a.mode}:${a.pattern}`;
+    const k = a.mode === "exact" ? `e:${normalizeForMatch(a.pattern)}` : `${a.mode}:${a.pattern}`;
     if (seen.has(k)) dropAliases.push(a.id);
     else seen.add(k);
   }

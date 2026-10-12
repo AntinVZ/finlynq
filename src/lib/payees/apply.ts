@@ -24,6 +24,7 @@ import { encryptStaged } from "@/lib/crypto/staging-envelope";
 import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { readStoredPayees, writeStoredPayees, type PayeeBatchJournal, type RewriteTable } from "./batches";
 import type { PayeeMatcher } from "./directory";
+import { payeeMatchKey } from "./match-key";
 
 /** Most rows one apply may rewrite (undo data grows with it). */
 export const PAYEE_APPLY_MAX_ROWS = 20_000;
@@ -42,14 +43,38 @@ export type ApplyPlan = {
   total: number;
   tooLarge: boolean;
   truncated: boolean;
+  /** Why nothing (or little) matched — filled for the preview's explanation. */
+  diagnostics: ApplyDiagnostics;
 };
 
+/**
+ * What the scan saw besides the hits, so an empty preview can say WHY:
+ * rows that already carry the canonical name, rows that couldn't be
+ * decrypted, and spellings that look like a target entity (share a word of
+ * one of its aliases' keys) but match none of its aliases.
+ */
+export type ApplyDiagnostics = {
+  scanned: number;
+  undecryptable: number;
+  alreadyCanonical: number;
+  nearMisses: Array<{ payee: string; entityId: number; count: number }>;
+};
+
+/** Words of an alias key that are specific enough to flag a near miss. */
+const nearMissTokens = (key: string) => key.split(" ").filter((t) => t.length >= 4 && !/^\d+$/.test(t));
+
+/**
+ * One keyset page per table. The serial tables select `id` as is: aliasing
+ * `id::text AS id` would make `ORDER BY id` sort by the TEXT alias ("1",
+ * "10", "100", "2", …) while `id > n` compares numbers, so every page after
+ * the first skipped rows (B23: apply found 0 of ~300 rows on a real ledger).
+ */
 const PAGES: Record<RewriteTable, (userId: string, after: string | null, size: number) => SQL> = {
   transactions: (userId, after, size) => sql`
-    SELECT id::text AS id, payee, NULL AS tier FROM transactions
+    SELECT id, payee, NULL AS tier FROM transactions
     WHERE user_id = ${userId} ${after != null ? sql`AND id > ${Number(after)}` : sql``} ORDER BY id LIMIT ${size}`,
   recurring: (userId, after, size) => sql`
-    SELECT id::text AS id, payee, NULL AS tier FROM recurring_transactions
+    SELECT id, payee, NULL AS tier FROM recurring_transactions
     WHERE user_id = ${userId} ${after != null ? sql`AND id > ${Number(after)}` : sql``} ORDER BY id LIMIT ${size}`,
   staged: (userId, after, size) => sql`
     SELECT id, payee, encryption_tier AS tier FROM staged_transactions
@@ -78,7 +103,21 @@ export async function planPayeeApply(opts: {
     total: 0,
     tooLarge: false,
     truncated: false,
+    diagnostics: { scanned: 0, undecryptable: 0, alreadyCanonical: 0, nearMisses: [] },
   };
+  // Alias-key words of the target entities → entity ids (near-miss lookup).
+  const nearIndex = new Map<string, Set<number>>();
+  for (const e of matcher.entities) {
+    if (entityIds && !entityIds.has(e.id)) continue;
+    for (const a of e.aliases) {
+      for (const t of nearMissTokens(payeeMatchKey(a.pattern))) {
+        const set = nearIndex.get(t) ?? new Set<number>();
+        set.add(e.id);
+        nearIndex.set(t, set);
+      }
+    }
+  }
+  const near = new Map<string, { payee: string; entityId: number; count: number }>();
   const changes = new Map<string, { from: string; to: string; entityId: number; count: number }>();
   const conflicts = new Map<string, { payee: string; entities: string[]; count: number }>();
   for (const t of opts.tables ?? REWRITE_TABLES) {
@@ -92,13 +131,28 @@ export async function planPayeeApply(opts: {
       }
       const page: Array<Record<string, unknown>> = normalizeDbRows<Record<string, unknown>>(await executor.execute(PAGES[t](userId, after, size)));
       scanned += page.length;
+      plan.diagnostics.scanned += page.length;
       for (const r of page) {
         after = String(r.id);
         const plain = decodeStoredPayee(r.payee, r.tier == null ? null : String(r.tier), dek);
-        if (plain === undefined) continue;
+        if (plain === undefined) {
+          plan.diagnostics.undecryptable++;
+          continue;
+        }
         const spelling = spellingOf(plain);
         if (!spelling) continue;
         const m = matcher.match(spelling);
+        if (m.kind === "none" && nearIndex.size) {
+          const hit = nearMissTokens(payeeMatchKey(spelling)).map((t) => nearIndex.get(t)).find((x) => x != null);
+          if (hit) {
+            const entityId = Math.min(...hit);
+            const nk = `${entityId}\u0000${spelling}`;
+            const n = near.get(nk) ?? { payee: spelling, entityId, count: 0 };
+            n.count++;
+            near.set(nk, n);
+          }
+          continue;
+        }
         if (m.kind === "ambiguous") {
           if (entityIds && !m.entityIds.some((id) => entityIds.has(id))) continue;
           const c = conflicts.get(spelling) ?? { payee: spelling, entities: m.names, count: 0 };
@@ -107,7 +161,10 @@ export async function planPayeeApply(opts: {
           continue;
         }
         if (m.kind !== "match" || (entityIds && !entityIds.has(m.entityId))) continue;
-        if (plain === m.name) continue;
+        if (plain === m.name) {
+          plan.diagnostics.alreadyCanonical++;
+          continue;
+        }
         plan.rows.push({ t, id: String(r.id), entityId: m.entityId });
         plan.byTable[t]++;
         const ck = `${m.entityId}\u0000${plain}`;
@@ -122,7 +179,32 @@ export async function planPayeeApply(opts: {
   plan.tooLarge = plan.total > PAYEE_APPLY_MAX_ROWS;
   plan.changes = [...changes.values()].sort((a, b) => b.count - a.count || a.from.localeCompare(b.from));
   plan.conflicts = [...conflicts.values()].sort((a, b) => b.count - a.count);
+  plan.diagnostics.nearMisses = [...near.values()].sort((a, b) => b.count - a.count || a.payee.localeCompare(b.payee));
   return plan;
+}
+
+/**
+ * The preview's explanation when an apply finds nothing to rename (B23):
+ * never a silent "0 rows". `names` maps entity id → canonical name.
+ */
+export function explainEmptyApply(plan: Pick<ApplyPlan, "total" | "conflicts" | "diagnostics" | "truncated">, names: (id: number) => string | undefined): string | null {
+  if (plan.total > 0) return null;
+  const d = plan.diagnostics;
+  const parts: string[] = [];
+  if (d.nearMisses.length) {
+    const sample = d.nearMisses.slice(0, 3).map((n) => `«${n.payee}»`).join(", ");
+    const who = [...new Set(d.nearMisses.map((n) => names(n.entityId)).filter(Boolean))].slice(0, 2).map((n) => `«${n}»`).join(", ");
+    const rows = d.nearMisses.reduce((a, n) => a + n.count, 0);
+    parts.push(
+      `Немає aliases для ${d.nearMisses.length} написань (${rows} рядків), схожих на ${who}, наприклад ${sample}. Додайте їх як aliases або злийте через «Merge».`,
+    );
+  }
+  if (d.alreadyCanonical) parts.push(`${d.alreadyCanonical} рядків уже мають канонічну назву.`);
+  if (plan.conflicts.length) parts.push(`${plan.conflicts.length} написань збігаються з кількома платниками і пропущені.`);
+  if (d.undecryptable) parts.push(`${d.undecryptable} рядків не вдалося розшифрувати (немає ключа або інший ключ).`);
+  if (plan.truncated) parts.push("Сканування зупинилося на ліміті рядків.");
+  if (!parts.length) parts.push(d.scanned ? `Жоден із ${d.scanned} переглянутих рядків не збігається з aliases вибраних платників.` : "Немає рядків для перевірки.");
+  return `Нічого не перейменовано. ${parts.join(" ")}`;
 }
 
 /** A short stable fingerprint of a plan's rows (binds MCP confirmation tokens). */

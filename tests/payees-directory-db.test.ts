@@ -132,8 +132,9 @@ describeDb("Payee Studio P2 directory (seeded DB)", () => {
     expect(dir).toHaveLength(1);
     expect(dir[0].name).toBe("ATB");
     expect(dir[0].identifiers).toHaveLength(1);
-    // "АТБ" and the new canonical "ATB" share a matching key: one alias is kept.
-    expect(dir[0].aliases.map((x) => x.pattern).sort()).toEqual(["ATB", "Атб Маркет"].sort());
+    // P6: "АТБ" and the new canonical "ATB" share a matching key but are different
+    // spellings — both stay listed (only the same spelling collapses).
+    expect(dir[0].aliases.map((x) => x.pattern).sort()).toEqual(["ATB", "АТБ", "Атб Маркет"].sort());
     expect(real.entity!.name).toBe("ATB");
   });
 
@@ -176,6 +177,34 @@ describeDb("Payee Studio P2 directory (seeded DB)", () => {
     expect(res.entity!.name).toBe("Булочка");
     expect(res.aliasesAdded).toEqual([{ pattern: "BULOCHKA", mode: "contains" }]);
     expect(res.rows.byTable.transactions).toBe(2);
+  });
+
+  it("B23: apply sees every row of a ledger longer than one scan page", async () => {
+    const { db } = await import("@/db");
+    // 3,000 more rows: ids now span 1–4 digits, the shape that made the old
+    // text-ordered keyset skip the fixture rows at ids 3–9 and 30–99.
+    await db.execute(sql`
+      INSERT INTO transactions (user_id, date, account_id, currency, amount, payee, source, import_hash)
+      SELECT ${seed.userId}, '2026-05-01', ${seed.accountId}, 'UAH', -1, 'Filler ' || g, 'import', 'f-' || g
+      FROM generate_series(1, 3000) g`);
+    const created = await op({ op: "create", name: "Епіцентр", type: "retail", apply: false });
+    const preview = await op({ op: "apply", entityIds: [created.entity!.id] }, true);
+    expect(preview.rows.byTable.transactions).toBe(8); // Epicentr ×5 + EPITCENTR K10 ×3
+    expect(preview.emptyReason).toBeNull();
+    const done = await op({ op: "apply", entityIds: [created.entity!.id] });
+    expect(done.rows.total).toBe(10);
+    const again = await op({ op: "apply", entityIds: [created.entity!.id] }, true);
+    expect(again.rows.total).toBe(0);
+    expect(again.emptyReason).toMatch(/уже мають канонічну назву/);
+  });
+
+  it("adding a cluster to the directory keeps every spelling as an exact alias", async () => {
+    const payees = ["Епіцентр", "Epicentr", "EPITCENTR K10 KYIV 360616"];
+    const preview = await op({ op: "merge", into: { name: "Епіцентр", type: "retail" }, payees }, true);
+    expect(preview.aliasesAdded.map((a) => a.pattern).sort()).toEqual(["EPITCENTR K10 KYIV 360616", "Epicentr"].sort());
+    await op({ op: "merge", into: { name: "Епіцентр", type: "retail" }, payees });
+    const dir = await (await import("@/lib/payees/directory")).loadDirectory((await import("@/db")).db, seed.userId, TEST_DEK);
+    expect(dir[0].aliases.map((a) => a.pattern).sort()).toEqual([...payees].sort());
   });
 
   it("splits aliases off into a new entity and deletes an entity", async () => {
