@@ -12,6 +12,7 @@ import { computeMerchantAnalytics, type Period } from "./merchant-analytics";
 import { computeLookalikes, describeRejections, loadRejections, rejectionPredicate } from "./lookalikes";
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import type { PayeeVocabulary } from "./type-words";
+import { loadMerchantTypes, suggestMerchantType, type MerchantType, type MerchantTypeRef } from "./merchant-types";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -37,6 +38,9 @@ export type EntitySummary = {
   /** P5c: has a website / a logo (the logo itself is served by /api/payees/[id]/logo). */
   website: string | null;
   hasLogo: boolean;
+  /** P6 (B26): the entry's merchant type, and a suggestion for an untyped entry (never applied by itself). */
+  merchantType: (MerchantTypeRef & { id: number }) | null;
+  merchantTypeHint: (MerchantTypeRef & { reason: string }) | null;
   /** Transactions resolving to the entity, and their display-currency total. */
   count: number;
   total: number;
@@ -55,6 +59,8 @@ export type PayeeOverview = {
   undecryptable: number;
   /** P6: the user's type words and bank-operation patterns. */
   vocab: PayeeVocabulary;
+  /** P6: the merchant-type dictionary (the virtual starting set when the user has none). */
+  merchantTypes: MerchantType[];
 };
 
 /** Scan, group and cluster every payee of a user, resolved against the directory. */
@@ -75,6 +81,8 @@ export async function loadPayeeOverview(opts: {
   const directory = dek ? await loadDirectory(executor, userId, dek) : [];
   const matcher = buildPayeeMatcher(directory);
   const vocab = vocabularyOf(await getPayeeSettings(executor, userId));
+  const merchantTypes = await loadMerchantTypes(executor, userId);
+  const typeById = new Map(merchantTypes.filter((t) => t.id != null).map((t) => [t.id!, t]));
   const resolveEntity: EntityResolver =
     opts.resolveEntity ??
     ((spelling) => {
@@ -107,6 +115,15 @@ export async function loadPayeeOverview(opts: {
       defaultCategoryId: e.defaultCategoryId,
       website: e.website,
       hasLogo: e.logo != null,
+      merchantType: (() => {
+        const t = e.merchantTypeId == null ? undefined : typeById.get(e.merchantTypeId);
+        return t ? { id: t.id!, group: t.group, name: t.name } : null;
+      })(),
+      merchantTypeHint: (() => {
+        if (e.merchantTypeId != null) return null;
+        const s = suggestMerchantType([e.name, ...e.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)], merchantTypes, { vocab });
+        return s ? { group: s.type.group, name: s.type.name, reason: s.reason } : null;
+      })(),
       count: totals.get(e.id)?.count ?? 0,
       total: Math.round((totals.get(e.id)?.total ?? 0) * 100) / 100,
       lastDate: totals.get(e.id)?.lastDate ?? null,
@@ -123,6 +140,7 @@ export async function loadPayeeOverview(opts: {
     truncated: scan.truncated,
     undecryptable: scan.undecryptable,
     vocab,
+    merchantTypes,
   };
 }
 

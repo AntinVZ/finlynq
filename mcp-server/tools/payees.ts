@@ -45,6 +45,7 @@ import {
 import { computePayeeInsights } from "../../src/lib/payees/insights";
 import { explainPayeePair } from "../../src/lib/payees/explain";
 import { getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
+import { formatMerchantType, loadMerchantTypes, merchantTypeFilter, type MerchantType } from "../../src/lib/payees/merchant-types";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "../../src/lib/payees/dictionary";
 import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
@@ -106,11 +107,13 @@ function clusterOut(c: PayeeCluster) {
   };
 }
 
-function entityOut(e: PayeeEntity) {
+function entityOut(e: PayeeEntity, types: MerchantType[] = []) {
+  const mt = e.merchantTypeId == null ? null : types.find((t) => t.id === e.merchantTypeId);
   return {
     entity_id: e.id,
     name: e.name,
     type: e.type,
+    merchant_type: mt ? formatMerchantType(mt) : null,
     ...(e.website ? { website: e.website } : {}),
     has_logo: e.logo != null,
     ...(e.note ? { note: e.note } : {}),
@@ -151,6 +154,8 @@ function opOut(r: PayeeOpResult) {
     ...(r.warnings.length ? { warnings: r.warnings } : {}),
     ...(r.blocked ? { blocked: r.blocked } : {}),
     ...(r.emptyReason ? { emptyReason: r.emptyReason } : {}),
+    ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to })) } : {}),
+    ...(r.merchantTypes.added.length || r.merchantTypes.updated.length || r.merchantTypes.removed.length ? { merchantTypes: r.merchantTypes } : {}),
   };
 }
 
@@ -167,10 +172,13 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     return { currency: o.currency, ...(notes.length ? { note: notes.join(" ") } : {}) };
   }
 
-  async function opList(input: { view?: "all" | "unrecognized" | "entities"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number }) {
+  async function opList(input: { view?: "all" | "unrecognized" | "entities"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number; merchant_type?: string }) {
     const o = await overview();
+    const typeTest = input.merchant_type?.trim() ? merchantTypeFilter(input.merchant_type) : null;
+    const typeOfEntity = new Map(o.entities.map((e) => [e.id, e.merchantType]));
     if (input.view === "entities") {
       let ents = o.entities;
+      if (typeTest) ents = ents.filter((e) => typeTest(e.merchantType));
       if (input.search?.trim()) {
         const needle = input.search;
         const ids = new Set(o.directory.filter((e) => e.aliases.some((a) => containsNormalized(a.pattern, needle)) || containsNormalized(e.name, needle)).map((e) => e.id));
@@ -180,12 +188,24 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       else if (input.sort === "total") ents = [...ents].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
       const limit = input.limit ?? 100;
       return dataResponse({
-        entities: ents.slice(0, limit).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, count: e.count, total: e.total, lastDate: e.lastDate, aliases: e.aliasCount, identifiers: e.identifierCount })),
+        entities: ents.slice(0, limit).map((e) => ({
+          entity_id: e.id,
+          name: e.name,
+          type: e.type,
+          merchant_type: e.merchantType ? formatMerchantType(e.merchantType) : null,
+          ...(e.merchantTypeHint ? { merchant_type_hint: `${formatMerchantType(e.merchantTypeHint)} (${e.merchantTypeHint.reason}; suggestion only — set it with op=update merchant_type after the user agrees)` } : {}),
+          count: e.count,
+          total: e.total,
+          lastDate: e.lastDate,
+          aliases: e.aliasCount,
+          identifiers: e.identifierCount,
+        })),
         total: ents.length,
         ...scanMeta(o),
       });
     }
     let groups = input.view === "unrecognized" ? unrecognizedGroups(o.groups) : o.groups.filter((g) => g.key);
+    if (typeTest) groups = groups.filter((g) => typeTest(g.entityId == null ? null : (typeOfEntity.get(g.entityId) ?? null)));
     if (input.search?.trim()) {
       const needle = input.search;
       groups = groups.filter((g) => g.spellings.some((s) => containsNormalized(s.spelling, needle)) || (g.entityName != null && containsNormalized(g.entityName, needle)));
@@ -269,7 +289,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     const pending = await planPayeeApply({ executor: db, userId, dek, matcher: o.matcher, entityIds: new Set([entityId]) });
     const history = await listPayeeBatches(db, userId, { entityId, limit: 20 });
     return dataResponse({
-      entity: entityOut(e),
+      entity: entityOut(e, o.merchantTypes),
       spellings: o.groups.filter((g) => g.entityId === entityId).map((g) => groupOut(g)),
       pendingApply: { total: pending.total, byTable: pending.byTable, changes: pending.changes.slice(0, 20).map((c) => ({ from: c.from, count: c.count })) },
       history: history.map((b) => ({ batch_id: b.id, kind: b.kind, actor: b.actor, summary: b.summary, createdAt: b.createdAt, undone: b.undoneAt != null, canUndo: b.canUndo })),
@@ -319,6 +339,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     .string()
     .optional()
     .describe("Token from the preview call with the same arguments. Omit to preview; pass verbatim to commit. Single-use; 5-minute TTL.");
+  const merchantTypeArg = z
+    .union([z.number().int().positive(), z.string().min(1).max(170)])
+    .nullable()
+    .optional()
+    .describe("Merchant type (one per payee): merchant_type_id, \"Group → Position\" (created if missing), or a unique position / group name from op=merchant_types; null clears. Never set it without the user's OK.");
+  const merchantTypeFilterArg = z.string().optional().describe("Only payees whose directory entry has this merchant type: a group (all positions), a position, \"Group → Position\", or \"без типу\".");
   const typeArg = z.enum(PAYEE_TYPES).optional().describe("retail | service | bank | government | person | sole_proprietor | company | other. Omit to guess from the name.");
   const aliasArg = z
     .array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.enum(ALIAS_MODES).optional() })]))
@@ -335,7 +361,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, review, proposals, explain, lookalikes, mine_identifiers, whose (who has this card / IBAN / code), dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, mine_identifiers, whose (who has this card / IBAN / code), dictionary_export. AI workflow: review → propose (drafts, changes nothing) → the user approves (approve) or rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, reject_lookalike, propose_identifiers (drafts), dictionary_import, undo. Every write and approve is TWO-STEP: call without confirmation_token to preview (rows per table + token), then repeat with the token; each commit is one batch, undoable for 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows and import hashes never change. Details per op: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -343,6 +369,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         search: z.string().optional().describe("Only payees with a spelling containing this text."),
         sort: z.enum(["count", "total", "name", "last_date"]).optional().describe("Order: count (default), total (by absolute amount), name, last_date."),
         limit: z.number().int().positive().max(5000).optional().describe("Most payees to return (default 100)."),
+        merchant_type: merchantTypeFilterArg,
       }),
       z.object({
         op: z.literal("clusters"),
@@ -368,6 +395,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         type: typeArg,
         note: z.string().optional(),
         default_category_id: z.number().int().positive().optional().describe("Category hint for this payee (not applied to transactions)."),
+        merchant_type: merchantTypeArg,
         aliases: aliasArg,
         identifiers: identifierArg,
         apply: applyArg,
@@ -380,7 +408,26 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         type: typeArg,
         note: z.string().nullable().optional(),
         default_category_id: z.number().int().positive().nullable().optional(),
+        merchant_type: merchantTypeArg,
         apply: applyArg,
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("merchant_types"),
+      }),
+      z.object({
+        op: z.literal("merchant_types_edit"),
+        add: z.array(z.object({ group: z.string().min(1).max(80), name: z.string().min(1).max(80).optional().describe("Position; omit for a one-position group."), default_category_id: z.number().int().positive().nullable().optional() })).optional(),
+        update: z.array(z.object({ merchant_type_id: z.number().int().positive(), group: z.string().min(1).max(80).optional(), name: z.string().min(1).max(80).optional(), sort: z.number().int().min(0).optional(), default_category_id: z.number().int().positive().nullable().optional() })).optional(),
+        remove: z.array(z.number().int().positive()).optional().describe("merchant_type_id values; entries using them lose the type (undoable)."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
+        op: z.literal("set_merchant_type"),
+        merchant_type: z.union([z.number().int().positive(), z.string().min(1).max(170)]).nullable().describe("The type to set (id, \"Group → Position\", or a unique position / group name); null clears."),
+        entity_ids: z.array(z.number().int().positive()).max(5000).optional().describe("These entries…"),
+        type_word: z.string().min(1).max(60).optional().describe("…or every entry whose name / exact alias carries this type word, e.g. \"ресторан\"."),
+        only_untyped: z.boolean().optional().describe("Leave entries that already have a type alone."),
         confirmation_token: tokenArg,
       }),
       z.object({
@@ -445,6 +492,8 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         period_to: ymdArg.optional().describe("Merchant analyses: up to this date."),
         entity_id: z.number().int().positive().optional().describe("Merchant analyses for this directory entry only."),
         name: z.string().optional().describe("Merchant analyses for this payee (any spelling) only."),
+        merchant_type: merchantTypeFilterArg,
+        merchant_type_group_by: z.enum(["group", "position"]).optional().describe("Add byMerchantType: spend per merchant-type group or position (untyped = \"Без типу\")."),
       }),
       z.object({
         op: z.literal("explain"),
@@ -458,6 +507,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         logo: z.string().nullable().optional().describe("data:image/png|jpeg|webp;base64,… ≤ 20 KB (no SVG); null clears."),
         type: typeArg,
         note: z.string().nullable().optional(),
+        merchant_type: merchantTypeArg,
         confirmation_token: tokenArg,
       }),
       z.object({
@@ -559,12 +609,37 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           }
           case "create":
             return await writeOp(
-              { op: "create", name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, aliases: toAliases(input.aliases), identifiers: input.identifiers, apply: input.apply },
+              { op: "create", name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, merchantType: input.merchant_type, aliases: toAliases(input.aliases), identifiers: input.identifiers, apply: input.apply },
               input.confirmation_token,
             );
           case "update":
             return await writeOp(
-              { op: "update", entityId: input.entity_id, name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, apply: input.apply },
+              { op: "update", entityId: input.entity_id, name: input.name, type: input.type, note: input.note, defaultCategoryId: input.default_category_id, merchantType: input.merchant_type, apply: input.apply },
+              input.confirmation_token,
+            );
+          case "merchant_types": {
+            const types = await loadMerchantTypes(db, userId);
+            const used = new Map<number, number>();
+            for (const e of dek ? await loadDirectory(db, userId, dek) : []) if (e.merchantTypeId != null) used.set(e.merchantTypeId, (used.get(e.merchantTypeId) ?? 0) + 1);
+            return dataResponse({
+              merchant_types: types.map((t) => ({ merchant_type_id: t.id, group: t.group, name: t.name, label: formatMerchantType(t), entries: t.id == null ? 0 : (used.get(t.id) ?? 0), ...(t.defaultCategoryId != null ? { default_category_id: t.defaultCategoryId } : {}) })),
+              ...(types.some((t) => t.id == null) ? { note: "The built-in starting set (no ids yet): refer to types by \"Group → Position\"; it is stored on the first change." } : {}),
+            });
+          }
+          case "merchant_types_edit":
+            return await writeOp(
+              {
+                op: "merchant_types",
+                add: input.add?.map((a) => ({ group: a.group, name: a.name, defaultCategoryId: a.default_category_id })),
+                update: input.update?.map((u) => ({ id: u.merchant_type_id, group: u.group, name: u.name, sort: u.sort, defaultCategoryId: u.default_category_id })),
+                remove: input.remove,
+              },
+              input.confirmation_token,
+            );
+          case "set_merchant_type":
+            if (!input.entity_ids?.length && !input.type_word?.trim()) return err("Pass entity_ids or type_word.");
+            return await writeOp(
+              { op: "set_merchant_type", merchantType: input.merchant_type, entityIds: input.entity_ids, typeWord: input.type_word, onlyUntyped: input.only_untyped },
               input.confirmation_token,
             );
           case "alias_add":
@@ -688,6 +763,13 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               recentDays: input.recent_days,
               limit: input.limit,
               vocab: vocabularyOf(await getPayeeSettings(db, userId)),
+              ...(input.merchant_type || input.merchant_type_group_by
+                ? await (async () => {
+                    const types = await loadMerchantTypes(db, userId);
+                    const byEntity = new Map(directory.map((e) => [e.id, e.merchantTypeId == null ? null : (types.find((t) => t.id === e.merchantTypeId) ?? null)]));
+                    return { merchantTypeOf: (id: number) => byEntity.get(id) ?? null, merchantType: input.merchant_type, groupByMerchantType: input.merchant_type_group_by };
+                  })()
+                : {}),
             });
             const wantMerchants = input.merchants === true || input.period_from != null || input.period_to != null || input.entity_id != null || input.name != null;
             const merchants = wantMerchants
@@ -730,7 +812,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           }
           case "dictionary_export": {
             if (!dek) return err("Unlock required: the directory is encrypted. Sign in to Finlynq in the browser, then retry.");
-            const dict = buildDictionary(await loadDirectory(db, userId, dek));
+            const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
             return dataResponse({
               format: input.format ?? "json",
               content: input.format === "yaml" ? dictionaryToYaml(dict) : dictionaryToJson(dict),
@@ -785,9 +867,9 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             }
           }
           case "set_profile":
-            if (input.website === undefined && input.logo === undefined && input.type === undefined && input.note === undefined) return err("Pass website, logo, type or note.");
+            if (input.website === undefined && input.logo === undefined && input.type === undefined && input.note === undefined && input.merchant_type === undefined) return err("Pass website, logo, type, note or merchant_type.");
             return await writeOp(
-              { op: "update", entityId: input.entity_id, website: input.website, logo: input.logo, type: input.type, note: input.note, apply: false },
+              { op: "update", entityId: input.entity_id, website: input.website, logo: input.logo, type: input.type, note: input.note, merchantType: input.merchant_type, apply: false },
               input.confirmation_token,
             );
           case "move_remainder":

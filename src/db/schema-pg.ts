@@ -10,6 +10,7 @@
 
 import {
   pgTable,
+  type AnyPgColumn,
   serial,
   text,
   integer,
@@ -2062,6 +2063,8 @@ export const payeeEntities = pgTable("payee_entities", {
   // P5c (20261012_payee_profile.sql): encrypted https URL and encrypted data: URI logo (PNG/JPEG/WebP ≤ 20 KB).
   website: text("website"),
   logo: text("logo"),
+  // P6 (20261013_payee_merchant_types.sql): group → position; NULL = no type.
+  merchantTypeId: integer("merchant_type_id").references((): AnyPgColumn => payeeMerchantTypes.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -2156,6 +2159,23 @@ export const payeeRejections = pgTable("payee_rejections", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("payee_rejections_user_key_entity_idx").on(t.userId, t.keyHash, t.entityId),
+]);
+
+// ─── Payee merchant types (P6, B26) ─────────────────────────────────────────
+//
+// The user's editable dictionary of merchant types: group → position, an
+// optional default category (not linked by default). Plain taxonomy text.
+// Migration: scripts/migrations/20261013_payee_merchant_types.sql.
+export const payeeMerchantTypes = pgTable("payee_merchant_types", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  groupName: text("group_name").notNull(),
+  name: text("name").notNull(),
+  sort: integer("sort").notNull().default(0),
+  defaultCategoryId: integer("default_category_id").references(() => categories.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("payee_merchant_types_user_group_name_idx").on(t.userId, t.groupName, t.name),
 ]);
 
 // ─── Admin Audit Log (Finding #16) ──────────────────────────────────────────

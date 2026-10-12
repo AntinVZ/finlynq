@@ -91,7 +91,7 @@ describe("type words leave the brand", () => {
 
   it("the autopilot never joins different brand tokens", () => {
     const e = (id: number, name: string): PayeeEntity => ({
-      id, name, type: "retail", note: null, defaultCategoryId: null, website: null, logo: null, createdAt: null, updatedAt: null,
+      id, name, type: "retail", note: null, defaultCategoryId: null, website: null, logo: null, merchantTypeId: null, createdAt: null, updatedAt: null,
       aliases: [{ id, entityId: id, pattern: name, mode: "exact", source: "canonical", createdAt: null }], identifiers: [],
     });
     expect(autopilotMatch("Кафе Мандарина", [e(1, "Кафе Мандарин")], 0.6)).toBeNull();

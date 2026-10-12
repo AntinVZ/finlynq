@@ -52,16 +52,34 @@ import { decodeStoredPayee, spellingOf } from "./scan";
 import { explainEmptyApply, PAYEE_APPLY_MAX_ROWS, planFingerprint, planPayeeApply, runPayeeApply, type ApplyPlan } from "./apply";
 import type { PayeeExecutor } from "./scan";
 import { invalidatePayeeSuggest } from "./suggest";
+import {
+  ensureMerchantTypes,
+  findMerchantType,
+  formatMerchantType,
+  insertMerchantType,
+  sameMerchantType,
+  parseMerchantTypeText,
+  validateMerchantTypeRef,
+  type MerchantType,
+  type MerchantTypeRef,
+} from "./merchant-types";
+import { brandCoreOfKey } from "./type-words";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
 export type IdentifierInput = { kind: IdentifierKind; value: string } & IdentifierDetails;
 /** P5f: change an existing requisite's details (not its value). */
 export type IdentifierUpdate = { id: number } & IdentifierDetails;
+/**
+ * P6 (B26): a merchant type by id, by `{ group, name }` (created when missing),
+ * or by text ("Група → Позиція", or a unique position / group name). null clears.
+ */
+export type MerchantTypeInput = number | string | MerchantTypeRef | null;
+export type MerchantTypeEdit = { group: string; name?: string; sort?: number; defaultCategoryId?: number | null };
 
 export type PayeeOp =
-  | { op: "create"; name: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; aliases?: AliasInput[]; identifiers?: IdentifierInput[]; apply?: boolean }
+  | { op: "create"; name: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; merchantType?: MerchantTypeInput; aliases?: AliasInput[]; identifiers?: IdentifierInput[]; apply?: boolean }
   /** P5c: `website` / `logo` (null clears) — the merchant profile. */
-  | { op: "update"; entityId: number; name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; apply?: boolean }
+  | { op: "update"; entityId: number; name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; merchantType?: MerchantTypeInput; apply?: boolean }
   | { op: "alias_add"; entityId: number; aliases: AliasInput[]; apply?: boolean }
   | { op: "alias_remove"; entityId: number; aliasIds?: number[]; patterns?: string[] }
   | { op: "alias_from_rule"; ruleId: number; entityId?: number; apply?: boolean }
@@ -78,6 +96,14 @@ export type PayeeOp =
    */
   | { op: "move_remainder"; entityId: number; payees: string[]; remainder: string; target?: "tag" | "note" }
   | { op: "delete"; entityId: number }
+  /** P6: edit the merchant-type dictionary (the starting set is written on the first edit). */
+  | { op: "merchant_types"; add?: MerchantTypeEdit[]; update?: Array<{ id: number } & Partial<MerchantTypeEdit>>; remove?: number[] }
+  /**
+   * P6: set (or clear, null) one merchant type on many entries — the listed
+   * `entityIds`, or every entry whose name / exact aliases carry `typeWord`
+   * (a type word such as "ресторан"). `onlyUntyped` leaves typed entries alone.
+   */
+  | { op: "set_merchant_type"; merchantType: MerchantTypeInput; entityIds?: number[]; typeWord?: string; onlyUntyped?: boolean }
   | { op: "undo"; batchId: number }
   /** Several ops as ONE batch (e.g. approving AI proposals). `kind` labels the batch. */
   | { op: "bulk"; kind: string; ops: SingleOp[]; aliasSource?: string; labels?: string[] };
@@ -111,6 +137,10 @@ export type PayeeOpResult = {
   blocked: string | null;
   /** P6 (B23): why an apply renames nothing — never a silent 0. */
   emptyReason: string | null;
+  /** P6 (B26): entries whose merchant type changes ("Група → Позиція", null = none). */
+  typed: Array<{ id: number; name: string; from: string | null; to: string | null }>;
+  /** P6 (B26): dictionary changes. */
+  merchantTypes: { added: string[]; updated: string[]; removed: string[] };
   /** Binds an MCP confirmation token to exactly these rows. */
   fingerprint: string;
 };
@@ -226,6 +256,8 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     warnings: undo.skippedRows ? [`${undo.skippedRows} row(s) were changed after this batch and are left as they are.`] : [],
     blocked: null,
     emptyReason: null,
+    typed: [],
+    merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: `undo:${batchId}`,
   };
 }
@@ -254,6 +286,8 @@ async function runOp(
     warnings: [],
     blocked: null,
     emptyReason: null,
+    typed: [],
+    merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: "",
   };
   const kind = root.op === "bulk" ? root.kind : root.op;
@@ -301,6 +335,52 @@ async function runOp(
         journal.count("identifiers_added");
       }
     };
+    // ─── P6 merchant types ─────────────────────────────────────────────
+    let typeList: MerchantType[] | null = null;
+    /** The stored list (the starting set is written first if the user has none). */
+    const storedTypes = async () => (typeList ??= await ensureMerchantTypes(btx, userId));
+    const typeLabel = (id: number | null) => {
+      if (id == null) return null;
+      const t = typeList?.find((x) => x.id === id);
+      return t ? formatMerchantType(t) : `#${id}`;
+    };
+    const checkCategory = async (id: number | null | undefined) => {
+      if (id == null) return;
+      const cat = normalizeDbRows(await btx.execute(sql`SELECT id FROM categories WHERE id = ${id} AND user_id = ${userId}`));
+      if (!cat.length) throw new PayeeDirectoryError(`No category #${id}.`, "not_found");
+    };
+    /** Resolve a merchant-type input to an id (creating `{ group, name }` when missing). */
+    const resolveMerchantType = async (input: MerchantTypeInput): Promise<number | null> => {
+      await storedTypes();
+      if (input == null) return null;
+      const types = await storedTypes();
+      const found = findMerchantType(types, input);
+      if (found?.id != null) return found.id;
+      if (typeof input === "number") throw new PayeeDirectoryError(`No merchant type #${input}.`, "not_found");
+      const parsed = typeof input === "string" ? parseMerchantTypeText(input) : input;
+      if (!parsed.group) throw new PayeeDirectoryError(`Невідомий тип мерчанта «${parsed.name}». Вкажіть «Група → Позиція», щоб створити новий.`, "not_found");
+      let ref: MerchantTypeRef;
+      try {
+        ref = validateMerchantTypeRef(parsed);
+      } catch (e) {
+        throw new PayeeDirectoryError(e instanceof Error ? e.message : String(e));
+      }
+      const id = await insertMerchantType(btx, userId, ref);
+      journal.createdType(id);
+      journal.count("merchant_types_added");
+      out.merchantTypes.added.push(formatMerchantType(ref));
+      typeList = null;
+      await storedTypes();
+      return id;
+    };
+    const setEntityType = async (e: PayeeEntity, typeId: number | null) => {
+      if (e.merchantTypeId === typeId) return;
+      await journal.willModify([e.id]);
+      await updateEntityRow(btx, userId, dek, e.id, { merchantTypeId: typeId });
+      out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
+      journal.count("merchant_type_set");
+    };
+
     const createEntity = async (name: string, type: PayeeType, extra: { note?: string | null; defaultCategoryId?: number | null; website?: string | null } = {}, allowedOwners?: ReadonlySet<number>) => {
       const clean = validateEntityName(name);
       assertExactFree(entities, clean, undefined, allowedOwners);
@@ -325,6 +405,11 @@ async function runOp(
             const id = await createEntity(op.name, asType(op.type, op.name), { note: op.note, defaultCategoryId: op.defaultCategoryId, website: op.website });
             await addAliases(id, op.aliases ?? [], src("manual"));
             await addIdentifiers(id, op.identifiers ?? [], out.entity!.type);
+            if (op.merchantType != null) {
+              const typeId = await resolveMerchantType(op.merchantType);
+              await updateEntityRow(btx, userId, dek, id, { merchantTypeId: typeId });
+              out.typed.push({ id, name: out.entity!.name, from: null, to: typeLabel(typeId) });
+            }
             if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
               out.warnings.push(`"${op.name}" looks like a private person; check the type.`);
             }
@@ -363,6 +448,14 @@ async function runOp(
             }
             if ((patch.website || patch.logo) && PERSON_ENTITY_TYPES.has(patch.type ?? e.type)) {
               out.warnings.push(`“${e.name}” is a private person or sole proprietor; a website or logo is usually for merchants.`);
+            }
+            if (op.merchantType !== undefined) {
+              const typeId = await resolveMerchantType(op.merchantType);
+              if (typeId !== e.merchantTypeId) {
+                patch.merchantTypeId = typeId;
+                out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
+                journal.count("merchant_type_set");
+              }
             }
             if (patch.website !== undefined) journal.count("website_set");
             if (patch.logo !== undefined) journal.count("logo_set");
@@ -601,6 +694,83 @@ async function runOp(
             if (!payeeWrites.length) out.warnings.push("No transactions carry that spelling any more.");
             break;
           }
+          case "merchant_types": {
+            const types = await storedTypes();
+            const byId = (id: number) => {
+              const t = types.find((x) => x.id === id);
+              if (!t) throw new PayeeDirectoryError(`No merchant type #${id}.`, "not_found");
+              return t;
+            };
+            const taken = (ref: MerchantTypeRef, exceptId?: number) =>
+              (typeList ?? types).some((x) => x.id !== exceptId && sameMerchantType(x, ref));
+            const valid = (r: { group?: string | null; name?: string | null }) => {
+              try {
+                return validateMerchantTypeRef(r);
+              } catch (e) {
+                throw new PayeeDirectoryError(e instanceof Error ? e.message : String(e));
+              }
+            };
+            for (const a of op.add ?? []) {
+              const ref = valid(a);
+              if (taken(ref)) throw new PayeeDirectoryError(`Тип «${formatMerchantType(ref)}» уже є.`, "conflict");
+              await checkCategory(a.defaultCategoryId);
+              const id = await insertMerchantType(btx, userId, { ...ref, sort: a.sort, defaultCategoryId: a.defaultCategoryId ?? null });
+              journal.createdType(id);
+              journal.count("merchant_types_added");
+              out.merchantTypes.added.push(formatMerchantType(ref));
+              typeList = null;
+              await storedTypes();
+            }
+            for (const u of op.update ?? []) {
+              const cur = byId(u.id);
+              const ref = valid({ group: u.group ?? cur.group, name: u.name ?? (u.group != null && cur.name === cur.group ? u.group : cur.name) });
+              if (taken(ref, cur.id!)) throw new PayeeDirectoryError(`Тип «${formatMerchantType(ref)}» уже є.`, "conflict");
+              if (u.defaultCategoryId !== undefined) await checkCategory(u.defaultCategoryId);
+              await journal.willModifyTypes([cur.id!]);
+              await btx.execute(sql`
+                UPDATE payee_merchant_types SET group_name = ${ref.group}, name = ${ref.name},
+                  sort = ${u.sort ?? cur.sort},
+                  default_category_id = ${u.defaultCategoryId !== undefined ? u.defaultCategoryId : cur.defaultCategoryId}
+                WHERE id = ${cur.id} AND user_id = ${userId}`);
+              journal.count("merchant_types_updated");
+              out.merchantTypes.updated.push(formatMerchantType(cur) === formatMerchantType(ref) ? formatMerchantType(ref) : `${formatMerchantType(cur)} → ${formatMerchantType(ref)}`);
+            }
+            for (const id of op.remove ?? []) {
+              const cur = byId(id);
+              // Entries that use it lose the type; the batch remembers them for undo.
+              const users = entities.filter((e) => e.merchantTypeId === id);
+              await journal.willModify(users.map((e) => e.id));
+              await journal.willModifyTypes([id]);
+              for (const e of users) out.typed.push({ id: e.id, name: e.name, from: formatMerchantType(cur), to: null });
+              await btx.execute(sql`DELETE FROM payee_merchant_types WHERE id = ${id} AND user_id = ${userId}`);
+              journal.count("merchant_types_removed");
+              out.merchantTypes.removed.push(formatMerchantType(cur));
+            }
+            if (!out.merchantTypes.added.length && !out.merchantTypes.updated.length && !out.merchantTypes.removed.length) {
+              throw new PayeeDirectoryError("Nothing to add, change or remove.");
+            }
+            typeList = null;
+            break;
+          }
+          case "set_merchant_type": {
+            const typeId = await resolveMerchantType(op.merchantType);
+            let targets: PayeeEntity[];
+            if (op.entityIds?.length) {
+              targets = [...new Set(op.entityIds)].map((id) => entityOf(entities, id));
+            } else if (op.typeWord?.trim()) {
+              const word = payeeMatchKey(op.typeWord);
+              if (!word) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
+              // Whole-word match on the matching key of the name / exact aliases.
+              const has = (text: string) => ` ${payeeMatchKey(text)} `.includes(` ${word} `) || brandCoreOfKey(payeeMatchKey(text)).removed.some((w) => payeeMatchKey(w) === word);
+              targets = entities.filter((e) => has(e.name) || e.aliases.some((a) => a.mode === "exact" && has(a.pattern)));
+            } else {
+              throw new PayeeDirectoryError("Name the payees (entityIds) or a type word (typeWord).");
+            }
+            if (op.onlyUntyped) targets = targets.filter((e) => e.merchantTypeId == null);
+            for (const e of targets) await setEntityType(e, typeId);
+            if (!out.typed.length) out.warnings.push("Жоден запис не змінює тип.");
+            break;
+          }
           case "delete": {
             const e = entityOf(entities, op.entityId);
             await journal.willModify([e.id]);
@@ -639,7 +809,14 @@ async function runOp(
         if (fresh) out.entity = { id: fresh.id, name: fresh.name, type: fresh.type };
       }
     }
-    if (!out.fingerprint) out.fingerprint = `${root.op}:${out.entity?.id ?? ""}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
+    // A created entity is named, not numbered: the preview's transaction is
+    // rolled back but its serial ids are spent, so the commit gets new ids.
+    const who = out.created ? `new:${out.entity?.name ?? ""}` : `${out.entity?.id ?? ""}`;
+    if (!out.fingerprint) out.fingerprint = `${root.op}:${who}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
+    if (out.typed.length || out.merchantTypes.added.length || out.merchantTypes.updated.length || out.merchantTypes.removed.length) {
+      const typed = out.typed.map((t) => [out.created && t.id === out.entity?.id ? `new:${t.name}` : t.id, t.from, t.to]);
+      out.fingerprint += `:t:${createHash("sha256").update(JSON.stringify([typed, out.merchantTypes])).digest("hex").slice(0, 16)}`;
+    }
   });
   out.batchId = batchId;
   return out;

@@ -59,6 +59,8 @@ export type PayeeEntity = {
   website: string | null;
   /** P5c: data: URI (PNG / JPEG / WebP ≤ 20 KB), or null. */
   logo: string | null;
+  /** P6 (B26): `payee_merchant_types.id`, or null = no type. */
+  merchantTypeId: number | null;
   createdAt: string | null;
   updatedAt: string | null;
   aliases: PayeeAlias[];
@@ -95,7 +97,7 @@ const iso = (v: unknown) => (v == null ? null : v instanceof Date ? v.toISOStrin
 export async function loadDirectory(executor: PayeeExecutor, userId: string, dek: Buffer | null): Promise<PayeeEntity[]> {
   const ents = normalizeDbRows<Record<string, unknown>>(
     await executor.execute(sql`
-      SELECT id, name, type, note, default_category_id, website, logo, created_at, updated_at
+      SELECT id, name, type, note, default_category_id, website, logo, merchant_type_id, created_at, updated_at
       FROM payee_entities WHERE user_id = ${userId} ORDER BY id`),
   );
   const byId = new Map<number, PayeeEntity>();
@@ -109,6 +111,7 @@ export async function loadDirectory(executor: PayeeExecutor, userId: string, dek
       defaultCategoryId: r.default_category_id == null ? null : Number(r.default_category_id),
       website: dec(dek, r.website),
       logo: dec(dek, r.logo),
+      merchantTypeId: r.merchant_type_id == null ? null : Number(r.merchant_type_id),
       createdAt: iso(r.created_at),
       updatedAt: iso(r.updated_at),
       aliases: [],
@@ -341,12 +344,12 @@ export async function insertEntity(
   executor: PayeeExecutor,
   userId: string,
   dek: Buffer,
-  e: { name: string; type: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null },
+  e: { name: string; type: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; merchantTypeId?: number | null },
 ): Promise<number> {
   const rows = normalizeDbRows<{ id: unknown }>(
     await executor.execute(sql`
-      INSERT INTO payee_entities (user_id, name, type, note, default_category_id, website)
-      VALUES (${userId}, ${enc(dek, e.name)}, ${e.type}, ${e.note ? enc(dek, e.note) : null}, ${e.defaultCategoryId ?? null}, ${e.website ? enc(dek, e.website) : null})
+      INSERT INTO payee_entities (user_id, name, type, note, default_category_id, website, merchant_type_id)
+      VALUES (${userId}, ${enc(dek, e.name)}, ${e.type}, ${e.note ? enc(dek, e.note) : null}, ${e.defaultCategoryId ?? null}, ${e.website ? enc(dek, e.website) : null}, ${e.merchantTypeId ?? null})
       RETURNING id`),
   );
   return Number(rows[0].id);
@@ -414,7 +417,7 @@ export async function updateEntityRow(
   userId: string,
   dek: Buffer,
   id: number,
-  patch: { name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null },
+  patch: { name?: string; type?: PayeeType; note?: string | null; defaultCategoryId?: number | null; website?: string | null; logo?: string | null; merchantTypeId?: number | null },
 ): Promise<void> {
   const sets = [];
   if (patch.name !== undefined) sets.push(sql`name = ${enc(dek, patch.name)}`);
@@ -423,6 +426,7 @@ export async function updateEntityRow(
   if (patch.defaultCategoryId !== undefined) sets.push(sql`default_category_id = ${patch.defaultCategoryId}`);
   if (patch.website !== undefined) sets.push(sql`website = ${patch.website ? enc(dek, patch.website) : null}`);
   if (patch.logo !== undefined) sets.push(sql`logo = ${patch.logo ? enc(dek, patch.logo) : null}`);
+  if (patch.merchantTypeId !== undefined) sets.push(sql`merchant_type_id = ${patch.merchantTypeId}`);
   if (!sets.length) return;
   sets.push(sql`updated_at = NOW()`);
   await executor.execute(sql`UPDATE payee_entities SET ${sql.join(sets, sql`, `)} WHERE id = ${id} AND user_id = ${userId}`);

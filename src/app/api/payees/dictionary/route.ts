@@ -22,12 +22,13 @@ import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
 import { loadDirectory } from "@/lib/payees/directory";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "@/lib/payees/dictionary";
+import { loadMerchantTypes } from "@/lib/payees/merchant-types";
 import { executePayeeOp } from "@/lib/payees/ops";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
 export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Export failed" }, async ({ request, userId, dek }) => {
   const yaml = request.nextUrl.searchParams.get("format") === "yaml";
-  const dict = buildDictionary(await loadDirectory(db, userId, dek));
+  const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
   const date = dict.exportedAt.slice(0, 10);
   return new NextResponse(yaml ? dictionaryToYaml(dict) : dictionaryToJson(dict), {
     headers: {

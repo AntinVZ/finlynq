@@ -42,7 +42,7 @@ describe("normalizeLogo", () => {
 
 describe("dictionary carries websites, never logos", () => {
   const e = (id: number, name: string, type: PayeeEntity["type"], website: string | null): PayeeEntity => ({
-    id, name, type, note: null, defaultCategoryId: null, website, logo: website ? `data:image/png;base64,${PNG_1PX}` : null, createdAt: null, updatedAt: null,
+    id, name, type, note: null, defaultCategoryId: null, website, logo: website ? `data:image/png;base64,${PNG_1PX}` : null, merchantTypeId: null, createdAt: null, updatedAt: null,
     aliases: [{ id: id * 10, entityId: id, pattern: name, mode: "exact", source: "canonical", createdAt: null }], identifiers: [],
   });
   it("exports the website of merchants, no logo, no people", () => {

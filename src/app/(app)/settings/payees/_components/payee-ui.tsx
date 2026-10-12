@@ -52,6 +52,9 @@ export type EntityRow = {
   defaultCategoryId: number | null;
   website?: string | null;
   hasLogo?: boolean;
+  /** P6: the entry's merchant type, and a suggestion when it has none. */
+  merchantType?: { id: number; group: string; name: string } | null;
+  merchantTypeHint?: { group: string; name: string; reason: string } | null;
   count: number;
   total: number;
   lastDate: string | null;
@@ -86,6 +89,7 @@ export type PayeesResponse = {
   lookalikeCount?: number;
   unrenamedRows?: number;
   entities: EntityRow[];
+  merchantTypes?: Array<{ id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null }>;
   batches: BatchRow[];
   settings: PayeeSettings;
   groups: PayeeGroupRow[];

@@ -29,11 +29,14 @@ const LOGO_MAX_BYTES = 20 * 1024;
 const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp"];
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
 import { RequisitesCard, type Requisite } from "../_components/requisites-card";
+import { MerchantTypeSelect, merchantTypeLabel, type MerchantTypeOption } from "../_components/merchant-type-ui";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
 type Identifier = Requisite;
 type EntityResponse = {
-  entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; website: string | null; logo: string | null; aliases: Alias[]; identifiers: Identifier[] };
+  entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; website: string | null; logo: string | null; merchantTypeId?: number | null; aliases: Alias[]; identifiers: Identifier[] };
+  merchantTypes?: MerchantTypeOption[];
+  merchantTypeHint?: { group: string; name: string; reason: string } | null;
   spellings: PayeeGroupRow[];
   pending: { total: number; byTable: Record<string, number>; changes: Array<{ from: string; to: string; count: number }> };
   history: BatchRow[];
@@ -124,6 +127,28 @@ export default function PayeeEntityPage() {
           <Badge variant="outline">{typeLabel(e.type)}</Badge>
         </div>
         {e.note && <p className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{e.note}</p>}
+        {(() => {
+          const types = data.merchantTypes ?? [];
+          const current = e.merchantTypeId == null ? null : (types.find((t) => t.id === e.merchantTypeId) ?? null);
+          const hint = current ? null : (data.merchantTypeHint ?? null);
+          const setType = (v: { group: string; name: string } | null) =>
+            setAction({
+              title: v ? `Тип мерчанта: ${merchantTypeLabel(v)}` : "Прибрати тип мерчанта",
+              body: { op: "update", entityId: e.id, merchantType: v, apply: false },
+              confirm: "Зберегти",
+            });
+          return (
+            <div className="flex flex-wrap items-center gap-2 mt-2 text-sm">
+              <span className="text-muted-foreground">Тип мерчанта:</span>
+              <MerchantTypeSelect types={types} value={current} onChange={setType} />
+              {hint && (
+                <Button size="sm" variant="outline" className="h-8 text-xs" title={`Підказка: ${hint.reason}. Призначається лише після підтвердження.`} onClick={() => setType(hint)}>
+                  Підказка: {merchantTypeLabel(hint)}
+                </Button>
+              )}
+            </div>
+          );
+        })()}
         <div className="flex flex-wrap gap-2 mt-3">
           <Button size="sm" variant="outline" onClick={() => setEdit({ name: e.name, type: e.type, note: e.note ?? "", categoryId: e.defaultCategoryId ? String(e.defaultCategoryId) : "" })}>
             Edit

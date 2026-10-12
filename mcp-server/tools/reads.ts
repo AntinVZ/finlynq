@@ -98,7 +98,7 @@ import {
 } from "../../src/lib/recurring-detection";
 import {
 } from "../../src/lib/loan-calculator";
-import { resolveCounterparty } from "../../src/lib/payees/resolve";
+import { resolveCounterparty, resolveMerchantTypeFilter } from "../../src/lib/payees/resolve";
 import { buildIdentifierMatcher } from "../../src/lib/payees/whose";
 import { maskSensitiveText } from "../../src/lib/payees/requisites";
 
@@ -324,12 +324,13 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       business: businessArg,
       payee_resolve: z.string().optional().describe("A counterparty from the payee directory (manage_payees): canonical name, any alias or stored spelling, or a requisite (IBAN, EDRPOU, card last 4). Matches every transaction of that counterparty, however its payee is spelled. Not in the directory → same matching key (case, apostrophes, Latin/Cyrillic, card-terminal noise ignored)."),
       identifier: z.string().optional().describe("A requisite: IBAN, a card in any form (\"5168 **** 1234\", \"****1234\", \"1234\"; a full number counts as its last 4), ІПН/РНОКПП (10 digits) or ЄДРПОУ (8). Matches rows whose payee resolves to a directory entry holding it, rows whose payee/note mention it, and rows created from a bank-statement row that mentions it; each row gets matched_via. Last 4 digits are weak: check filters.identifier.entities. Shown masked."),
+      merchant_type: z.string().optional().describe("Merchant type of the payee's directory entry (manage_payees): a group (all its positions, e.g. \"Кафе, ресторани, бари\"), a position (\"Ресторани\"), \"Group → Position\", or \"без типу\" for untyped / unknown payees."),
       account_id: z.number().int().optional().describe("Filter to transactions in this accounts.id (FK fast-path; useful for dedup against blank-payee bank-imported transfers where text search misses)."),
       portfolio_holding_id: z.number().int().optional().describe("Filter to transactions bound to this portfolio_holdings.id (FK fast-path; cheaper than substring search)"),
       limit: z.number().optional().describe("Max results (default 50)"),
       reportingCurrency: z.string().optional().describe("ISO code; if set, each row gets a reportingAmount converted to this currency. Defaults to user's display currency."),
     },
-    async ({ payee, payee_resolve, identifier, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
+    async ({ payee, payee_resolve, merchant_type, identifier, min_amount, max_amount, start_date, end_date, category, tags, tag_exact, tags_all, tags_any, tags_none, untagged, note, search, business, account_id, portfolio_holding_id, limit, reportingCurrency }) => {
       const lim = limit ?? 50;
       const businessFilter = parseBusinessParam(business);
       const bizCond = businessFilterCondition(businessFilter, sql`t.is_business`);
@@ -344,11 +345,13 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
       const textFilters = { payee, note, tags, search, tagExact: exactTag, tagFilter };
       // Payee Studio: every spelling of one counterparty (in memory, after decryption).
       const counterparty = payee_resolve?.trim() ? await resolveCounterparty(db, userId, dek, payee_resolve) : null;
+      // Payee Studio P6: by the merchant type of the payee's directory entry.
+      const byType = merchant_type?.trim() ? await resolveMerchantTypeFilter(db, userId, dek, merchant_type) : null;
       // Payee Studio P5g: by requisite (directory → text → bank-statement row).
       const requisite = identifier?.trim() ? await buildIdentifierMatcher(db, userId, dek, identifier) : null;
       if (identifier?.trim() && !requisite) return err("`identifier` is not an IBAN, a card (last 4 digits or a mask), a 10-digit ІПН or an 8-digit ЄДРПОУ.");
       const matchedVia = new Map<unknown, string>();
-      const inMemory = hasTextFilter(textFilters) || counterparty != null || requisite != null;
+      const inMemory = hasTextFilter(textFilters) || counterparty != null || requisite != null || byType != null;
       // Stream D Phase 4: plaintext c.name was dropped on 2026-05-03. The
       // category filter must go through name_lookup (HMAC) — there is no
       // plaintext fallback. Without a DEK we cannot compute the lookup, so
@@ -403,6 +406,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
             return (row: Record<string, unknown>) => {
               if (!text(row)) return false;
               if (counterparty && !counterparty.match(row.payee, row.note)) return false;
+              if (byType && !byType.match(row.payee)) return false;
               if (requisite) {
                 const via = requisite.match({ id: row.id as number, payee: row.payee, note: row.note });
                 if (!via) return false;
@@ -469,6 +473,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           note: note || null,
           search: search || null,
           ...(counterparty ? { payee_resolve: counterparty.resolvedTo } : {}),
+          ...(byType ? { merchant_type: byType.resolvedTo } : {}),
           ...(requisite
             ? {
                 identifier: {
@@ -1879,6 +1884,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           ],
           lookalikes: "op=lookalikes → spellings NOT in the directory that look like an entry (same scoring as clusters, against canonical names + exact aliases), with confidence, reason, needsDecision for people / ФОП and `remainder` (the spelling minus the entry's name words). Answers: same payee → propose with entity_id (or alias_add); same payee with a purpose in the name → move_remainder (payee → the entry's name, remainder → tag or note; two-step, one undoable batch); different payee → reject_lookalike (remembered; undo=true cancels). `unrenamed` = rows an alias already resolves but stored under another spelling → op=apply. Runs only when called — never on a schedule.",
           brand: "The BRAND decides the payee (P6). Type words (ресторан, кафе, бар, АЗС, аптека, готель, hotel, магазин, shop, медичний центр… — uk/ru/en/translit, plus the user's own words in the Studio settings) are dropped from the core clusters compare: 'Ресторан Дача' ≠ 'Ресторан Липки', 'ОККО 123' = 'АЗС ОККО 456'. A payee that is only type words (noBrand) is never clustered or proposed — leave it unrecognized. Clusters joined only by similar spelling of DIFFERENT brand tokens are needsDecision. Person names cluster by sorted name tokens (word order / patronymic ignored), always needsDecision. Bank service rows (bankOperation: комісія, переказ власних коштів, відсотки, поповнення рахунку…) are not merchants: never propose them, they stay out of insights tops (totals.bankOperations counts them). op=explain shows each side's brand line. An apply that renames nothing returns emptyReason (e.g. look-alike spellings with no alias — add them with alias_add or merge).",
+          merchant_types: "One merchant type per directory entry, two levels: group → position (e.g. \"Кафе, ресторани, бари → Ресторани\"); separate from `type` (retail/service/…). op=merchant_types lists the user's dictionary (a built-in starting set until the first change). Set with op=create / update / set_profile merchant_type=<id | \"Group → Position\" | unique name> or in bulk with op=set_merchant_type (entity_ids or type_word, only_untyped) — two-step, undoable. Edit the dictionary with op=merchant_types_edit (add / update / remove). op=list view=entities shows merchant_type and a merchant_type_hint (type word → Кафе / Ресторани / Бари / Аптеки, bank operation, MCC) — a SUGGESTION: never set a type without the user's OK. Filters: list merchant_type=, insights merchant_type= (+ merchant_type_group_by=group|position → byMerchantType spend), search_transactions merchant_type= (group, position, or \"без типу\"). Dictionary files carry merchantType {group, name}.",
           websites: "Merchant websites (optional): op=review marks each directory entry has_website. You may look websites up yourself (e.g. web search) — the Finlynq server never goes online — and propose them: op=propose [{canonical, entity_id, website}] → the user approves; or op=set_profile entity_id website (two-step). Skip private persons and sole proprietors (ФОП). A logo is a data: URI (PNG / JPEG / WebP ≤ 20 KB, never SVG) via set_profile. Dictionary export carries websites, never logos.",
           merchant_analyses: "op=insights merchants=true (or with period_from / period_to / entity_id / name) adds `merchants`: receipt (average / median / max, quartiles, histogram), receiptTrend (average payment per month, trend % first vs last third), change (period2 vs period1: countEffect = (n2−n1)·avg1, receiptEffect = n2·(avg2−avg1), they sum to the total), lifecycle (new / quiet = ≥3 of the 6 months before the last 2 with payments and none since / returned / churned), regular (≥3 payments, interval CV < 0.35, yearlyCost, nextExpected), multiCategory (≥2 categories ≥10% each → suggest a rule), businessPersonal, people (paid vs received, by purpose). Display currency; `truncated` when the scan bound is hit.",
           dictionary: "op=dictionary_export format=json|yaml → the shareable directory file as `content` (names, aliases, types, websites, EDRPOU / company IBAN; never amounts, dates, notes, logos, people, tax ids or cards). op=dictionary_import content=<file> → preview per entry (create / merge / unchanged / conflict, masked identifiers) + confirmationToken; conflicts need resolutions {\"<index>\": \"skip\" | \"merge:<entity_id>\"} first; commit = same call + token, one undoable batch, stored payees not renamed.",

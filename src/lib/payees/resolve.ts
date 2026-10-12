@@ -12,6 +12,7 @@ import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey } from "./match-key";
 import { buildPayeeMatcher, findByIdentifier, loadDirectory, maskIdentifier } from "./directory";
 import { spellingOf, type PayeeExecutor } from "./scan";
+import { formatMerchantType, loadMerchantTypes, merchantTypeFilter } from "./merchant-types";
 
 export type CounterpartyResolution = {
   /** How the query was understood (safe to show: identifiers masked). */
@@ -74,5 +75,36 @@ export async function resolveCounterparty(executor: PayeeExecutor, userId: strin
   return {
     resolvedTo: { kind: "spelling" },
     match: (payee) => key !== "" && payeeMatchKey(payee == null ? "" : String(payee)) === key,
+  };
+}
+
+/**
+ * P6 (B26): every transaction whose payee resolves to a directory entry of
+ * one merchant type — by GROUP (all its positions) or by POSITION, or
+ * "без типу" / "none" (payees of untyped entries and payees not in the
+ * directory).
+ */
+export async function resolveMerchantTypeFilter(
+  executor: PayeeExecutor,
+  userId: string,
+  dek: Buffer | null,
+  filter: string,
+): Promise<{ resolvedTo: { filter: string; types: string[]; entities: number }; match: (payee: unknown) => boolean }> {
+  const directory = dek ? await loadDirectory(executor, userId, dek) : [];
+  const matcher = buildPayeeMatcher(directory);
+  const types = await loadMerchantTypes(executor, userId);
+  const test = merchantTypeFilter(filter);
+  const matchingTypes = types.filter((t) => test(t));
+  const typeOf = new Map(types.filter((t) => t.id != null).map((t) => [t.id!, t]));
+  const ids = new Set(directory.filter((e) => test(e.merchantTypeId == null ? null : (typeOf.get(e.merchantTypeId) ?? null))).map((e) => e.id));
+  const wantsNone = test(null);
+  return {
+    resolvedTo: { filter, types: matchingTypes.map(formatMerchantType), entities: ids.size },
+    match: (payee) => {
+      const s = spellingOf(payee == null ? "" : String(payee));
+      const m = s ? matcher.match(s) : { kind: "none" as const };
+      if (m.kind === "match") return ids.has(m.entityId);
+      return wantsNone && m.kind === "none";
+    },
   };
 }

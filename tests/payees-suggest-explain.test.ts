@@ -15,6 +15,7 @@ const entity = (id: number, name: string, aliases: string[] = [], type: PayeeEnt
   defaultCategoryId: null,
   website: null,
   logo: null,
+  merchantTypeId: null,
   createdAt: null,
   updatedAt: null,
   aliases: [

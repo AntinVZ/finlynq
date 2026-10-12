@@ -36,6 +36,9 @@ export type OpPreview = {
   blocked: string | null;
   /** Why an apply renames nothing (P6). */
   emptyReason?: string | null;
+  /** P6: entries whose merchant type changes, and dictionary changes. */
+  typed?: Array<{ id: number; name: string; from: string | null; to: string | null }>;
+  merchantTypes?: { added: string[]; updated: string[]; removed: string[] };
 };
 
 const TABLE_LABEL = { transactions: "transactions", recurring: "recurring transactions", staged: "staged imports" } as const;
@@ -155,6 +158,21 @@ export function OpDialog({
                   ))}
                 </ul>
               )}
+              {(preview.typed ?? []).length > 0 && (
+                <div className="text-xs space-y-0.5">
+                  <p className="font-medium">Тип мерчанта змінюється: {preview.typed!.length}</p>
+                  <ul className="max-h-40 overflow-y-auto">
+                    {preview.typed!.map((t) => (
+                      <li key={`${t.id}:${t.name}`} className="break-all">
+                        {t.name}: {t.from ?? "без типу"} → {t.to ?? "без типу"}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {preview.merchantTypes && preview.merchantTypes.added.length > 0 && <p className="text-xs text-muted-foreground">Додає типи: {preview.merchantTypes.added.join(", ")}</p>}
+              {preview.merchantTypes && preview.merchantTypes.updated.length > 0 && <p className="text-xs text-muted-foreground">Змінює типи: {preview.merchantTypes.updated.join(", ")}</p>}
+              {preview.merchantTypes && preview.merchantTypes.removed.length > 0 && <p className="text-xs text-muted-foreground">Видаляє типи: {preview.merchantTypes.removed.join(", ")}</p>}
               {preview.rows.conflicts.length > 0 && (
                 <p className="text-xs text-amber-600 dark:text-amber-400">
                   Left alone (match several payees): {preview.rows.conflicts.map((c) => `“${c.payee}”`).join(", ")}

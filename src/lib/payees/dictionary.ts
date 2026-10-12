@@ -8,6 +8,8 @@
  *                 identifiers: [{ kind, value }], website? }] }
  * P5c: `website` is exported (merchants only) and imported (set when the
  * matching entry has none); logos are never exported.
+ * P6: `merchantType: { group, name }` is exported and imported (set when the
+ * matching entry has none; a type missing from the user's list is added).
  *
  * EXPORT keeps only what is safe to share: entities, their aliases and types,
  * and public identifiers of legal entities (EDRPOU; an IBAN only for
@@ -29,6 +31,7 @@ import { guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./ma
 import { ALIAS_MODES, IDENTIFIER_KINDS, normalizeIdentifier, validateAlias, validateEntityName, type AliasMode, type IdentifierKind, type PayeeEntity } from "./directory";
 import type { SingleOp } from "./ops";
 import { normalizeWebsite } from "./profile";
+import { parseMerchantTypeText, validateMerchantTypeRef, type MerchantType, type MerchantTypeRef } from "./merchant-types";
 
 export const DICTIONARY_FORMAT = "finlynq-payee-dictionary";
 export const DICTIONARY_VERSION = 1;
@@ -41,6 +44,8 @@ export type DictionaryEntry = {
   identifiers: Array<{ kind: IdentifierKind; value: string }>;
   /** P5c: the merchant's website (never a logo). */
   website?: string;
+  /** P6: the merchant type, group → position. */
+  merchantType?: MerchantTypeRef;
 };
 export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; entries: DictionaryEntry[] };
 
@@ -48,7 +53,11 @@ const PERSON_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 const IBAN_SHAREABLE_TYPES = new Set<PayeeType>(["company", "bank", "government"]);
 
 /** Build the shareable dictionary from the directory. */
-export function buildDictionary(entities: PayeeEntity[], now = new Date()): PayeeDictionary & { skipped: { people: number; aliases: number; identifiers: number } } {
+export function buildDictionary(
+  entities: PayeeEntity[],
+  now = new Date(),
+  merchantTypes: readonly MerchantType[] = [],
+): PayeeDictionary & { skipped: { people: number; aliases: number; identifiers: number } } {
   const skipped = { people: 0, aliases: 0, identifiers: 0 };
   const entries: DictionaryEntry[] = [];
   for (const e of entities) {
@@ -70,7 +79,8 @@ export function buildDictionary(entities: PayeeEntity[], now = new Date()): Paye
       if (i.kind === "edrpou" || (i.kind === "iban" && IBAN_SHAREABLE_TYPES.has(e.type))) identifiers.push({ kind: i.kind, value: i.value });
       else skipped.identifiers++;
     }
-    entries.push({ name: e.name, type: e.type, aliases, identifiers, ...(e.website ? { website: e.website } : {}) });
+    const mt = e.merchantTypeId == null ? null : merchantTypes.find((t) => t.id === e.merchantTypeId);
+    entries.push({ name: e.name, type: e.type, aliases, identifiers, ...(e.website ? { website: e.website } : {}), ...(mt ? { merchantType: { group: mt.group, name: mt.name } } : {}) });
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
   return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), entries, skipped };
@@ -96,6 +106,7 @@ export function dictionaryToYaml(d: PayeeDictionary): string {
     out.push(e.identifiers.length ? "    identifiers:" : "    identifiers: []");
     for (const i of e.identifiers) out.push(`      - kind: ${q(i.kind)}`, `        value: ${q(i.value)}`);
     if (e.website) out.push(`    website: ${q(e.website)}`);
+    if (e.merchantType) out.push("    merchantType:", `      group: ${q(e.merchantType.group)}`, `      name: ${q(e.merchantType.name)}`);
   }
   return out.join("\n") + "\n";
 }
@@ -204,6 +215,7 @@ const fileSchema = z.object({
         aliases: z.array(z.union([z.string(), z.object({ pattern: z.string(), mode: z.string().optional() })])).optional(),
         identifiers: z.array(z.object({ kind: z.string(), value: z.union([z.string(), z.number()]) })).optional(),
         website: z.string().nullable().optional(),
+        merchantType: z.union([z.string(), z.object({ group: z.string(), name: z.string().optional() })]).nullable().optional(),
       }),
     )
     .max(DICTIONARY_MAX_ENTRIES),
@@ -242,7 +254,12 @@ export function parseDictionary(text: string): { entries: DictionaryEntry[]; err
         identifiers.push({ kind: i.kind as IdentifierKind, value: normalizeIdentifier(i.kind as IdentifierKind, String(i.value)) });
       }
       const website = e.website?.trim() && type !== "person" && type !== "sole_proprietor" ? normalizeWebsite(e.website) : undefined;
-      entries.push({ name, type, aliases, identifiers, ...(website ? { website } : {}) });
+      let merchantType: MerchantTypeRef | undefined;
+      if (e.merchantType) {
+        const r = typeof e.merchantType === "string" ? parseMerchantTypeText(e.merchantType) : e.merchantType;
+        merchantType = validateMerchantTypeRef({ group: r.group ?? r.name, name: r.name });
+      }
+      entries.push({ name, type, aliases, identifiers, ...(website ? { website } : {}), ...(merchantType ? { merchantType } : {}) });
     } catch (err) {
       errors.push({ index, error: err instanceof Error ? err.message : String(err) });
     }
@@ -266,6 +283,8 @@ export type ImportPlanItem = {
   newIdentifiers: Array<{ kind: IdentifierKind; value: string }>;
   /** P5c: a website the entry brings (set only when the directory entry has none). */
   newWebsite: string | null;
+  /** P6: a merchant type the entry brings (set only when the directory entry has none). */
+  newMerchantType: MerchantTypeRef | null;
   note: string | null;
 };
 
@@ -280,7 +299,7 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
     const hits = new Map<number, PayeeEntity>();
     for (const p of [entry.name, ...entry.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)]) for (const o of owners(p)) hits.set(o.id, o);
     const candidates = [...hits.values()].map((e) => ({ id: e.id, name: e.name }));
-    const base: ImportPlanItem = { index, name: entry.name, type: entry.type, action: "create", target: null, candidates, newAliases: [], newIdentifiers: [], newWebsite: null, note: null };
+    const base: ImportPlanItem = { index, name: entry.name, type: entry.type, action: "create", target: null, candidates, newAliases: [], newIdentifiers: [], newWebsite: null, newMerchantType: null, note: null };
     const res = resolutions[index];
     let target: PayeeEntity | null = null;
     if (res === "skip") return { ...base, action: "skip" };
@@ -313,7 +332,8 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
     const newIdentifiers = entry.identifiers.filter((i) => !(target?.identifiers ?? []).some((x) => x.kind === i.kind && x.value === i.value));
     if (target) {
       const newWebsite = entry.website && !target.website ? entry.website : null;
-      const nothing = newAliases.length === 0 && newIdentifiers.length === 0 && !newWebsite;
+      const newMerchantType = entry.merchantType && target.merchantTypeId == null ? entry.merchantType : null;
+      const nothing = newAliases.length === 0 && newIdentifiers.length === 0 && !newWebsite && !newMerchantType;
       return {
         ...base,
         action: nothing ? "unchanged" : "merge",
@@ -321,10 +341,11 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
         newAliases,
         newIdentifiers,
         newWebsite,
+        newMerchantType,
         note: target.type !== entry.type ? `Type differs (directory: ${target.type}); the directory keeps its type.` : null,
       };
     }
-    return { ...base, action: "create", newAliases, newIdentifiers, newWebsite: entry.website ?? null };
+    return { ...base, action: "create", newAliases, newIdentifiers, newWebsite: entry.website ?? null, newMerchantType: entry.merchantType ?? null };
   });
 }
 
@@ -335,7 +356,7 @@ export function dictionaryImportOps(plan: ImportPlanItem[]): { ops: SingleOp[]; 
   for (const p of plan) {
     const label = `entry #${p.index + 1} ("${p.name}")`;
     if (p.action === "create") {
-      ops.push({ op: "create", name: p.name, type: p.type, aliases: p.newAliases, identifiers: p.newIdentifiers, website: p.newWebsite, apply: false });
+      ops.push({ op: "create", name: p.name, type: p.type, aliases: p.newAliases, identifiers: p.newIdentifiers, website: p.newWebsite, ...(p.newMerchantType ? { merchantType: p.newMerchantType } : {}), apply: false });
       labels.push(label);
     } else if (p.action === "merge" && p.target) {
       if (p.newAliases.length) {
@@ -346,8 +367,8 @@ export function dictionaryImportOps(plan: ImportPlanItem[]): { ops: SingleOp[]; 
         ops.push({ op: "identifiers", entityId: p.target.id, add: p.newIdentifiers });
         labels.push(label);
       }
-      if (p.newWebsite) {
-        ops.push({ op: "update", entityId: p.target.id, website: p.newWebsite, apply: false });
+      if (p.newWebsite || p.newMerchantType) {
+        ops.push({ op: "update", entityId: p.target.id, ...(p.newWebsite ? { website: p.newWebsite } : {}), ...(p.newMerchantType ? { merchantType: p.newMerchantType } : {}), apply: false });
         labels.push(label);
       }
     }

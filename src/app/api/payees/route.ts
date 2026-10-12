@@ -15,6 +15,9 @@
  *   Also: `entities` (the directory, with resolved transaction counts and
  *   totals), `batches` (the 20 newest change batches, with `canUndo`),
  *   `settings` and `draftCount` (AI proposals awaiting review).
+ *   P6: `merchantTypes` (the dictionary, group → position; ids are null
+ *   while it is the built-in starting set); each entity carries
+ *   `merchantType` and, untyped, a `merchantTypeHint` (never applied).
  *   P5b: `lookalikeCount` (spellings that look like a directory entry and
  *   are not yet in it) and `unrenamedRows` (rows that already belong to an
  *   entry but still carry another spelling) — computed, nothing written. A group's `entityId` / `entityName` say which entity its
@@ -22,7 +25,7 @@
  *
  * POST { op, …, dryRun? } — directory change (create, update, alias_add,
  *   alias_remove, alias_from_rule, identifiers, merge, split, apply, delete,
- *   undo). `dryRun: true` runs the op in a rolled-back transaction and returns
+ *   merchant_types, set_merchant_type, undo). `dryRun: true` runs the op in a rolled-back transaction and returns
  *   exactly what it would do (rows per table, spellings that change,
  *   conflicts, warnings, `blocked`); without it the op commits as one batch,
  *   undoable for 30 days. 400 bad input, 404 unknown id, 409 alias conflict /
@@ -59,6 +62,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     lookalikeCount: lookalikes.candidates.length,
     unrenamedRows: lookalikes.unrenamed.reduce((n, u) => n + u.rows, 0),
     entities: overview.entities,
+    merchantTypes: overview.merchantTypes,
     batches,
     settings,
     groups: overview.groups.slice(0, limit).map(({ slices: _slices, ...g }) => g),
@@ -84,10 +88,13 @@ const details = {
 };
 const identifier = z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string().min(1).max(200), ...details });
 const dryRun = z.boolean().optional();
+/** P6: a merchant type by id, "Група → Позиція" text, or { group, name }; null clears. */
+const merchantType = z.union([id, z.string().min(1).max(170), z.object({ group: z.string().min(1).max(80), name: z.string().min(1).max(80) })]).nullable();
+const typeEdit = { group: z.string().min(1).max(80), name: z.string().min(1).max(80).optional(), sort: z.number().int().min(0).max(1_000_000).optional(), defaultCategoryId: id.nullable().optional() };
 const apply = z.boolean().optional();
 
 const postSchema = z.discriminatedUnion("op", [
-  z.object({ op: z.literal("create"), name, type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), website: z.string().max(500).nullable().optional(), aliases: z.array(alias).max(100).optional(), identifiers: z.array(identifier).max(20).optional(), apply, dryRun }),
+  z.object({ op: z.literal("create"), name, type, note: z.string().max(2000).nullable().optional(), defaultCategoryId: id.nullable().optional(), website: z.string().max(500).nullable().optional(), merchantType: merchantType.optional(), aliases: z.array(alias).max(100).optional(), identifiers: z.array(identifier).max(20).optional(), apply, dryRun }),
   z.object({
     op: z.literal("update"),
     entityId: id,
@@ -97,7 +104,23 @@ const postSchema = z.discriminatedUnion("op", [
     defaultCategoryId: id.nullable().optional(),
     website: z.string().max(500).nullable().optional(),
     logo: z.string().max(40_000).nullable().optional(),
+    merchantType: merchantType.optional(),
     apply,
+    dryRun,
+  }),
+  z.object({
+    op: z.literal("merchant_types"),
+    add: z.array(z.object(typeEdit)).max(100).optional(),
+    update: z.array(z.object({ id, ...typeEdit, group: typeEdit.group.optional() })).max(100).optional(),
+    remove: z.array(id).max(100).optional(),
+    dryRun,
+  }),
+  z.object({
+    op: z.literal("set_merchant_type"),
+    merchantType,
+    entityIds: z.array(id).max(5000).optional(),
+    typeWord: z.string().min(1).max(60).optional(),
+    onlyUntyped: z.boolean().optional(),
     dryRun,
   }),
   z.object({ op: z.literal("alias_add"), entityId: id, aliases: z.array(alias).min(1).max(100), apply, dryRun }),

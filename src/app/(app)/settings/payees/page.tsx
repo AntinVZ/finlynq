@@ -53,6 +53,7 @@ import {
   type PayeesResponse,
 } from "./_components/payee-ui";
 import { MergeDialog } from "./_components/merge-dialog";
+import { groupMerchantTypes, merchantTypeLabel, MerchantTypesEditor, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
@@ -70,7 +71,9 @@ type SortKey = "count" | "name" | "total" | "lastDate";
 type Action =
   | { kind: "merge"; title: string; payees: string[]; entityIds: number[]; suggestedName: string; suggestedType: string; warning: string | null }
   | { kind: "undo"; batch: BatchRow }
-  | { kind: "applyAll" };
+  | { kind: "applyAll" }
+  | { kind: "setType" }
+  | { kind: "types" };
 
 export default function PayeesSettingsPage() {
   const [tabChoice, setTab] = useState<Tab | null>(null);
@@ -83,6 +86,9 @@ export default function PayeesSettingsPage() {
   const [sort, setSort] = useState<{ key: SortKey; dir: "asc" | "desc" }>({ key: "count", dir: "desc" });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [action, setAction] = useState<Action | null>(null);
+  /** P6: Directory filter by merchant type ("" all, "none" untyped, else a group) and selected entries. */
+  const [typeFilter, setTypeFilter] = useState("");
+  const [pickedEntities, setPickedEntities] = useState<Set<number>>(new Set());
   const [status, setStatus] = useState("");
 
   const { data, error: loadErr, mutate } = useSWR<PayeesResponse>("/api/payees", jsonFetcher, { revalidateOnFocus: false });
@@ -118,10 +124,13 @@ export default function PayeesSettingsPage() {
     return list.filter((c) => c.keys.some((k) => groupsByKey.get(k)?.spellings.some((s) => containsNormalized(s.spelling, query))));
   }, [data, query, groupsByKey]);
 
-  const entityRows = useMemo(
-    () => (query.trim() ? entities.filter((e) => containsNormalized(e.name, query)) : entities),
-    [entities, query],
-  );
+  const entityRows = useMemo(() => {
+    let list = query.trim() ? entities.filter((e) => containsNormalized(e.name, query)) : entities;
+    if (typeFilter === "none") list = list.filter((e) => !e.merchantType);
+    else if (typeFilter) list = list.filter((e) => e.merchantType?.group === typeFilter);
+    return list;
+  }, [entities, query, typeFilter]);
+  const merchantTypes = useMemo(() => data?.merchantTypes ?? [], [data]);
 
   const unrecognizedCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key && g.entityId == null).length, [data]);
   const payeeCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key).length, [data]);
@@ -350,6 +359,30 @@ export default function PayeesSettingsPage() {
                 Apply directory to payees
               </Button>
             )}
+            {tab === "directory" && (
+              <>
+                <select
+                  aria-label="Фільтр за типом"
+                  className="h-8 rounded-md border bg-background px-2 text-xs"
+                  value={typeFilter}
+                  onChange={(ev) => setTypeFilter(ev.target.value)}
+                >
+                  <option value="">Усі типи</option>
+                  <option value="none">Без типу</option>
+                  {groupMerchantTypes(merchantTypes).map((g) => (
+                    <option key={g.group} value={g.group}>
+                      {g.group}
+                    </option>
+                  ))}
+                </select>
+                <Button variant="outline" size="sm" disabled={!entities.length} onClick={() => setAction({ kind: "setType" })}>
+                  Призначити тип{pickedEntities.size ? ` (${pickedEntities.size})` : ""}…
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => setAction({ kind: "types" })}>
+                  Типи мерчантів…
+                </Button>
+              </>
+            )}
           </div>
 
           {status && <p className="text-sm text-emerald-600 dark:text-emerald-400">{status}</p>}
@@ -440,11 +473,36 @@ export default function PayeesSettingsPage() {
               <ul className="divide-y rounded-lg border">
                 {pageEntities.map((e) => (
                   <li key={e.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      aria-label={`Вибрати ${e.name}`}
+                      checked={pickedEntities.has(e.id)}
+                      onChange={() =>
+                        setPickedEntities((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(e.id)) next.delete(e.id);
+                          else next.add(e.id);
+                          return next;
+                        })
+                      }
+                    />
                     <PayeeAvatar id={e.id} name={e.name} hasLogo={e.hasLogo} />
                     <Link href={`/settings/payees/${e.id}`} className="font-medium hover:underline break-all">
                       {e.name}
                     </Link>
                     <span className="text-xs text-muted-foreground">{typeLabel(e.type)}</span>
+                    <span className="text-xs" title="Тип мерчанта">
+                      Тип:{" "}
+                      {e.merchantType ? (
+                        merchantTypeLabel(e.merchantType)
+                      ) : e.merchantTypeHint ? (
+                        <span className="text-muted-foreground" title={`Підказка (${e.merchantTypeHint.reason}); призначається лише після підтвердження`}>
+                          — (підказка: {merchantTypeLabel(e.merchantTypeHint)})
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </span>
                     <span className="text-xs text-muted-foreground">
                       {e.aliasCount} alias{e.aliasCount === 1 ? "" : "es"}
                       {data?.settings.advancedMode && e.identifierCount ? ` · ${e.identifierCount} requisite(s)` : ""}
@@ -629,6 +687,18 @@ export default function PayeesSettingsPage() {
           <p className="text-xs text-muted-foreground">{batchLabel(action.batch)}</p>
         </OpDialog>
       )}
+      {action?.kind === "setType" && (
+        <SetMerchantTypeDialog
+          types={merchantTypes}
+          entityIds={[...pickedEntities].filter((id) => entities.some((e) => e.id === id))}
+          onClose={() => setAction(null)}
+          onDone={(r) => {
+            setPickedEntities(new Set());
+            void done(r, `Тип змінено в ${r.typed?.length ?? 0} запис(ах).`);
+          }}
+        />
+      )}
+      {action?.kind === "types" && <MerchantTypesEditor types={merchantTypes} onClose={() => setAction(null)} onDone={(r) => done(r, "Типи мерчантів збережено.")} />}
       {action?.kind === "applyAll" && (
         <OpDialog title="Apply the directory to stored payees" body={{ op: "apply" }} onClose={() => setAction(null)} onDone={(r) => done(r)} confirmLabel="Rename">
           <p className="text-xs text-muted-foreground">

@@ -21,6 +21,7 @@
 import { mergeSlices, scanPayees, type AmountSlice, type PayeeExecutor } from "./scan";
 import type { PayeeMatcher } from "./directory";
 import { bankOperationOf, type PayeeVocabulary } from "./type-words";
+import { formatMerchantType, merchantTypeFilter, type MerchantTypeRef } from "./merchant-types";
 
 export type Counterparty = {
   /** `e:<entityId>` or `k:<matching key>`. */
@@ -55,6 +56,10 @@ export type PayeeInsights = {
   goneCounterparties: Array<Counterparty & { expectedEveryDays: number; daysSilent: number }>;
   recurring: RecurringInfo[];
   concentration: { top5Share: number; top10Share: number; hhi: number; label: "low" | "moderate" | "high" };
+  /** P6 (B26): spend per merchant type (group or position) in the window, when asked for. */
+  byMerchantType?: Array<{ type: string; spend: number; transactions: number; counterparties: number }>;
+  /** P6: the merchant-type filter applied to every list, when given. */
+  merchantType?: string;
 };
 
 const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -113,6 +118,12 @@ export async function computePayeeInsights(opts: {
   limit?: number;
   /** P6: type words / bank-operation patterns (default: built-in). */
   vocab?: PayeeVocabulary;
+  /** P6 (B26): a directory entry's merchant type. */
+  merchantTypeOf?: (entityId: number) => MerchantTypeRef | null;
+  /** P6: only counterparties of this type (group, position, "Group → Position", "без типу"). */
+  merchantType?: string;
+  /** P6: add `byMerchantType`, grouped by the type's group or position. */
+  groupByMerchantType?: "group" | "position";
 }): Promise<PayeeInsights> {
   const months = Math.min(Math.max(opts.months ?? 12, 1), 60);
   const recentDays = Math.min(Math.max(opts.recentDays ?? 90, 7), 730);
@@ -210,7 +221,9 @@ export async function computePayeeInsights(opts: {
     firstDate: c.acc.firstDate,
     lastDate: c.acc.lastDate,
   });
-  const active = cps.filter((c) => c.window.count > 0);
+  const typeOf = (c: (typeof cps)[number]) => (c.acc.entityId != null && opts.merchantTypeOf ? opts.merchantTypeOf(c.acc.entityId) : null);
+  const typeTest = opts.merchantType?.trim() ? merchantTypeFilter(opts.merchantType) : null;
+  const active = cps.filter((c) => c.window.count > 0 && (!typeTest || typeTest(typeOf(c))));
   // B25: merchant tops, the monthly split and concentration leave the bank's own rows out.
   const inWindow = active.filter((c) => !c.acc.bankOperation);
   const bankOps = active.filter((c) => c.acc.bankOperation);
@@ -265,7 +278,24 @@ export async function computePayeeInsights(opts: {
   const share = (k: number) => (totalSpend > 0 ? round2((spends.slice(0, k).reduce((n, x) => n + x, 0) / totalSpend) * 100) / 100 : 0);
   const hhi = totalSpend > 0 ? Math.round(spends.reduce((n, x) => n + (x / totalSpend) ** 2, 0) * 10_000) : 0;
 
+  let byMerchantType: PayeeInsights["byMerchantType"];
+  if (opts.groupByMerchantType) {
+    const m = new Map<string, { type: string; spend: number; transactions: number; counterparties: number }>();
+    for (const c of active) {
+      const t = typeOf(c);
+      const label = t ? (opts.groupByMerchantType === "group" ? t.group : formatMerchantType(t)) : "Без типу";
+      const r = m.get(label) ?? { type: label, spend: 0, transactions: 0, counterparties: 0 };
+      r.spend += c.window.spend;
+      r.transactions += c.window.count;
+      r.counterparties++;
+      m.set(label, r);
+    }
+    byMerchantType = [...m.values()].map((r) => ({ ...r, spend: round2(r.spend) })).sort((a, b) => b.spend - a.spend || a.type.localeCompare(b.type));
+  }
+
   return {
+    ...(byMerchantType ? { byMerchantType } : {}),
+    ...(opts.merchantType?.trim() ? { merchantType: opts.merchantType.trim() } : {}),
     asOf,
     window: { months, from: `${fromMonth}-01` },
     currency: opts.currency,

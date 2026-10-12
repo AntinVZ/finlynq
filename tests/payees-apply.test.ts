@@ -57,6 +57,7 @@ function entity(id: number, name: string, aliases: Array<{ pattern: string; mode
     defaultCategoryId: null,
     website: null,
     logo: null,
+    merchantTypeId: null,
     createdAt: null,
     updatedAt: null,
     aliases: [

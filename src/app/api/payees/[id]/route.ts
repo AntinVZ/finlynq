@@ -34,6 +34,8 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
     spellings: overview.groups.filter((g) => g.entityId === id).map(({ slices: _slices, ...g }) => g),
     pending: { total: pending.total, byTable: pending.byTable, changes: pending.changes.slice(0, 50), conflicts: pending.conflicts.slice(0, 20) },
     history,
+    merchantTypes: overview.merchantTypes,
+    merchantTypeHint: overview.entities.find((x) => x.id === id)?.merchantTypeHint ?? null,
     categories: [...names.categories.entries()].map(([cid, name]) => ({ id: cid, name })).sort((a, b) => a.name.localeCompare(b.name)),
     currency: overview.currency,
   });

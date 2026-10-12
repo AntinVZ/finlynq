@@ -9,7 +9,9 @@
  *     by `journal.willModify(ids)` before the first change;
  *   - `created`: ids of entities the batch created;
  *   - `rows`: for every rewritten payee, the table, row id and the stored
- *     value before and after (ciphertext — the blob is encrypted anyway).
+ *     value before and after (ciphertext — the blob is encrypted anyway);
+ *   - `types` (P6): merchant-type rows before the batch changed / removed
+ *     them, and the ids it created.
  * `summary` (plain JSONB) holds counts only — never names or payees.
  *
  * Undo:
@@ -50,7 +52,7 @@ export type RowChange = {
   cols?: Partial<Record<ExtraColumn, { old: string | null; new: string | null }>>;
 };
 export type ExtraColumn = "tags" | "note";
-type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[] };
+type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[]; types?: { before: StoredRow[]; created: number[] } };
 
 export class PayeeBatchError extends Error {
   constructor(message: string, public readonly code: string = "invalid") {
@@ -79,7 +81,7 @@ async function snapshot(tx: PayeeExecutor, userId: string, ids: number[]): Promi
   if (!ids.length) return { entities: [], aliases: [], identifiers: [] };
   const q = async (query: SQL) => normalizeDbRows<StoredRow>(await tx.execute(query)).map(toJsonRow);
   return {
-    entities: await q(sql`SELECT id, name, type, note, default_category_id, website, logo, created_at, updated_at FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(ids)}) FOR UPDATE`),
+    entities: await q(sql`SELECT id, name, type, note, default_category_id, website, logo, merchant_type_id, created_at, updated_at FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(ids)}) FOR UPDATE`),
     aliases: await q(sql`SELECT id, entity_id, pattern, mode, key_hash, source, created_at FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
     identifiers: await q(sql`SELECT id, entity_id, kind, value, label, bank, currency, is_primary, is_active, created_at FROM payee_identifiers WHERE user_id = ${userId} AND entity_id = ANY(${idList(ids)})`),
   };
@@ -92,6 +94,9 @@ export class PayeeBatchJournal {
   readonly summary: Record<string, number> = {};
   private readonly snap: Snapshot = { entities: [], aliases: [], identifiers: [] };
   private readonly snapped = new Set<number>();
+  private readonly typesBefore: StoredRow[] = [];
+  private readonly typesSnapped = new Set<number>();
+  readonly typesCreated: number[] = [];
 
   constructor(private readonly tx: PayeeExecutor, private readonly userId: string) {}
 
@@ -110,6 +115,25 @@ export class PayeeBatchJournal {
     this.created.push(id);
   }
 
+  /** P6: snapshot merchant-type rows before the first change to them. Idempotent. */
+  async willModifyTypes(ids: Iterable<number>): Promise<void> {
+    const fresh = [...new Set(ids)].filter((id) => !this.typesSnapped.has(id) && !this.typesCreated.includes(id));
+    if (!fresh.length) return;
+    const rows = normalizeDbRows<StoredRow>(
+      await this.tx.execute(sql`SELECT id, group_name, name, sort, default_category_id, created_at FROM payee_merchant_types WHERE user_id = ${this.userId} AND id = ANY(${idList(fresh)}) FOR UPDATE`),
+    ).map(toJsonRow);
+    for (const id of fresh) this.typesSnapped.add(id);
+    this.typesBefore.push(...rows);
+  }
+
+  createdType(id: number): void {
+    this.typesCreated.push(id);
+  }
+
+  get touchedTypes(): boolean {
+    return this.typesSnapped.size > 0 || this.typesCreated.length > 0;
+  }
+
   rowChanged(change: RowChange): void {
     this.rows.push(change);
   }
@@ -123,7 +147,14 @@ export class PayeeBatchJournal {
   }
 
   undoData(): UndoData {
-    return { v: 1, before: this.snap, snapshotIds: [...this.snapped], created: [...this.created], rows: this.rows };
+    return {
+      v: 1,
+      before: this.snap,
+      snapshotIds: [...this.snapped],
+      created: [...this.created],
+      rows: this.rows,
+      ...(this.typesBefore.length || this.typesCreated.length ? { types: { before: this.typesBefore, created: [...this.typesCreated] } } : {}),
+    };
   }
 }
 
@@ -141,7 +172,7 @@ export async function runPayeeBatch<T>(
   return inTransaction(opts.executor, async (tx) => {
     const journal = new PayeeBatchJournal(tx, userId);
     const result = await body(tx, journal);
-    if (journal.rows.length === 0 && journal.entityIds.length === 0) return { result, batchId: null };
+    if (journal.rows.length === 0 && journal.entityIds.length === 0 && !journal.touchedTypes) return { result, batchId: null };
     const summary = { ...journal.summary, rows: journal.rows.length };
     const undo = encryptField(dek, JSON.stringify(journal.undoData()));
     const rows = normalizeDbRows<{ id: unknown }>(
@@ -357,15 +388,26 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       }
     }
 
+    // 2a. Merchant types (P6): bring back changed / removed rows first (entities point at them).
+    for (const t of undo.types?.before ?? []) {
+      await tx.execute(sql`
+        INSERT INTO payee_merchant_types (id, user_id, group_name, name, sort, default_category_id, created_at)
+        VALUES (${Number(t.id)}, ${userId}, ${t.group_name as string}, ${t.name as string}, ${Number(t.sort ?? 0)},
+                (SELECT id FROM categories WHERE id = ${t.default_category_id == null ? null : Number(t.default_category_id)} AND user_id = ${userId}),
+                ${t.created_at as string}::timestamptz)
+        ON CONFLICT (id) DO UPDATE SET group_name = EXCLUDED.group_name, name = EXCLUDED.name, sort = EXCLUDED.sort, default_category_id = EXCLUDED.default_category_id`);
+    }
+
     // 2. Directory: drop the touched + created entities, restore the snapshot.
     if (entityIds.length) {
       await tx.execute(sql`DELETE FROM payee_entities WHERE user_id = ${userId} AND id = ANY(${idList(entityIds)})`);
       for (const e of undo.before.entities) {
         await tx.execute(sql`
-          INSERT INTO payee_entities (id, user_id, name, type, note, default_category_id, website, logo, created_at, updated_at)
+          INSERT INTO payee_entities (id, user_id, name, type, note, default_category_id, website, logo, merchant_type_id, created_at, updated_at)
           VALUES (${Number(e.id)}, ${userId}, ${e.name as string}, ${e.type as string}, ${(e.note as string | null) ?? null},
                   (SELECT id FROM categories WHERE id = ${e.default_category_id == null ? null : Number(e.default_category_id)} AND user_id = ${userId}),
                   ${(e.website as string | null) ?? null}, ${(e.logo as string | null) ?? null},
+                  (SELECT id FROM payee_merchant_types WHERE id = ${e.merchant_type_id == null ? null : Number(e.merchant_type_id)} AND user_id = ${userId}),
                   ${e.created_at as string}::timestamptz, ${e.updated_at as string}::timestamptz)`);
       }
       for (const a of undo.before.aliases) {
@@ -382,6 +424,13 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
                   ${i.is_primary === true || i.is_primary === "t"}, ${!(i.is_active === false || i.is_active === "f")},
                   ${i.created_at as string}::timestamptz)`);
       }
+    }
+    // 2b. Merchant types the batch created: removed unless something still uses them.
+    const createdTypes = undo.types?.created ?? [];
+    if (createdTypes.length) {
+      await tx.execute(sql`
+        DELETE FROM payee_merchant_types t WHERE t.user_id = ${userId} AND t.id = ANY(${idList(createdTypes)})
+          AND NOT EXISTS (SELECT 1 FROM payee_entities e WHERE e.merchant_type_id = t.id)`);
     }
     await tx.execute(sql`UPDATE payee_batches SET undone_at = NOW() WHERE id = ${batchId} AND user_id = ${userId}`);
     // AI proposals approved by this batch go back to draft.
