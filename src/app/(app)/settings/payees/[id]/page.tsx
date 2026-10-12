@@ -29,7 +29,7 @@ const LOGO_MAX_BYTES = 20 * 1024;
 const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp"];
 import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog";
 import { RequisitesCard, type Requisite } from "../_components/requisites-card";
-import { MerchantTypeSelect, merchantTypeLabel, type MerchantTypeOption } from "../_components/merchant-type-ui";
+import { MerchantTypeSelect, merchantTypeLabel, PayeeTypeLabel, type MerchantTypeOption, type MerchantTypeRef } from "../_components/merchant-type-ui";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
 type Identifier = Requisite;
@@ -72,7 +72,7 @@ export default function PayeeEntityPage() {
   const { data: settings } = useSWR<PayeeSettings>("/api/payees/settings", jsonFetcher, { revalidateOnFocus: false });
   const [action, setAction] = useState<Action | null>(null);
   const [status, setStatus] = useState("");
-  const [edit, setEdit] = useState<{ name: string; type: string; note: string; categoryId: string } | null>(null);
+  const [edit, setEdit] = useState<{ name: string; type: string; merchantType: MerchantTypeRef | null; note: string; categoryId: string } | null>(null);
   const [newAlias, setNewAlias] = useState({ pattern: "", mode: "exact" });
   const [splitIds, setSplitIds] = useState<Set<number>>(new Set());
   const [splitName, setSplitName] = useState("");
@@ -103,12 +103,16 @@ export default function PayeeEntityPage() {
   if (error) return <p className="text-sm text-destructive">Couldn&apos;t load this payee.</p>;
   if (!data || !e) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
+  const types = data.merchantTypes ?? [];
+  const currentType = e.merchantTypeId == null ? null : (types.find((t) => t.id === e.merchantTypeId) ?? null);
+  const sameType = (a: MerchantTypeRef | null, b: MerchantTypeRef | null) => (a?.group ?? null) === (b?.group ?? null) && (a?.name ?? null) === (b?.name ?? null);
   const editBody = edit
     ? {
         op: "update",
         entityId: e.id,
         ...(edit.name.trim() && edit.name.trim() !== e.name ? { name: edit.name.trim() } : {}),
         ...(edit.type !== e.type ? { type: edit.type } : {}),
+        ...(!sameType(edit.merchantType, currentType) ? { merchantType: edit.merchantType ? { group: edit.merchantType.group, name: edit.merchantType.name } : null } : {}),
         ...((edit.note.trim() || null) !== (e.note ?? null) ? { note: edit.note.trim() || null } : {}),
         ...((edit.categoryId ? Number(edit.categoryId) : null) !== e.defaultCategoryId ? { defaultCategoryId: edit.categoryId ? Number(edit.categoryId) : null } : {}),
       }
@@ -124,12 +128,13 @@ export default function PayeeEntityPage() {
         <div className="flex flex-wrap items-center gap-2 mt-1">
           <PayeeAvatar id={e.id} name={e.name} hasLogo={e.logo != null} size={36} />
           <h1 className="text-2xl font-bold tracking-tight break-all">{e.name}</h1>
-          <Badge variant="outline">{typeLabel(e.type)}</Badge>
+          <Badge variant="outline">
+            <PayeeTypeLabel merchantType={currentType} type={e.type} />
+          </Badge>
         </div>
         {e.note && <p className="text-sm text-muted-foreground mt-1 whitespace-pre-wrap">{e.note}</p>}
         {(() => {
-          const types = data.merchantTypes ?? [];
-          const current = e.merchantTypeId == null ? null : (types.find((t) => t.id === e.merchantTypeId) ?? null);
+          const current = currentType;
           const hint = current ? null : (data.merchantTypeHint ?? null);
           const setType = (v: { group: string; name: string } | null) =>
             setAction({
@@ -150,7 +155,15 @@ export default function PayeeEntityPage() {
           );
         })()}
         <div className="flex flex-wrap gap-2 mt-3">
-          <Button size="sm" variant="outline" onClick={() => setEdit({ name: e.name, type: e.type, note: e.note ?? "", categoryId: e.defaultCategoryId ? String(e.defaultCategoryId) : "" })}>
+          <Button size="sm" variant="outline" onClick={() =>
+              setEdit({
+                name: e.name,
+                type: e.type,
+                merchantType: currentType ? { group: currentType.group, name: currentType.name } : null,
+                note: e.note ?? "",
+                categoryId: e.defaultCategoryId ? String(e.defaultCategoryId) : "",
+              })
+            }>
             Edit
           </Button>
           <Link href={buildTxDrillUrl({ search: e.name })}>
@@ -174,14 +187,20 @@ export default function PayeeEntityPage() {
             <CardTitle className="text-base">Edit payee</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
-            <div className="grid gap-2 sm:grid-cols-[1fr_auto]">
-              <Input aria-label="Canonical name" value={edit.name} onChange={(ev) => setEdit({ ...edit, name: ev.target.value })} />
-              <select aria-label="Type" className="h-9 rounded-md border bg-background px-2 text-sm" value={edit.type} onChange={(ev) => setEdit({ ...edit, type: ev.target.value })}>
-                {PAYEE_TYPE_OPTIONS.map((t) => (
-                  <option key={t} value={t}>{typeLabel(t)}</option>
-                ))}
-              </select>
-            </div>
+            <Input aria-label="Canonical name" value={edit.name} onChange={(ev) => setEdit({ ...edit, name: ev.target.value })} />
+            <MerchantTypeSelect types={types} value={edit.merchantType} onChange={(v) => setEdit({ ...edit, merchantType: v })} className="h-9 w-full rounded-md border bg-background px-2 text-sm" />
+            <details className="text-xs">
+              <summary className="cursor-pointer text-muted-foreground">Додатково · тип запису: {typeLabel(edit.type)}</summary>
+              <label className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="text-muted-foreground">Тип запису</span>
+                <select aria-label="Type" className="h-8 rounded-md border bg-background px-2 text-sm" value={edit.type} onChange={(ev) => setEdit({ ...edit, type: ev.target.value })}>
+                  {PAYEE_TYPE_OPTIONS.map((t) => (
+                    <option key={t} value={t}>{typeLabel(t)}</option>
+                  ))}
+                </select>
+              </label>
+              <p className="mt-1 text-muted-foreground">Якщо не змінювати, «Особи і ФОП» сам зробить запис особою.</p>
+            </details>
             <textarea
               aria-label="Note"
               className="w-full min-h-16 rounded-md border bg-background p-2 text-sm"

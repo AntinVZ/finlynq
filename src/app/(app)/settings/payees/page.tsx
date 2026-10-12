@@ -46,14 +46,15 @@ import {
   confidenceBadge,
   needsDecisionBadge,
   PayeeAvatar,
-  typeLabel,
   type BatchRow,
   type PayeeClusterRow,
+  type EntityRow,
   type PayeeGroupRow,
   type PayeesResponse,
 } from "./_components/payee-ui";
 import { MergeDialog } from "./_components/merge-dialog";
-import { groupMerchantTypes, merchantTypeLabel, MerchantTypesEditor, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
+import { PERSONS_MERCHANT_GROUP } from "@/lib/payees/payee-type";
+import { groupMerchantTypes, merchantTypeLabel, MerchantTypesEditor, PayeeTypeLabel, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
 import { StudioSettingsDialog } from "./_components/settings-dialog";
@@ -69,11 +70,61 @@ type Tab = "all" | "clusters" | "lookalikes" | "unrecognized" | "directory" | "r
 type SortKey = "count" | "name" | "total" | "lastDate";
 
 type Action =
-  | { kind: "merge"; title: string; payees: string[]; entityIds: number[]; suggestedName: string; suggestedType: string; warning: string | null }
+  | {
+      kind: "merge";
+      title: string;
+      payees: string[];
+      entityIds: number[];
+      suggestedName: string;
+      suggestedType: string;
+      warning: string | null;
+      typeHint: { group: string; name: string; reason: string } | null;
+      clusterKeys: string[];
+    }
   | { kind: "undo"; batch: BatchRow }
   | { kind: "applyAll" }
   | { kind: "setType" }
   | { kind: "types" };
+
+/**
+ * P6.1: a merchant-type suggestion for the merge dialog (offered, never set by
+ * itself): an entry's own type, a type word in a spelling, a bank operation,
+ * a private person → «Особи і ФОП», then an entry's suggestion. Only types
+ * present in the user's dictionary are offered.
+ */
+function mergeTypeHint(
+  groups: readonly PayeeGroupRow[],
+  sourceEntities: readonly EntityRow[],
+  types: ReadonlyArray<{ group: string; name: string }>,
+): { group: string; name: string; reason: string } | null {
+  const known = (t: { group: string; name: string } | null | undefined) =>
+    t ? (types.find((x) => x.group === t.group && x.name === t.name) ?? types.find((x) => x.name === t.name) ?? null) : null;
+  const pick = (t: { group: string; name: string } | null | undefined, reason: string) => {
+    const k = known(t);
+    return k ? { group: k.group, name: k.name, reason } : null;
+  };
+  for (const e of sourceEntities) {
+    const h = pick(e.merchantType, `тип запису «${e.name}»`);
+    if (h) return h;
+  }
+  for (const g of groups) {
+    const h = g.brand?.hint ? pick(g.brand.hint, `слово-тип «${g.brand.removed[0] ?? ""}»`) : null;
+    if (h) return h;
+  }
+  if (groups.some((g) => g.bankOperation)) {
+    const h = pick({ group: "Банківські операції", name: "Банківські операції" }, "банківська операція");
+    if (h) return h;
+  }
+  if (groups.length && groups.every((g) => g.type.isPerson)) {
+    const h = pick({ group: PERSONS_MERCHANT_GROUP, name: PERSONS_MERCHANT_GROUP }, "схоже на особу або ФОП");
+    if (h) return h;
+  }
+  for (const e of sourceEntities) {
+    const h = pick(e.merchantTypeHint, e.merchantTypeHint?.reason ?? "");
+    if (h) return h;
+  }
+  return null;
+}
 
 export default function PayeesSettingsPage() {
   const [tabChoice, setTab] = useState<Tab | null>(null);
@@ -101,8 +152,12 @@ export default function PayeesSettingsPage() {
   const setPage = (fn: (p: number) => number) => setPageState({ key: pageKey, page: fn(page) });
   const currency = data?.currency ?? "USD";
   const entities = useMemo(() => data?.entities ?? [], [data]);
-  const entityOptions = useMemo(() => entities.map((e) => ({ id: e.id, name: e.name, type: e.type })), [entities]);
+  const entityOptions = useMemo(
+    () => entities.map((e) => ({ id: e.id, name: e.name, type: e.type, merchantType: e.merchantType ?? null, count: e.count, aliasCount: e.aliasCount, aliases: e.aliasNames ?? [] })),
+    [entities],
+  );
 
+  const entityById = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities]);
   const groupsByKey = useMemo(() => new Map((data?.groups ?? []).map((g) => [g.key, g])), [data]);
 
   const rows = useMemo(() => {
@@ -157,17 +212,20 @@ export default function PayeesSettingsPage() {
   function mergeGroups(title: string, groups: PayeeGroupRow[], cluster?: PayeeClusterRow) {
     const lead = [...groups].sort((a, b) => b.count - a.count)[0];
     const people = groups.filter((g) => g.type.isPerson);
+    const entityIds = [...new Set(groups.map((g) => g.entityId).filter((id): id is number => id != null))];
     setAction({
       kind: "merge",
       title,
       payees: groups.filter((g) => g.entityId == null).flatMap((g) => g.spellings.map((s) => s.spelling)),
-      entityIds: [...new Set(groups.map((g) => g.entityId).filter((id): id is number => id != null))],
+      entityIds,
       suggestedName: cluster?.suggestedName ?? lead?.entityName ?? lead?.suggestedName ?? "",
       suggestedType: cluster?.suggestedType.type ?? lead?.type.type ?? "other",
       warning:
         people.length && people.length < groups.length
           ? "This mixes a private person or sole proprietor with other payees. People are never merged automatically — only continue if they really are the same counterparty."
           : cluster?.decisionReason ?? null,
+      typeHint: mergeTypeHint(groups, entityIds.map((id) => entities.find((e) => e.id === id)).filter((e): e is EntityRow => e != null), merchantTypes),
+      clusterKeys: groups.map((g) => g.key),
     });
   }
 
@@ -206,7 +264,7 @@ export default function PayeesSettingsPage() {
   const typeCell = (g: PayeeGroupRow) => (
     <span className="inline-flex flex-wrap items-center gap-1">
       <span className={g.type.confidence < 0.5 ? "text-muted-foreground" : undefined} title={g.type.reason}>
-        {typeLabel(g.type.type)}
+        <PayeeTypeLabel merchantType={g.entityId != null ? entityById.get(g.entityId)?.merchantType : null} type={g.type.type} />
       </span>
       {g.type.isPerson && g.entityId == null && needsDecisionBadge(g.type.reason)}
       {g.bankOperation && (
@@ -422,7 +480,11 @@ export default function PayeesSettingsPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">{c.suggestedName || "—"}</span>
                       {confidenceBadge(c.confidence)}
-                      <span className="text-xs text-muted-foreground">{typeLabel(c.suggestedType.type)}</span>
+                      <PayeeTypeLabel
+                        className="text-xs text-muted-foreground"
+                        merchantType={c.keys.map((k) => groupsByKey.get(k)?.entityId).map((id) => (id != null ? entityById.get(id)?.merchantType : null)).find((t) => t) ?? null}
+                        type={c.suggestedType.type}
+                      />
                       {c.needsDecision && needsDecisionBadge(c.decisionReason)}
                       <span className="ml-auto text-xs text-muted-foreground tabular-nums">
                         {c.count} tx · {formatCurrency(c.total, currency)}
@@ -490,7 +552,7 @@ export default function PayeesSettingsPage() {
                     <Link href={`/settings/payees/${e.id}`} className="font-medium hover:underline break-all">
                       {e.name}
                     </Link>
-                    <span className="text-xs text-muted-foreground">{typeLabel(e.type)}</span>
+                    {!e.merchantType && <PayeeTypeLabel className="text-xs text-muted-foreground" type={e.type} />}
                     <span className="text-xs" title="Тип мерчанта">
                       Тип:{" "}
                       {e.merchantType ? (
@@ -671,6 +733,9 @@ export default function PayeesSettingsPage() {
           suggestedName={action.suggestedName}
           suggestedType={action.suggestedType}
           entities={entityOptions}
+          merchantTypes={merchantTypes}
+          typeHint={action.typeHint}
+          clusterKeys={action.clusterKeys}
           warning={action.warning}
           onClose={() => setAction(null)}
           onDone={(r) => done(r)}

@@ -11,6 +11,7 @@ import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { OpDialog, type OpPreview } from "./op-dialog";
+import { typeLabel } from "./payee-ui";
 
 export type MerchantTypeOption = { id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null };
 export type MerchantTypeRef = { group: string; name: string };
@@ -27,6 +28,20 @@ const refOf = (key: string): MerchantTypeRef | null => {
 export function merchantTypeLabel(t: MerchantTypeRef | null | undefined): string {
   if (!t) return "";
   return t.group.toLowerCase() === t.name.toLowerCase() ? t.group : `${t.group} → ${t.name}`;
+}
+
+/**
+ * P6.1: the type shown next to a payee in lists — its merchant type, or, when
+ * it has none yet, the old entity type, dimmed.
+ */
+export function PayeeTypeLabel({ merchantType, type, className = "" }: { merchantType?: MerchantTypeRef | null; type?: string | null; className?: string }) {
+  if (merchantType) return <span className={className}>{merchantTypeLabel(merchantType)}</span>;
+  if (!type) return null;
+  return (
+    <span className={`${className} opacity-60`} title="Тип мерчанта ще не призначено">
+      {typeLabel(type)}
+    </span>
+  );
 }
 
 /** The groups in display order, each with its positions. */

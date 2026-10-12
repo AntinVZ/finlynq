@@ -24,7 +24,7 @@ export type PayeeGroupRow = {
   entityId: number | null;
   entityName: string | null;
   /** P6: type words stripped from the core; `typeOnly` = no brand. */
-  brand?: { core: string; removed: string[]; typeOnly: boolean };
+  brand?: { core: string; removed: string[]; typeOnly: boolean; hint?: { group: string; name: string } | null };
   /** P6: the bank's own service row (matched pattern). */
   bankOperation?: string | null;
 };
@@ -48,6 +48,8 @@ export type EntityRow = {
   name: string;
   type: string;
   aliasCount: number;
+  /** P6.1: alias spellings (exact / contains), for the picker's search. */
+  aliasNames?: string[];
   identifierCount: number;
   defaultCategoryId: number | null;
   website?: string | null;
