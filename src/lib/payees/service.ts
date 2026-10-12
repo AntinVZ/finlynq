@@ -8,6 +8,7 @@ import { buildPayeeClusters, buildPayeeGroups, type EntityResolver, type PayeeCl
 import { loadPayeeNameMaps, scanPayees, type AmountSlice, type PayeeExecutor, type PayeeScan, type PayeeSource } from "./scan";
 import { buildPayeeMatcher, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
 import type { PayeeType } from "./match-key";
+import { computeMerchantAnalytics, type Period } from "./merchant-analytics";
 import { computeLookalikes, describeRejections, loadRejections, rejectionPredicate } from "./lookalikes";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
@@ -144,4 +145,43 @@ export async function loadLookalikes(opts: { executor: PayeeExecutor; userId: st
     limit: opts.limit,
   });
   return { ...report, rejections: dek ? describeRejections(rows, dek, overview.groups, overview.directory) : [] };
+}
+
+/** The eight merchant analyses (P5d) in the display currency. Read only. */
+export async function loadMerchantAnalytics(opts: {
+  executor: PayeeExecutor;
+  userId: string;
+  dek: Buffer | null;
+  period?: Period | null;
+  period1?: Period;
+  period2?: Period;
+  entityId?: number;
+  name?: string;
+  limit?: number;
+  asOf?: string;
+  currency?: string;
+}) {
+  const { executor, userId, dek } = opts;
+  const display = opts.currency ?? (await getDisplayCurrency(userId));
+  const [rateMap, directory, names] = await Promise.all([
+    getRateMap(display, userId),
+    dek ? loadDirectory(executor, userId, dek) : Promise.resolve([]),
+    loadPayeeNameMaps(executor, userId, dek),
+  ]);
+  return computeMerchantAnalytics({
+    executor,
+    userId,
+    dek,
+    matcher: buildPayeeMatcher(directory),
+    currency: display,
+    rateMap,
+    period: opts.period,
+    period1: opts.period1,
+    period2: opts.period2,
+    entityId: opts.entityId,
+    name: opts.name,
+    limit: opts.limit,
+    asOf: opts.asOf,
+    categoryNames: names.categories,
+  });
 }

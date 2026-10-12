@@ -12,6 +12,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
 import { formatCurrency } from "@/lib/currency";
+import { MerchantAnalyticsPanel } from "./merchant-analytics-panel";
 
 type Cp = { id: string; name: string; entityId: number | null; count: number; total: number; spend: number; firstDate: string | null; lastDate: string | null };
 type Insights = {
@@ -153,6 +154,7 @@ export function InsightsPanel() {
           </ul>
         )}
       </div>
+      <MerchantAnalyticsPanel />
     </div>
   );
 }

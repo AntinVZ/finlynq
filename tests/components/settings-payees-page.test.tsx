@@ -82,6 +82,23 @@ function setup() {
     if (url.startsWith("/api/payees/explain")) {
       return { ok: true, json: async () => ({ verdict: "separate", score: null, sameKey: false, reasons: ["Different first letters of the core"], a: { payee: "Rozetka", key: "rozetka", core: "rozetka", block: "roze", type: { type: "retail", reason: "", isPerson: false }, entity: null }, b: { payee: "Comfy", key: "komfi", core: "komfi", block: "komf", type: { type: "retail", reason: "", isPerson: false }, entity: null } }) };
     }
+    if (url.startsWith("/api/payees/insights?view=merchants")) {
+      const ref = { id: "e:1", name: "Епіцентр", entityId: 1 };
+      return {
+        ok: true,
+        json: async () => ({
+          currency: "UAH", scanned: 40, truncated: false, counterparties: 3,
+          receipt: [{ ...ref, payments: 28, average: 390, median: 450, max: 999, quartiles: [300, 450, 450], histogram: [{ from: 0, to: 125, count: 2 }, { from: 125, to: 250, count: 4 }] }],
+          receiptTrend: [{ ...ref, months: [{ month: "2026-08", average: 300, payments: 2 }], trendPct: 12.5 }],
+          change: { period1: { from: "2026-05-01", to: "2026-07-31" }, period2: { from: "2026-08-01", to: "2026-10-12" }, rows: [{ ...ref, n1: 2, n2: 4, avg1: 300, avg2: 400, spend1: 600, spend2: 1600, countEffect: 600, receiptEffect: 400, total: 1000 }], totals: { spend1: 600, spend2: 1600, countEffect: 600, receiptEffect: 400, total: 1000 } },
+          lifecycle: { new: [], quiet: [{ id: "k:x", name: "Netflix", entityId: null, lastDate: "2026-07-01", activeMonths: 5 }], returned: [], churned: [] },
+          regular: [{ ...ref, payments: 6, intervalDays: 30, cv: 0.1, average: 300, yearlyCost: 3650, lastDate: "2026-09-01", nextExpected: "2026-10-01" }],
+          multiCategory: [{ ...ref, categories: [{ categoryId: 1, name: "Home", rows: 6, share: 0.6 }, { categoryId: 2, name: "Garden", rows: 4, share: 0.4 }], hint: "Split across 2 categories" }],
+          businessPersonal: [{ ...ref, business: 3, personal: 7, businessShare: 0.3 }],
+          people: [{ id: "e:5", name: "Степаненко", entityId: 5, paid: 4000, received: 500, net: -3500, byPurpose: [{ purpose: "компенсація житла", paid: 4000, received: 0, rows: 2 }] }],
+        }),
+      };
+    }
     if (url.startsWith("/api/payees/insights")) {
       const cp = { id: "e:1", name: "Епіцентр", entityId: 1, count: 28, total: -10860, spend: 10860, firstDate: "2026-01-01", lastDate: "2026-09-01" };
       return {
@@ -176,6 +193,14 @@ describe("Settings → Payees", () => {
     expect(await screen.findByText("91%")).toBeTruthy();
     expect(screen.getByRole("img", { name: /Spend per month/ })).toBeTruthy();
     expect(screen.getByText(/monthly · ~30 days/)).toBeTruthy();
+    // P5d merchant analyses
+    expect(await screen.findByText("1. Receipt (payment size)")).toBeTruthy();
+    expect(screen.getByRole("img", { name: /Histogram of payment sizes for Епіцентр/ })).toBeTruthy();
+    expect(screen.getByText(/more \/ fewer payments/).textContent).toMatch(/600/);
+    expect(screen.getByText(/3[\s,.]?650.*a year/)).toBeTruthy();
+    expect(screen.getByText("Netflix")).toBeTruthy();
+    expect(screen.getByText("компенсація житла")).toBeTruthy();
+    expect(screen.getByText(/Home 60% · Garden 40%/)).toBeTruthy();
   });
 
   it("P5a: opens on Clusters, shows the summary strip and keeps settings behind the gear", async () => {

@@ -48,9 +48,11 @@ import { makeSliceConverter } from "../../src/lib/payees/service";
 import { buildPayeeMatcher, loadDirectory } from "../../src/lib/payees/directory";
 import { containsNormalized } from "../../src/lib/text-normalize";
 import { payeeMatchKey } from "../../src/lib/payees/match-key";
-import { loadLookalikes, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
+import { loadLookalikes, loadMerchantAnalytics, loadPayeeOverview, type PayeeOverview } from "../../src/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "../../src/lib/payees/lookalikes";
 import { unrecognizedGroups, type PayeeCluster, type PayeeGroup } from "../../src/lib/payees/overview";
+
+const ymdArg = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
 const NO_DEK_NOTE = "No decryption key on this connection: encrypted payees can't be read, only legacy plaintext ones are shown.";
 
@@ -408,6 +410,11 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         months: z.number().int().min(1).max(60).optional().describe("Window for top lists and monthly series (default 12)."),
         recent_days: z.number().int().min(7).max(730).optional().describe("\"New\" = first seen within this many days (default 90)."),
         limit: z.number().int().min(1).max(50).optional().describe("Rows per list (default 10)."),
+        merchants: z.boolean().optional().describe("Add the 8 merchant analyses (receipt stats, receipt trend, count vs receipt change, new/quiet/returned/churned, regular payments, several categories, business+personal, people paid/received). On automatically with period / entity_id / name."),
+        period_from: ymdArg.optional().describe("Merchant analyses: from this date."),
+        period_to: ymdArg.optional().describe("Merchant analyses: up to this date."),
+        entity_id: z.number().int().positive().optional().describe("Merchant analyses for this directory entry only."),
+        name: z.string().optional().describe("Merchant analyses for this payee (any spelling) only."),
       }),
       z.object({
         op: z.literal("explain"),
@@ -550,7 +557,20 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               recentDays: input.recent_days,
               limit: input.limit,
             });
-            return dataResponse({ ...ins, ...(dek ? {} : { note: NO_DEK_NOTE }) });
+            const wantMerchants = input.merchants === true || input.period_from != null || input.period_to != null || input.entity_id != null || input.name != null;
+            const merchants = wantMerchants
+              ? await loadMerchantAnalytics({
+                  executor: db,
+                  userId,
+                  dek,
+                  period: input.period_from || input.period_to ? { from: input.period_from ?? "0000-01-01", to: input.period_to ?? "9999-12-31" } : null,
+                  entityId: input.entity_id,
+                  name: input.name,
+                  limit: input.limit,
+                })
+              : null;
+            if (input.entity_id != null || input.name != null) return dataResponse({ merchants, ...(dek ? {} : { note: NO_DEK_NOTE }) });
+            return dataResponse({ ...ins, ...(merchants ? { merchants } : {}), ...(dek ? {} : { note: NO_DEK_NOTE }) });
           }
           case "lookalikes": {
             const o = await overview();
