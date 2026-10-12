@@ -468,6 +468,12 @@ export const loans = pgTable("loans", {
   // to this instead of 0; balance at term end equals the residual.
   residualValue: doublePrecision("residual_value"),
   note: text("note").default(""),
+  // 2026-10-12 — the category this loan's interest is booked under. Interest
+  // is a separate expense transaction on the linked account, and "is this
+  // period booked" is answered by reading that account for this category, so
+  // hand-entered and generated entries are the same. SET NULL: deleting the
+  // category un-sets it, it never blocks the delete.
+  interestCategoryId: integer("interest_category_id").references(() => categories.id, { onDelete: "set null" }),
   // Stream D (2026-04-24) — dual-write.
   nameCt: text("name_ct"),
   nameLookup: text("name_lookup"),
@@ -476,23 +482,6 @@ export const loans = pgTable("loans", {
   uniqueIndex("loans_user_name_lookup_uniq").on(t.userId, t.nameLookup),
 ]);
 
-// Loan interest postings (2026-10-12). One row per loan schedule period whose
-// interest was booked as an expense transaction on the loan's linked account.
-// Keyed on the schedule row's date, not its period number (editing the loan
-// renumbers periods). Both FKs cascade: deleting the transaction un-posts the
-// period, deleting the loan drops its postings and leaves the transactions.
-export const loanInterestPostings = pgTable("loan_interest_postings", {
-  id: serial("id").primaryKey(),
-  userId: text("user_id").notNull(),
-  loanId: integer("loan_id").notNull().references(() => loans.id, { onDelete: "cascade" }),
-  periodDate: text("period_date").notNull(),
-  transactionId: integer("transaction_id").notNull().references(() => transactions.id, { onDelete: "cascade" }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-}, (t) => [
-  uniqueIndex("loan_interest_postings_loan_period_uniq").on(t.loanId, t.periodDate),
-  index("idx_loan_interest_postings_user_id").on(t.userId),
-  index("idx_loan_interest_postings_transaction_id").on(t.transactionId),
-]);
 
 export const snapshots = pgTable("snapshots", {
   id: serial("id").primaryKey(),

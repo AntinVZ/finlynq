@@ -176,47 +176,75 @@ How a payment with an interest component is recorded:
   then takes the full amount off, so the balance falls by the principal only,
   and the interest shows in the income statement.
 
-A user can type that expense in by hand. The schedule can also create it:
+**"Booked" is read from the ledger, not tracked separately.** Every transaction
+on the linked account in the loan's interest category
+(`loans.interest_category_id`) counts, whether it was typed in by hand,
+recorded by an assistant with `manage_transactions`, or generated from the
+schedule. Transfer legs are excluded (`link_id IS NULL`), so a payment
+mis-filed under the interest category is not read as negative interest. The
+pure `matchInterestToSchedule` ([interest-plan.ts](../src/lib/loans/interest-plan.ts))
+credits each transaction to the schedule period whose payment date is
+**nearest** (a tie goes to the earlier period), sums several in one period,
+nets refunds, and returns anything more than one payment interval outside the
+schedule's date range as `unmatched`. The web panel, the server and the MCP
+tool all call that one function, so they cannot disagree about which periods
+are booked.
+
+Surfaces:
 
 - **UI** — the schedule panel's **Interest entries** tab
-  ([_components/interest-entries.tsx](<../src/app/(app)/loans/_components/interest-entries.tsx>))
-  lists every payment date that has come due (plus the next upcoming one) with
-  the calculated interest, an editable amount, a per-row Generate and a
-  "Generate N due entries" button. Posted rows link to the transaction.
-- **REST** — `GET /api/loans/interest?loanId=` and `POST /api/loans/interest`
-  `{ loanId, categoryId, entries: [{ periodDate, amount, date? }] }` (`apiHandler`,
-  enveloped).
+  ([_components/interest-entries.tsx](<../src/app/(app)/loans/_components/interest-entries.tsx>)):
+  every payment date that has come due (plus the next upcoming one) with the
+  calculated interest beside what is booked, the difference when they disagree,
+  an editable amount and a Generate button for unbooked periods, and a
+  "Generate N due entries" button. Picking a category saves it on the loan.
+- **REST** `/api/loans/interest` (`apiHandler`, enveloped) — `GET ?loanId=[&categoryId=]`
+  returns the ledger entries (`categoryId` previews another category without
+  saving), `PUT { loanId, categoryId }` saves the category,
+  `POST { loanId, categoryId, entries: [{ periodDate, amount, date? }] }` generates.
 - **MCP HTTP** — `manage_loans(op:"post_interest", loan_id, period_date?, amount?,
   category_id? | category?, date?)`. With no `period_date` it takes the oldest
-  due period without an entry; with no `amount` it uses the schedule's figure;
-  with no category it uses the single expense category with "interest" in its
-  name and refuses if there are none or several.
+  due period with nothing booked; with no `amount` it uses the schedule's
+  figure; with no category it uses the loan's saved one, else the single
+  expense category with "interest" in its name, and refuses if there are none
+  or several.
 
-All rules live in `postLoanInterest`
-([src/lib/loans/interest-postings.ts](../src/lib/loans/interest-postings.ts)),
+Generation rules live in `postLoanInterest`
+([src/lib/loans/interest-entries.ts](../src/lib/loans/interest-entries.ts)),
 the one chokepoint both surfaces call. It refuses, before writing anything: a
 loan with no linked account, an investment account, a `periodDate` that is not
-on the loan's current schedule, and a period that is already posted. The
-transaction goes through `createTransaction` and is written together with its
-posting row inside one `withDbTransaction`; reporting amounts are resolved
-before the transaction opens (the FX lookup can reach the network).
-
-`loan_interest_postings (user_id, loan_id, period_date, transaction_id)` is
-keyed on the schedule row's **date**, unique per `(loan_id, period_date)`.
-Both FKs cascade: deleting the transaction un-posts the period, deleting the
-loan drops its postings and leaves the transactions. Pure helpers (which
-periods are due, the sign of the entry) are in
-[interest-plan.ts](../src/lib/loans/interest-plan.ts).
+on the loan's current schedule, and a period the ledger already holds interest
+for (checked under the requested category AND the loan's saved one, so
+switching category cannot double-charge a period). Inside one
+`withDbTransaction` it locks the loan row (`FOR UPDATE`), checks the ledger
+again (two racing requests both pass the first check), creates the
+transactions through `createTransaction`, and saves the category on the loan.
+Reporting amounts are resolved before the transaction opens, because the FX
+lookup can reach the network.
 
 Known limits:
 
 - The schedule still computes declining-balance interest only. A lender that
-  charges a fixed amount per payment is handled by editing the amount at
-  posting time, not by the schedule itself.
-- Postings are not part of the JSON backup, so after a restore the periods
-  read as un-posted even though their transactions came back. Check before
-  using "Generate N due entries" on a restored account.
+  charges a fixed amount per payment is handled by editing the amount when
+  generating, or by entering the interest by hand.
 - Nothing posts automatically on the due date; generation is one click.
+
+### Planned: booked versus calculated (owner direction, 2026-10-12)
+
+The Interest entries tab already shows the per-period difference. The next
+step is to tell the user whether the lender is charging more or less than the
+schedule says, and to suggest loan settings that fit what is actually charged.
+Constraints the owner set, which any implementation must honour:
+
+- **Judge on recent periods only** (for example the last 3 or the last 12
+  months). An extra payment or a change to the loan's terms changes every later
+  period, so older periods can legitimately differ from today's schedule and
+  must not drive the verdict or the suggestion.
+- **Say so when it is shown.** Wherever the comparison surfaces (the dashboard
+  was named), state the window it is based on and that earlier periods may
+  differ for those reasons.
+- A suggestion is a recommendation the user accepts, never a silent change to
+  the loan.
 
 ## Deferred (Phase 4 — tracked on FINLYNQ-136)
 

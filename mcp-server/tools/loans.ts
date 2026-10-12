@@ -48,8 +48,8 @@ import {
   parseYmdSafe,
 } from "../lib/date-validators";
 import { registerManageTool } from "./_consolidate";
-import { listInterestPostings, postLoanInterest } from "../../src/lib/loans/interest-postings";
-import { dueUnpostedInterest } from "../../src/lib/loans/interest-plan";
+import { postLoanInterest, readLoanInterest } from "../../src/lib/loans/interest-entries";
+import { dueUnpostedInterest, matchInterestToSchedule } from "../../src/lib/loans/interest-plan";
 import { todayISO } from "../../src/lib/utils/date";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -422,39 +422,43 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
     const { loan_id, period_date, amount, category_id, category, date } = args;
     if (!dek) return err("Cannot post loan interest without an unlocked DEK (the entry's payee and note are encrypted).");
 
-    const rawCats = await q(db, sql`SELECT id, name_ct, type FROM categories WHERE user_id = ${userId}`);
-    const allCats = decryptNameish(rawCats, dek);
+    const rows = await q(db, sql`
+      SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
+             payment_frequency, extra_payment, residual_value, currency, interest_category_id
+      FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
+    `);
+    if (!rows.length) return err(`Loan #${loan_id} not found`);
+    const loan = rows[0];
+
+    // Category: an explicit one wins, then the one saved on the loan, then the
+    // user's single "interest" expense category. Never guess between two and
+    // never auto-create one.
     let categoryId: number;
     if (category_id != null || category) {
+      const rawCats = await q(db, sql`SELECT id, name_ct FROM categories WHERE user_id = ${userId}`);
       const out = resolveOrReport(
         "category",
-        resolveEntity({ entity: "category", id: category_id, name: category, options: allCats }),
+        resolveEntity({ entity: "category", id: category_id, name: category, options: decryptNameish(rawCats, dek) }),
       );
       if ("report" in out) return out.report;
       categoryId = out.id;
+    } else if (loan.interest_category_id != null) {
+      categoryId = Number(loan.interest_category_id);
     } else {
-      // No category named: use the user's interest category only when it is
-      // unambiguous. Never guess between two, never auto-create one.
-      const candidates = allCats.filter(
+      const rawCats = await q(db, sql`SELECT id, name_ct, type FROM categories WHERE user_id = ${userId}`);
+      const candidates = decryptNameish(rawCats, dek).filter(
         (c) => String(c.type) === "E" && /interest/i.test(String(c.name ?? "")),
       );
       if (candidates.length !== 1) {
         return err(
           candidates.length === 0
-            ? "No expense category with 'interest' in its name exists. Pass category_id (see get_categories) or create one with manage_categories."
-            : `Several categories look like interest (${candidates.map((c) => `#${c.id} ${String(c.name)}`).join(", ")}). Pass category_id.`,
+            ? "This loan has no interest category yet and no expense category has 'interest' in its name. Pass category_id (see get_categories) or create one with manage_categories."
+            : `This loan has no interest category yet and several look like interest (${candidates.map((c) => `#${c.id} ${String(c.name)}`).join(", ")}). Pass category_id.`,
         );
       }
       categoryId = Number(candidates[0].id);
     }
 
-    const rows = await q(db, sql`
-      SELECT id, principal, annual_rate, term_months, start_date, payment_amount,
-             payment_frequency, extra_payment, residual_value, currency
-      FROM loans WHERE id = ${loan_id} AND user_id = ${userId}
-    `);
-    if (!rows.length) return err(`Loan #${loan_id} not found`);
-    const loan = rows[0];
     if (parseYmdSafe(String(loan.start_date)) === null) {
       return err(`Loan #${loan_id} has an invalid start_date; fix it with manage_loans(op:"update") first.`);
     }
@@ -475,14 +479,17 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       throw e;
     }
 
-    const postedDates = new Set((await listInterestPostings(userId, loan_id)).map((p) => p.periodDate));
-    const due = dueUnpostedInterest(schedule, postedDates, todayISO());
+    // What the ledger already holds for this loan's interest, however it got
+    // there (typed in, recorded with manage_transactions, or posted here).
+    const state = await readLoanInterest(userId, loan_id, categoryId);
+    const { booked } = matchInterestToSchedule(schedule, state?.entries ?? []);
+    const due = dueUnpostedInterest(schedule, new Set(booked.keys()), todayISO());
     const row = period_date ? schedule.find((r) => r.date === period_date) : due[0];
     if (!row) {
       return err(
         period_date
           ? `${period_date} is not a payment date on loan #${loan_id}'s schedule (see get_loan_amortization for the dates).`
-          : "No payment that has come due is waiting for an interest entry. Pass period_date to post a specific period.",
+          : "Every payment that has come due already has interest booked on the loan account. Pass period_date to post a specific period.",
       );
     }
 
@@ -570,10 +577,10 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       z.object({
         op: z.literal("post_interest"),
         loan_id: z.number().int().positive().describe("Loan id (must be linked to an account)"),
-        period_date: ymdDate.optional().describe("Payment date on the loan's schedule whose interest to book (YYYY-MM-DD). Omit to take the oldest payment that has come due and has no interest entry yet."),
+        period_date: ymdDate.optional().describe("Payment date on the loan's schedule whose interest to book (YYYY-MM-DD). Omit to take the oldest payment that has come due and has no interest on the loan account yet. Interest already recorded there under the interest category, by any tool or by hand, counts as booked."),
         amount: z.number().positive().optional().describe("Interest to book, as a positive number in the loan account's currency. Omit to use the schedule's calculated interest for that period; pass it when the lender charged a different amount."),
         category_id: z.number().int().positive().optional().describe("Expense category FK for the entry — wins over `category`."),
-        category: z.string().optional().describe("Expense category name (exact match; mistyped/ambiguous is REFUSED). When both are omitted, the single expense category with 'interest' in its name is used, and the call is refused if there is none or more than one."),
+        category: z.string().optional().describe("Expense category name (exact match; mistyped/ambiguous is REFUSED). When both are omitted, the loan's saved interest category is used, else the single expense category with 'interest' in its name; refused if there is none or more than one. The category used is saved on the loan."),
         date: ymdDate.optional().describe("Transaction date (YYYY-MM-DD). Defaults to period_date."),
       }),
     ]),

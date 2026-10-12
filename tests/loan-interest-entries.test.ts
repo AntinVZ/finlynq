@@ -2,10 +2,14 @@
  * Loan interest entries (2026-10-12): a payment stays a plain transfer into the
  * loan account, and the interest is a separate expense entry on that account.
  *
- * The pure half (which periods are due, the sign of the entry) is tested
- * directly. The server half is pinned statically, because the properties that
- * matter are structural: one chokepoint shared by REST and MCP, the write is
- * atomic, and no network call happens while the transaction is open.
+ * "Is this period booked" is read from the ledger, so interest typed in by hand
+ * or recorded by an assistant counts exactly like a generated entry.
+ *
+ * The pure half (matching ledger entries to periods, which periods are due,
+ * the sign of the entry) is tested directly. The server half is pinned
+ * statically, because the properties that matter are structural: one
+ * chokepoint shared by REST and MCP, an atomic write, a re-check under a lock,
+ * and no network call while the transaction is open.
  */
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -14,6 +18,7 @@ import {
   dueUnpostedInterest,
   interestLedgerAmount,
   isPostableInterest,
+  matchInterestToSchedule,
 } from "@/lib/loans/interest-plan";
 import { buildLoanSchedule } from "@/lib/loan-calculator";
 
@@ -22,20 +27,97 @@ const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 const code = (p: string) =>
   read(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
-describe("dueUnpostedInterest", () => {
-  const schedule = [
-    { period: 1, date: "2026-08-01", interest: 90 },
-    { period: 2, date: "2026-09-01", interest: 88.5 },
-    { period: 3, date: "2026-10-01", interest: 87 },
-    { period: 4, date: "2026-11-01", interest: 85.4 },
-  ];
+const schedule = [
+  { period: 1, date: "2026-08-01", interest: 90 },
+  { period: 2, date: "2026-09-01", interest: 88.5 },
+  { period: 3, date: "2026-10-01", interest: 87 },
+  { period: 4, date: "2026-11-01", interest: 85.4 },
+];
+const tx = (transactionId: number, date: string, amount: number) => ({ transactionId, date, amount });
 
-  it("returns every payment date that has arrived and is not posted", () => {
+describe("matchInterestToSchedule", () => {
+  it("credits an entry dated on the payment date to that period", () => {
+    const { booked } = matchInterestToSchedule(schedule, [tx(1, "2026-09-01", -88.5)]);
+    expect(booked.get("2026-09-01")).toEqual({ amount: 88.5, transactionIds: [1] });
+    expect(booked.size).toBe(1);
+  });
+
+  // The reason matching is by nearest date: a lender posts interest a few days
+  // either side of the payment, and a hand-entered one carries whatever date
+  // the user typed.
+  it("credits an entry a few days off to the nearest payment date", () => {
+    const { booked } = matchInterestToSchedule(schedule, [
+      tx(1, "2026-08-29", -88.5),
+      tx(2, "2026-10-04", -87),
+    ]);
+    expect([...booked.keys()].sort()).toEqual(["2026-09-01", "2026-10-01"]);
+  });
+
+  it("gives a tie to the earlier period", () => {
+    const two = [
+      { period: 1, date: "2026-08-01", interest: 90 },
+      { period: 2, date: "2026-08-11", interest: 90 },
+    ];
+    const { booked } = matchInterestToSchedule(two, [tx(1, "2026-08-06", -90)]);
+    expect([...booked.keys()]).toEqual(["2026-08-01"]);
+  });
+
+  it("sums several entries in one period and keeps every transaction id", () => {
+    const { booked } = matchInterestToSchedule(schedule, [
+      tx(1, "2026-09-01", -80),
+      tx(2, "2026-09-03", -8.5),
+    ]);
+    expect(booked.get("2026-09-01")).toEqual({ amount: 88.5, transactionIds: [1, 2] });
+  });
+
+  it("nets a refund against the charge", () => {
+    const { booked } = matchInterestToSchedule(schedule, [
+      tx(1, "2026-09-01", -100),
+      tx(2, "2026-09-02", 11.5),
+    ]);
+    expect(booked.get("2026-09-01")?.amount).toBe(88.5);
+  });
+
+  it("a charge that was fully reversed leaves the period unbooked (still due)", () => {
+    const { booked } = matchInterestToSchedule(schedule, [
+      tx(1, "2026-09-01", -88.5),
+      tx(2, "2026-09-01", 88.5),
+    ]);
+    expect(booked.has("2026-09-01")).toBe(false);
+    const due = dueUnpostedInterest(schedule, new Set(booked.keys()), "2026-10-12");
+    expect(due.map((r) => r.date)).toContain("2026-09-01");
+  });
+
+  it("leaves an entry far outside the schedule's dates unmatched", () => {
+    const { booked, unmatched } = matchInterestToSchedule(schedule, [
+      tx(1, "2025-01-15", -50),
+      tx(2, "2027-06-01", -50),
+    ]);
+    expect(booked.size).toBe(0);
+    expect(unmatched.map((t) => t.transactionId)).toEqual([1, 2]);
+  });
+
+  it("with no schedule, everything is unmatched", () => {
+    const { booked, unmatched } = matchInterestToSchedule([], [tx(1, "2026-09-01", -5)]);
+    expect(booked.size).toBe(0);
+    expect(unmatched).toHaveLength(1);
+  });
+
+  // The user-facing promise: interest entered by hand is not generated again.
+  it("a hand-entered charge takes its period off the due list", () => {
+    const { booked } = matchInterestToSchedule(schedule, [tx(7, "2026-08-30", -87)]);
+    const due = dueUnpostedInterest(schedule, new Set(booked.keys()), "2026-10-12");
+    expect(due.map((r) => r.date)).toEqual(["2026-08-01", "2026-10-01"]);
+  });
+});
+
+describe("dueUnpostedInterest", () => {
+  it("returns every payment date that has arrived and is not booked", () => {
     const due = dueUnpostedInterest(schedule, new Set(), "2026-10-12");
     expect(due.map((r) => r.date)).toEqual(["2026-08-01", "2026-09-01", "2026-10-01"]);
   });
 
-  it("leaves out periods that already have an entry", () => {
+  it("leaves out periods that already have interest booked", () => {
     const due = dueUnpostedInterest(schedule, new Set(["2026-08-01", "2026-10-01"]), "2026-10-12");
     expect(due.map((r) => r.date)).toEqual(["2026-09-01"]);
   });
@@ -98,25 +180,45 @@ describe("isPostableInterest", () => {
 });
 
 describe("posting chokepoint (static wiring)", () => {
-  const lib = code("src/lib/loans/interest-postings.ts");
+  const lib = code("src/lib/loans/interest-entries.ts");
 
   it("REST and MCP both go through postLoanInterest", () => {
     expect(code("src/app/api/loans/interest/route.ts")).toContain("postLoanInterest(");
     expect(code("mcp-server/tools/loans.ts")).toContain("postLoanInterest(");
   });
 
-  it("neither surface inserts the posting row or the transaction itself", () => {
+  it("neither surface creates the transaction itself", () => {
     for (const p of ["src/app/api/loans/interest/route.ts", "mcp-server/tools/loans.ts"]) {
-      expect(code(p)).not.toMatch(/loan_interest_postings|loanInterestPostings\)/);
       expect(code(p)).not.toContain("createTransaction(");
     }
   });
 
-  it("writes the transaction through the domain layer, inside one DB transaction", () => {
-    const tx = lib.indexOf("withDbTransaction(");
-    expect(tx).toBeGreaterThan(-1);
-    expect(lib.indexOf("createTransaction(", tx)).toBeGreaterThan(tx);
-    expect(lib.indexOf("insert(schema.loanInterestPostings)", tx)).toBeGreaterThan(tx);
+  it("the web panel, the server and the MCP tool decide 'booked' with the same matcher", () => {
+    for (const p of [
+      "src/app/(app)/loans/_components/interest-entries.tsx",
+      "src/lib/loans/interest-entries.ts",
+      "mcp-server/tools/loans.ts",
+    ]) {
+      expect(code(p), p).toContain("matchInterestToSchedule(");
+    }
+  });
+
+  it("writes through the domain layer, inside one DB transaction", () => {
+    const start = lib.indexOf("withDbTransaction(");
+    expect(start).toBeGreaterThan(-1);
+    expect(lib.indexOf("createTransaction(", start)).toBeGreaterThan(start);
+  });
+
+  // Two requests racing for one period both pass the first check. The second
+  // look has to happen under the loan row lock, before anything is created.
+  it("locks the loan and re-checks the ledger before creating anything", () => {
+    const start = lib.indexOf("withDbTransaction(");
+    const lock = lib.indexOf("FOR UPDATE", start);
+    const recheck = lib.indexOf("refuseIfBooked()", lock);
+    const create = lib.indexOf("createTransaction(", start);
+    expect(lock).toBeGreaterThan(start);
+    expect(recheck).toBeGreaterThan(lock);
+    expect(create).toBeGreaterThan(recheck);
   });
 
   // The FX lookup can reach the network; it must be resolved before a pool
@@ -126,13 +228,17 @@ describe("posting chokepoint (static wiring)", () => {
     expect(lib.indexOf("computeReportingFields(")).toBeLessThan(lib.indexOf("withDbTransaction("));
   });
 
-  it("refuses before writing: unlinked loan, investment account, already posted", () => {
-    const tx = lib.indexOf("withDbTransaction(");
-    for (const guard of ["loan.accountId == null", "account.isInvestment", "already.length"]) {
+  it("refuses before writing: unlinked loan, investment account, off-schedule date", () => {
+    const start = lib.indexOf("withDbTransaction(");
+    for (const guard of ["loan.accountId == null", "account.isInvestment", "scheduleDates.has("]) {
       const at = lib.indexOf(guard);
       expect(at, guard).toBeGreaterThan(-1);
-      expect(at, guard).toBeLessThan(tx);
+      expect(at, guard).toBeLessThan(start);
     }
+  });
+
+  it("does not count a transfer leg filed under the interest category", () => {
+    expect(lib).toContain("isNull(schema.transactions.linkId)");
   });
 
   it("invalidates the MCP transaction cache and stamps the snapshot dirty marker", () => {
@@ -140,11 +246,25 @@ describe("posting chokepoint (static wiring)", () => {
     expect(lib).toContain("markCashSnapshotsDirty(");
   });
 
-  it("the migration and schema-pg.ts declare the same unique key", () => {
-    const sql = read("scripts/migrations/20261012_loan_interest_postings.sql");
-    expect(sql).toMatch(/UNIQUE INDEX IF NOT EXISTS loan_interest_postings_loan_period_uniq\s+ON loan_interest_postings \(loan_id, period_date\)/);
+  it("the migration and schema-pg.ts agree on the column and its SET NULL", () => {
+    const sql = read("scripts/migrations/20261012b_loans_interest_category.sql");
+    expect(sql).toContain("ADD COLUMN IF NOT EXISTS interest_category_id INTEGER");
+    expect(sql).toContain("REFERENCES categories(id) ON DELETE SET NULL");
     expect(read("src/db/schema-pg.ts")).toContain(
-      'uniqueIndex("loan_interest_postings_loan_period_uniq").on(t.loanId, t.periodDate)',
+      'integer("interest_category_id").references(() => categories.id, { onDelete: "set null" })',
     );
+  });
+
+  // The first cut tracked postings in their own table. It is gone; nothing may
+  // read or write it again.
+  it("nothing references the retired tracking table", () => {
+    for (const p of [
+      "src/db/schema-pg.ts",
+      "src/lib/loans/interest-entries.ts",
+      "src/app/api/loans/interest/route.ts",
+      "mcp-server/tools/loans.ts",
+    ]) {
+      expect(code(p), p).not.toMatch(/loan_interest_postings|loanInterestPostings/);
+    }
   });
 });

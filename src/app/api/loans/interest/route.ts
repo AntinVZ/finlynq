@@ -1,15 +1,19 @@
 /**
- * /api/loans/interest — book a loan's interest into its linked account.
+ * /api/loans/interest — a loan's interest entries on its linked account.
  *
- *   GET  ?loanId=N → { postings: [{ periodDate, transactionId, amount, date }] }
+ *   GET  ?loanId=N[&categoryId=C]
+ *        → { accountId, interestCategoryId, categoryId, entries: [{ transactionId, date, amount }] }
+ *   PUT  { loanId, categoryId }            → { interestCategoryId }
  *   POST { loanId, categoryId, entries: [{ periodDate, amount, date? }] }
- *        → { created: [...] }
+ *        → { created: [{ periodDate, transactionId, amount, date }] }
  *
  * A loan payment stays a plain transfer into the loan account; the interest is
- * a separate expense entry on that same account. `entries[].amount` is whatever
- * the user wants booked for that period — the schedule's figure by default, or
- * their own number when the lender's differs. All the rules live in
- * `postLoanInterest`, shared with MCP `manage_loans(op:"post_interest")`.
+ * a separate expense transaction on that same account. GET reads the ledger —
+ * every transaction on the account in the interest category, however it was
+ * entered — and the client credits each one to its schedule period with the
+ * shared pure `matchInterestToSchedule`. PUT remembers the category. POST
+ * generates entries; all its rules live in `postLoanInterest`, shared with MCP
+ * `manage_loans(op:"post_interest")`.
  */
 
 import { z } from "zod";
@@ -17,16 +21,45 @@ import { apiHandler } from "@/lib/api-handler";
 import { apiError } from "@/lib/api-response";
 import { OwnershipError } from "@/lib/verify-ownership";
 import { DEK_LOCKED_MESSAGE } from "@/lib/save-error";
-import { listInterestPostings, postLoanInterest } from "@/lib/loans/interest-postings";
+import {
+  postLoanInterest,
+  readLoanInterest,
+  setLoanInterestCategory,
+} from "@/lib/loans/interest-entries";
 import { ymdDate } from "../../../../../mcp-server/lib/date-validators";
 
 export const dynamic = "force-dynamic";
 
+// A category id the caller does not own reads as "not found", never 403.
+const mapError = (err: unknown) =>
+  err instanceof OwnershipError ? apiError("Category not found.", 404) : null;
+
+const positiveInt = (raw: string | null): number | null => {
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+};
+
 export const GET = apiHandler({ auth: "auth" }, async ({ request, userId }) => {
-  const loanId = Number(new URL(request.url).searchParams.get("loanId"));
-  if (!Number.isInteger(loanId) || loanId <= 0) return apiError("loanId is required.", 400);
-  return { postings: await listInterestPostings(userId, loanId) };
+  const params = new URL(request.url).searchParams;
+  const loanId = positiveInt(params.get("loanId"));
+  if (loanId == null) return apiError("loanId is required.", 400);
+  const state = await readLoanInterest(userId, loanId, positiveInt(params.get("categoryId")));
+  if (!state) return apiError("Loan not found.", 404);
+  return state;
 });
+
+const putSchema = z.object({
+  loanId: z.number().int().positive(),
+  categoryId: z.number().int().positive(),
+});
+
+export const PUT = apiHandler(
+  { auth: "auth", body: putSchema, mapError },
+  async ({ userId, body }) => {
+    await setLoanInterestCategory(userId, body.loanId, body.categoryId);
+    return { interestCategoryId: body.categoryId };
+  },
+);
 
 const postSchema = z.object({
   loanId: z.number().int().positive(),
@@ -44,12 +77,7 @@ const postSchema = z.object({
 });
 
 export const POST = apiHandler(
-  {
-    auth: "encryption",
-    body: postSchema,
-    // A category id the caller does not own reads as "not found", never 403.
-    mapError: (err) => (err instanceof OwnershipError ? apiError("Category not found.", 404) : null),
-  },
+  { auth: "encryption", body: postSchema, mapError },
   async ({ userId, dek, body }) => {
     // `auth: "encryption"` already 423s without a key; this narrows the type.
     if (!dek) return apiError(DEK_LOCKED_MESSAGE, 423);
