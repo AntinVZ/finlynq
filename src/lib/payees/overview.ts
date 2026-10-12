@@ -26,6 +26,7 @@
  */
 import { createHash } from "crypto";
 import {
+  canonicalSpelling,
   cleanPayeeDisplay,
   coreOfKey,
   guessPayeeType,
@@ -147,8 +148,8 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       if (cleanPayeeDisplay(s.spelling).toLowerCase() !== s.spelling.toLowerCase()) noisy = true;
     }
     const name = spellings[0].spelling;
-    const clean = spellings.find((s) => cleanPayeeDisplay(s.spelling).toLowerCase() === s.spelling.toLowerCase() && s.spelling !== s.spelling.toUpperCase());
-    const suggestedName = clean ? clean.spelling : cleanPayeeDisplay(name);
+    // P6.2: the most used spelling's own letter case, never the matching key.
+    const suggestedName = canonicalSpelling(spellings.map((s) => ({ spelling: s.spelling, count: rowsOf(s) })));
     const sliceList = [...slices.values()];
     const entity = opts.resolveEntity ? opts.resolveEntity(name, acc.key) : null;
     const vocab = opts.vocab ?? defaultVocabulary();
@@ -333,7 +334,8 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
         : brandEdge
           ? `Різні бренд-токени («${groups[brandEdge.a].brand.core}» / «${groups[brandEdge.b].brand.core}»): назви лише схожі, автоматично не зливаються.`
           : null,
-      suggestedName: lead.suggestedName,
+      // P6.2: across every member's spellings, so one mixed-case spelling anywhere wins over ALL CAPS.
+      suggestedName: canonicalSpelling(lead.spellings, { mixedOnly: true }) || canonicalSpelling(members.flatMap((g) => g.spellings), { mixedOnly: true }) || lead.suggestedName,
       suggestedType: lead.type,
       count: members.reduce((n, g) => n + g.count, 0),
       total: round2(members.reduce((n, g) => n + g.total, 0)),

@@ -36,7 +36,8 @@ type Identifier = Requisite;
 type EntityResponse = {
   entity: { id: number; name: string; type: string; note: string | null; defaultCategoryId: number | null; website: string | null; logo: string | null; merchantTypeId?: number | null; aliases: Alias[]; identifiers: Identifier[] };
   merchantTypes?: MerchantTypeOption[];
-  merchantTypeHint?: { group: string; name: string; reason: string } | null;
+  merchantTypeHint?: { group: string; name: string; reason: string; strength?: "strong" | "weak" } | null;
+  merchantTypeMixed?: string | null;
   spellings: PayeeGroupRow[];
   pending: { total: number; byTable: Record<string, number>; changes: Array<{ from: string; to: string; count: number }> };
   history: BatchRow[];
@@ -147,10 +148,12 @@ export default function PayeeEntityPage() {
               <span className="text-muted-foreground">Тип мерчанта:</span>
               <MerchantTypeSelect types={types} value={current} onChange={setType} />
               {hint && (
-                <Button size="sm" variant="outline" className="h-8 text-xs" title={`Підказка: ${hint.reason}. Призначається лише після підтвердження.`} onClick={() => setType(hint)}>
-                  Підказка: {merchantTypeLabel(hint)}
+                <Button size="sm" variant="outline" className={`h-8 text-xs ${hint.strength === "weak" ? "opacity-70" : ""}`} title={`Підказка: ${hint.reason}. Призначається лише після підтвердження.`} onClick={() => setType(hint)}>
+                  {hint.strength === "weak" ? "Слабка підказка" : "Підказка"}: {merchantTypeLabel(hint)}
                 </Button>
               )}
+              {hint?.strength === "weak" && <span className="text-xs text-muted-foreground">({hint.reason})</span>}
+              {!current && data.merchantTypeMixed && <span className="text-xs text-amber-600 dark:text-amber-400">{data.merchantTypeMixed}</span>}
             </div>
           );
         })()}

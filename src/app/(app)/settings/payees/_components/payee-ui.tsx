@@ -56,7 +56,9 @@ export type EntityRow = {
   hasLogo?: boolean;
   /** P6: the entry's merchant type, and a suggestion when it has none. */
   merchantType?: { id: number; group: string; name: string } | null;
-  merchantTypeHint?: { group: string; name: string; reason: string } | null;
+  /** P6.2: `strength` weak = found through an alias; `merchantTypeMixed` = name and aliases disagree. */
+  merchantTypeHint?: { group: string; name: string; reason: string; strength?: "strong" | "weak"; field?: "name" | "alias"; matched?: string } | null;
+  merchantTypeMixed?: string | null;
   count: number;
   total: number;
   lastDate: string | null;

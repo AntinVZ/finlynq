@@ -86,6 +86,14 @@ export type PayeeVocabulary = {
   bankOps: BankOp[];
 };
 
+/** "Група → Позиція" / "Група / Позиція" / a single group name → a hint. */
+function hintOfText(text: string): MerchantTypeHint | null {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  const m = t.match(/^(.+?)\s*(?:→|->|>|\/)\s*(.+)$/);
+  return m ? { group: m[1].trim(), name: m[2].trim() } : { group: t, name: t };
+}
+
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 function compileBankOp(pattern: string): BankOp | null {
@@ -108,7 +116,11 @@ export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
     phrases.set(key, { word, tokens: key.split(" "), hint });
   };
   for (const w of DEFAULT_TYPE_WORDS) add(w.word, w.hint ?? null);
-  for (const w of cleanList(opts.typeWordsExtra)) add(w, null);
+  // P6.2 (B30): a user word may carry a hint — `кальянна = Кафе, ресторани, бари → Бари`.
+  for (const w of cleanList(opts.typeWordsExtra)) {
+    const m = w.match(/^(.+?)\s*=\s*(.+)$/);
+    add(m ? m[1].trim() : w, m ? hintOfText(m[2]) : null);
+  }
   const opsOff = new Set(cleanList(opts.bankOpsOff).map((p) => normalizeForMatch(p)));
   const bankOps: BankOp[] = [];
   const seen = new Set<string>();
@@ -140,6 +152,8 @@ export type BrandCore = {
   typeOnly: boolean;
   /** Merchant-type hint from the first removed word that carries one. */
   hint: MerchantTypeHint | null;
+  /** P6.2 (B30): every removed word that carries a hint, in order. */
+  hints: Array<{ word: string; hint: MerchantTypeHint }>;
 };
 
 /**
@@ -152,21 +166,39 @@ export function brandCoreOfKey(key: string, vocab: PayeeVocabulary = defaultVoca
   const long = tokens.filter((t) => t.length > 1);
   const base = long.length ? long : tokens;
   const removed: string[] = [];
-  let hint: MerchantTypeHint | null = null;
+  const hints: BrandCore["hints"] = [];
   const keep: string[] = [];
   for (let i = 0; i < base.length; ) {
     const p = vocab.phrases.find((ph) => ph.tokens.every((t, j) => base[i + j] === t));
     if (p) {
       removed.push(p.word);
-      hint = hint ?? p.hint;
+      if (p.hint) hints.push({ word: p.word, hint: p.hint });
       i += p.tokens.length;
       continue;
     }
     keep.push(base[i]);
     i++;
   }
-  if (!keep.length) return { core: base.join(" "), brandTokens: [], removed, typeOnly: removed.length > 0, hint };
-  return { core: keep.join(" "), brandTokens: keep, removed, typeOnly: false, hint };
+  const hint = hints[0]?.hint ?? null;
+  if (!keep.length) return { core: base.join(" "), brandTokens: [], removed, typeOnly: removed.length > 0, hint, hints };
+  return { core: keep.join(" "), brandTokens: keep, removed, typeOnly: false, hint, hints };
+}
+
+const sameHint = (a: MerchantTypeHint, b: MerchantTypeHint) =>
+  normalizeForMatch(a.group) === normalizeForMatch(b.group) && normalizeForMatch(a.name) === normalizeForMatch(b.name);
+
+/**
+ * P6.2 (B30): the matching keys of every type word that means the same as
+ * `word` — the words sharing its merchant-type hint (`аптека` → apteka,
+ * pharmacy, фармація…). A word without a hint (or not in the vocabulary)
+ * stands for itself only.
+ */
+export function typeWordSynonymKeys(word: string, vocab: PayeeVocabulary = defaultVocabulary()): string[] {
+  const key = payeeMatchKey(word);
+  if (!key) return [];
+  const own = vocab.phrases.find((p) => p.tokens.join(" ") === key);
+  if (!own?.hint) return [key];
+  return [...new Set([key, ...vocab.phrases.filter((p) => p.hint && sameHint(p.hint, own.hint!)).map((p) => p.tokens.join(" "))])];
 }
 
 /** The bank-operation pattern a payee matches, or null. */

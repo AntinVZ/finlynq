@@ -120,6 +120,8 @@ function mergeTypeHint(
     if (h) return h;
   }
   for (const e of sourceEntities) {
+    // P6.2 (B29): an alias-only (weak) or mixed hint is never offered.
+    if (e.merchantTypeHint?.strength === "weak" || e.merchantTypeMixed) continue;
     const h = pick(e.merchantTypeHint, e.merchantTypeHint?.reason ?? "");
     if (h) return h;
   }
@@ -557,9 +559,17 @@ export default function PayeesSettingsPage() {
                       Тип:{" "}
                       {e.merchantType ? (
                         merchantTypeLabel(e.merchantType)
+                      ) : e.merchantTypeMixed ? (
+                        <span className="text-amber-600 dark:text-amber-400" title={`${e.merchantTypeMixed}; автоматично не призначається`}>
+                          — (змішаний)
+                        </span>
                       ) : e.merchantTypeHint ? (
-                        <span className="text-muted-foreground" title={`Підказка (${e.merchantTypeHint.reason}); призначається лише після підтвердження`}>
-                          — (підказка: {merchantTypeLabel(e.merchantTypeHint)})
+                        <span
+                          className={`text-muted-foreground ${e.merchantTypeHint.strength === "weak" ? "opacity-70 italic" : ""}`}
+                          title={`Підказка (${e.merchantTypeHint.reason}); призначається лише після підтвердження`}
+                        >
+                          — ({e.merchantTypeHint.strength === "weak" ? "слабка підказка" : "підказка"}: {merchantTypeLabel(e.merchantTypeHint)}
+                          {e.merchantTypeHint.strength === "weak" ? `, ${e.merchantTypeHint.reason}` : ""})
                         </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>

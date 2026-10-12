@@ -12,7 +12,7 @@ import { computeMerchantAnalytics, type Period } from "./merchant-analytics";
 import { computeLookalikes, describeRejections, loadRejections, rejectionPredicate } from "./lookalikes";
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import type { PayeeVocabulary } from "./type-words";
-import { loadMerchantTypes, suggestMerchantType, type MerchantType, type MerchantTypeRef } from "./merchant-types";
+import { entityMerchantTypeHints, loadMerchantTypes, type EntityTypeHint, type MerchantType, type MerchantTypeRef } from "./merchant-types";
 import { buildSuggestIndex, getCachedSuggestIndex, querySuggestIndex, setCachedSuggestIndex, type PayeeSuggestion } from "./suggest";
 
 /** Slices → display-currency sum, the way the dashboard converts flows. */
@@ -42,7 +42,9 @@ export type EntitySummary = {
   hasLogo: boolean;
   /** P6 (B26): the entry's merchant type, and a suggestion for an untyped entry (never applied by itself). */
   merchantType: (MerchantTypeRef & { id: number }) | null;
-  merchantTypeHint: (MerchantTypeRef & { reason: string }) | null;
+  merchantTypeHint: (MerchantTypeRef & { reason: string; strength: EntityTypeHint["strength"]; field: EntityTypeHint["field"]; matched: string }) | null;
+  /** P6.2 (B29): the name and the aliases suggest different types — no automatic assignment. */
+  merchantTypeMixed: string | null;
   /** Transactions resolving to the entity, and their display-currency total. */
   count: number;
   total: number;
@@ -122,10 +124,13 @@ export async function loadPayeeOverview(opts: {
         const t = e.merchantTypeId == null ? undefined : typeById.get(e.merchantTypeId);
         return t ? { id: t.id!, group: t.group, name: t.name } : null;
       })(),
-      merchantTypeHint: (() => {
-        if (e.merchantTypeId != null) return null;
-        const s = suggestMerchantType([e.name, ...e.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)], merchantTypes, { vocab });
-        return s ? { group: s.type.group, name: s.type.name, reason: s.reason } : null;
+      ...(() => {
+        if (e.merchantTypeId != null) return { merchantTypeHint: null, merchantTypeMixed: null };
+        const h = entityMerchantTypeHints(e, merchantTypes, { vocab });
+        return {
+          merchantTypeHint: h.hint ? { group: h.hint.group, name: h.hint.name, reason: h.hint.reason, strength: h.hint.strength, field: h.hint.field, matched: h.hint.matched } : null,
+          merchantTypeMixed: h.mixedReason,
+        };
       })(),
       count: totals.get(e.id)?.count ?? 0,
       total: Math.round((totals.get(e.id)?.total ?? 0) * 100) / 100,

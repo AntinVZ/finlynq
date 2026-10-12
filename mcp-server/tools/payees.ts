@@ -147,14 +147,15 @@ function opOut(r: PayeeOpResult) {
     rows: {
       total: r.rows.total,
       byTable: r.rows.byTable,
-      changes: r.rows.changes.slice(0, 20).map((c) => ({ from: c.from, to: c.to, count: c.count })),
+      changes: r.rows.changes.slice(0, 20).map((c) => ({ from: c.from, to: c.to, count: c.count, ...(c.caseOnly ? { caseOnly: true } : {}) })),
       ...(r.rows.conflicts.length ? { conflicts: r.rows.conflicts.slice(0, 20) } : {}),
     },
     ...(r.undo ? { undo: r.undo } : {}),
     ...(r.warnings.length ? { warnings: r.warnings } : {}),
     ...(r.blocked ? { blocked: r.blocked } : {}),
     ...(r.emptyReason ? { emptyReason: r.emptyReason } : {}),
-    ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to })) } : {}),
+    ...(r.typed.length ? { merchantTypeChanges: r.typed.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, from: t.from, to: t.to, ...(t.via ? { matched_by: t.via } : {}) })) } : {}),
+    ...(r.skipped.length ? { merchantTypeSkipped: r.skipped.slice(0, 50).map((t) => ({ entity_id: t.id, name: t.name, reason: t.reason })) } : {}),
     ...(r.merchantTypes.added.length || r.merchantTypes.updated.length || r.merchantTypes.removed.length ? { merchantTypes: r.merchantTypes } : {}),
   };
 }
@@ -193,7 +194,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           name: e.name,
           type: e.type,
           merchant_type: e.merchantType ? formatMerchantType(e.merchantType) : null,
-          ...(e.merchantTypeHint ? { merchant_type_hint: `${formatMerchantType(e.merchantTypeHint)} (${e.merchantTypeHint.reason}; suggestion only — set it with op=update merchant_type after the user agrees)` } : {}),
+          ...(e.merchantTypeHint
+            ? {
+                merchant_type_hint: `${formatMerchantType(e.merchantTypeHint)} (${e.merchantTypeHint.reason}; ${e.merchantTypeHint.strength === "weak" ? "WEAK: matched through an alias, not the name" : "from the name"}; suggestion only — set it with op=update merchant_type after the user agrees)`,
+              }
+            : {}),
+          ...(e.merchantTypeMixed ? { merchant_type_mixed: `${e.merchantTypeMixed} — no automatic type` } : {}),
           count: e.count,
           total: e.total,
           lastDate: e.lastDate,
@@ -426,7 +432,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         op: z.literal("set_merchant_type"),
         merchant_type: z.union([z.number().int().positive(), z.string().min(1).max(170)]).nullable().describe("The type to set (id, \"Group → Position\", or a unique position / group name); null clears."),
         entity_ids: z.array(z.number().int().positive()).max(5000).optional().describe("These entries…"),
-        type_word: z.string().min(1).max(60).optional().describe("…or every entry whose name / exact alias carries this type word, e.g. \"ресторан\"."),
+        type_word: z.string().min(1).max(60).optional().describe("…or every entry whose canonical NAME carries this type word or a synonym (аптека = apteka = pharmacy), e.g. \"ресторан\". Alias-only matches and mixed entries are listed as skipped, not changed."),
         only_untyped: z.boolean().optional().describe("Leave entries that already have a type alone."),
         confirmation_token: tokenArg,
       }),

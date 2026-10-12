@@ -20,7 +20,7 @@ import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { decryptRuleFields } from "@/lib/rules/crypto";
 import { invalidateUser as invalidateUserTxCache } from "@/lib/mcp/user-tx-cache";
-import { guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
+import { caseOnlyChange, guessPayeeType, payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
 import {
   ALIAS_MODES,
   buildPayeeMatcher,
@@ -58,12 +58,14 @@ import {
   formatMerchantType,
   insertMerchantType,
   sameMerchantType,
+  entityMerchantTypeHints,
   parseMerchantTypeText,
   validateMerchantTypeRef,
   type MerchantType,
   type MerchantTypeRef,
 } from "./merchant-types";
-import { brandCoreOfKey } from "./type-words";
+import { typeWordSynonymKeys } from "./type-words";
+import { getPayeeSettings, vocabularyOf } from "./settings";
 import { isPersonsMerchantGroup, payeeTypeForMerchantType } from "./payee-type";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
@@ -138,8 +140,10 @@ export type PayeeOpResult = {
   blocked: string | null;
   /** P6 (B23): why an apply renames nothing — never a silent 0. */
   emptyReason: string | null;
-  /** P6 (B26): entries whose merchant type changes ("Група → Позиція", null = none). */
-  typed: Array<{ id: number; name: string; from: string | null; to: string | null }>;
+  /** P6 (B26): entries whose merchant type changes ("Група → Позиція", null = none). P6.2: `via` = which field matched. */
+  typed: Array<{ id: number; name: string; from: string | null; to: string | null; via?: string }>;
+  /** P6.2 (B29): entries a type word reached but that are left alone, and why (alias-only match, mixed). */
+  skipped: Array<{ id: number; name: string; reason: string }>;
   /** P6 (B26): dictionary changes. */
   merchantTypes: { added: string[]; updated: string[]; removed: string[] };
   /** Binds an MCP confirmation token to exactly these rows. */
@@ -258,6 +262,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     blocked: null,
     emptyReason: null,
     typed: [],
+    skipped: [],
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: `undo:${batchId}`,
   };
@@ -288,6 +293,7 @@ async function runOp(
     blocked: null,
     emptyReason: null,
     typed: [],
+    skipped: [],
     merchantTypes: { added: [], updated: [], removed: [] },
     fingerprint: "",
   };
@@ -378,12 +384,12 @@ async function runOp(
     /** P6.1: an explicit entity type wins; otherwise it follows the merchant type (people stay people). */
     const entityTypeFor = (explicit: string | undefined, name: string, typeId: number | null): PayeeType =>
       explicit && (PAYEE_TYPES as readonly string[]).includes(explicit) ? (explicit as PayeeType) : payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(name).type);
-    const setEntityType = async (e: PayeeEntity, typeId: number | null) => {
+    const setEntityType = async (e: PayeeEntity, typeId: number | null, via?: string) => {
       if (e.merchantTypeId === typeId) return;
       await journal.willModify([e.id]);
       const toPerson = isPersonsMerchantGroup(groupOfType(typeId)) && !PERSON_ENTITY_TYPES.has(e.type);
       await updateEntityRow(btx, userId, dek, e.id, { merchantTypeId: typeId, ...(toPerson ? { type: payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(e.name).type) } : {}) });
-      out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId) });
+      out.typed.push({ id: e.id, name: e.name, from: typeLabel(e.merchantTypeId), to: typeLabel(typeId), ...(via ? { via } : {}) });
       journal.count("merchant_type_set");
     };
 
@@ -700,7 +706,7 @@ async function runOp(
             out.rows = {
               total: payeeWrites.length,
               byTable: { transactions: payeeWrites.length, recurring: 0, staged: 0 },
-              changes: [...changes.entries()].map(([from, count]) => ({ from, to: e.name, entityId: e.id, count })).sort((a, b) => b.count - a.count),
+              changes: [...changes.entries()].map(([from, count]) => ({ from, to: e.name, entityId: e.id, count, caseOnly: caseOnlyChange(from, e.name) })).sort((a, b) => b.count - a.count),
               conflicts: [],
               truncated: false,
             };
@@ -769,21 +775,44 @@ async function runOp(
           }
           case "set_merchant_type": {
             const typeId = await resolveMerchantType(op.merchantType);
-            let targets: PayeeEntity[];
+            let targets: Array<{ e: PayeeEntity; via?: string }>;
             if (op.entityIds?.length) {
-              targets = [...new Set(op.entityIds)].map((id) => entityOf(entities, id));
+              targets = [...new Set(op.entityIds)].map((id) => ({ e: entityOf(entities, id), via: "вибрано вручну" }));
             } else if (op.typeWord?.trim()) {
-              const word = payeeMatchKey(op.typeWord);
-              if (!word) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
-              // Whole-word match on the matching key of the name / exact aliases.
-              const has = (text: string) => ` ${payeeMatchKey(text)} `.includes(` ${word} `) || brandCoreOfKey(payeeMatchKey(text)).removed.some((w) => payeeMatchKey(w) === word);
-              targets = entities.filter((e) => has(e.name) || e.aliases.some((a) => a.mode === "exact" && has(a.pattern)));
+              const vocab = vocabularyOf(await getPayeeSettings(btx, userId));
+              // B30: the word and every type word that means the same (аптека → apteka, pharmacy…).
+              const words = typeWordSynonymKeys(op.typeWord, vocab);
+              if (!words.length) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
+              // Whole-word match on the matching key.
+              const has = (text: string) => {
+                const k = ` ${payeeMatchKey(text)} `;
+                return words.some((w) => k.includes(` ${w} `));
+              };
+              const types = await storedTypes();
+              targets = [];
+              for (const e of entities) {
+                // B29: only the canonical name decides; an alias match is a weak hint, shown but never assigned.
+                if (has(e.name)) {
+                  const h = entityMerchantTypeHints(e, types, { vocab });
+                  if (h.mixed) {
+                    if (!op.onlyUntyped || e.merchantTypeId == null) out.skipped.push({ id: e.id, name: e.name, reason: h.mixedReason! });
+                    continue;
+                  }
+                  targets.push({ e, via: `назва «${e.name}»` });
+                  continue;
+                }
+                const alias = e.aliases.find((a) => a.mode === "exact" && has(a.pattern));
+                if (alias && (!op.onlyUntyped || e.merchantTypeId == null)) {
+                  out.skipped.push({ id: e.id, name: e.name, reason: `збіг лише через alias “${alias.pattern}” — слабка підказка, не призначається` });
+                }
+              }
             } else {
               throw new PayeeDirectoryError("Name the payees (entityIds) or a type word (typeWord).");
             }
-            if (op.onlyUntyped) targets = targets.filter((e) => e.merchantTypeId == null);
-            for (const e of targets) await setEntityType(e, typeId);
+            if (op.onlyUntyped) targets = targets.filter((t) => t.e.merchantTypeId == null);
+            for (const t of targets) await setEntityType(t.e, typeId, t.via);
             if (!out.typed.length) out.warnings.push("Жоден запис не змінює тип.");
+            if (out.skipped.length) out.warnings.push(`${out.skipped.length} запис(ів) пропущено: збіг лише через alias або змішані підказки.`);
             break;
           }
           case "delete": {

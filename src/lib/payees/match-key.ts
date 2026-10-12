@@ -211,7 +211,7 @@ export function coreOfKey(key: string, vocab?: PayeeVocabulary): string {
  * suggesting a canonical name: `EPITCENTR K10 KYIV 360616` → `Epitcentr`.
  * ALL-CAPS results are title-cased; anything else keeps its letter case.
  */
-export function cleanPayeeDisplay(raw: string | null | undefined): string {
+export function cleanPayeeDisplay(raw: string | null | undefined, opts: { keepCase?: boolean } = {}): string {
   const original = (raw ?? "").replace(/\s+/g, " ").trim();
   if (!original) return "";
   const { kept, legal } = payeeTokens(original);
@@ -224,7 +224,7 @@ export function cleanPayeeDisplay(raw: string | null | undefined): string {
   let out = words.length ? words.join(" ") : original;
   out = out.replace(/^(?:pos|purchase|payment)\s+/i, "").replace(/\.(?:com|ua)$/i, "").trim() || out;
   const letters = out.replace(/[^\p{L}]/gu, "");
-  if (letters && letters === letters.toUpperCase() && letters !== letters.toLowerCase()) {
+  if (!opts.keepCase && letters && letters === letters.toUpperCase() && letters !== letters.toLowerCase()) {
     out = out
       .toLowerCase()
       .replace(/(^|[\s"'«(-])(\p{L})/gu, (_m, pre: string, ch: string) => pre + ch.toUpperCase())
@@ -233,6 +233,37 @@ export function cleanPayeeDisplay(raw: string | null | undefined): string {
       .join(" ");
   }
   return out;
+}
+
+/** Letters in both cases: a spelling someone typed with care (`PlayStation Network`), not a terminal's ALL CAPS. */
+function mixedCase(s: string): boolean {
+  const letters = s.replace(/[^\p{L}]/gu, "");
+  return letters !== letters.toUpperCase() && letters !== letters.toLowerCase();
+}
+
+/**
+ * P6.2: the canonical spelling for a set of spellings (with their row
+ * counts): noise stripped but letter case KEPT, the most used mixed-case
+ * form wins (`PlayStation Network` over `PLAYSTATION NETWORK` /
+ * `Playstation`); only when no spelling has mixed case is the most used one
+ * title-cased. Never derived from the matching key.
+ */
+export function canonicalSpelling(spellings: ReadonlyArray<{ spelling: string; count: number }>, opts: { mixedOnly?: boolean } = {}): string {
+  const tally = new Map<string, number>();
+  for (const s of spellings) {
+    const c = cleanPayeeDisplay(s.spelling, { keepCase: true });
+    if (c && mixedCase(c)) tally.set(c, (tally.get(c) ?? 0) + s.count);
+  }
+  const best = [...tally.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0];
+  if (best) return best[0];
+  if (opts.mixedOnly) return "";
+  const top = [...spellings].sort((a, b) => b.count - a.count)[0];
+  return top ? cleanPayeeDisplay(top.spelling) : "";
+}
+
+/** True when two names differ only in letter case. */
+export function caseOnlyChange(a: string, b: string): boolean {
+  return a !== b && a.toLocaleLowerCase("uk") === b.toLocaleLowerCase("uk");
 }
 
 // ─── counterparty type guess ────────────────────────────────────────────────

@@ -27,7 +27,7 @@ export type OpPreview = {
   rows: {
     total: number;
     byTable: { transactions: number; recurring: number; staged: number };
-    changes: Array<{ from: string; to: string; count: number }>;
+    changes: Array<{ from: string; to: string; count: number; caseOnly?: boolean }>;
     conflicts: Array<{ payee: string; entities: string[]; count: number }>;
     truncated: boolean;
   };
@@ -37,7 +37,9 @@ export type OpPreview = {
   /** Why an apply renames nothing (P6). */
   emptyReason?: string | null;
   /** P6: entries whose merchant type changes, and dictionary changes. */
-  typed?: Array<{ id: number; name: string; from: string | null; to: string | null }>;
+  typed?: Array<{ id: number; name: string; from: string | null; to: string | null; via?: string }>;
+  /** P6.2: entries a type word reached but left alone (alias-only match, mixed hints). */
+  skipped?: Array<{ id: number; name: string; reason: string }>;
   merchantTypes?: { added: string[]; updated: string[]; removed: string[] };
 };
 
@@ -154,6 +156,7 @@ export function OpDialog({
                   {preview.rows.changes.map((c) => (
                     <li key={`${c.from}→${c.to}`} className="break-all">
                       “{c.from}” → “{c.to}” <span className="text-muted-foreground">× {c.count}</span>
+                      {c.caseOnly && <span className="ml-1 text-muted-foreground">(лише регістр)</span>}
                     </li>
                   ))}
                 </ul>
@@ -165,6 +168,19 @@ export function OpDialog({
                     {preview.typed!.map((t) => (
                       <li key={`${t.id}:${t.name}`} className="break-all">
                         {t.name}: {t.from ?? "без типу"} → {t.to ?? "без типу"}
+                        {t.via && <span className="text-muted-foreground"> · збіг: {t.via}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {(preview.skipped ?? []).length > 0 && (
+                <div className="text-xs space-y-0.5">
+                  <p className="font-medium text-amber-600 dark:text-amber-400">Пропущено: {preview.skipped!.length}</p>
+                  <ul className="max-h-32 overflow-y-auto text-muted-foreground">
+                    {preview.skipped!.map((t) => (
+                      <li key={`s${t.id}`} className="break-all">
+                        {t.name}: {t.reason}
                       </li>
                     ))}
                   </ul>
