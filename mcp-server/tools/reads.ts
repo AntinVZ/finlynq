@@ -1483,7 +1483,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
     "finlynq_help",
     "Discover available Finlynq tools, schema, and usage examples. Finlynq is a personal-finance TRACKING app: every write tool records a bookkeeping entry in the user's own database and never connects to a bank or brokerage or moves real money. Full docs: https://finlynq.com/mcp-guide",
     {
-      topic: z.enum(["tools", "schema", "examples", "write", "portfolio", "reconcile", "modes", "safety", "valuation"]).optional().describe("Help topic (default: tools). `modes` documents every multi-mode tool's modes with an example each; `safety` documents the destructive-tool two-step (confirmation tokens) + echo guards; `valuation` documents the uniform `basis` field on every money-bearing response + each tool's default basis."),
+      topic: z.enum(["tools", "schema", "examples", "write", "portfolio", "loans", "reconcile", "modes", "safety", "valuation"]).optional().describe("Help topic (default: tools). `loans` documents how to record a loan payment, its interest, and a loan's own schedule. `modes` documents every multi-mode tool's modes with an example each; `safety` documents the destructive-tool two-step (confirmation tokens) + echo guards; `valuation` documents the uniform `basis` field on every money-bearing response + each tool's default basis."),
       tool_name: z.string().optional().describe("Get help for a specific tool"),
     },
     async ({ topic, tool_name }) => {
@@ -1602,6 +1602,18 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           note_on_writes: "Investment activity MUST go through portfolio_record_entry (manage_transactions/manage_transfers reject investment accounts). Buys/sells need an existing cash sleeve in the trade currency — manage_holdings(op='add') a 'Cash' holding for that currency first if missing. (v4.1 CLEAN BREAK: the old portfolio_buy/sell/… hidden aliases were REMOVED — use portfolio_record_entry entry_types.)", // lint-allow-retired: names the retired aliases as history, not a remedy
           disclaimer: PORTFOLIO_DISCLAIMER,
           note: "All portfolio read tools return a disclaimer field. Not financial advice.",
+        });
+      }
+
+      if (t === "loans") {
+        return dataResponse({
+          read_tools: ["manage_loans (op: list)", "get_loan_amortization", "get_debt_payoff_plan"],
+          write_tools: ["manage_loans (op: add | update | delete | post_interest | set_schedule | set_interest | reset_schedule)"],
+          recording_a_payment: "A loan payment is ONE plain transfer into the loan's linked account (manage_transfers). Never split it into principal and interest.",
+          recording_interest: "Interest is a SEPARATE expense on the loan's linked account. manage_loans(op:'post_interest', loan_id) books the oldest due period at the schedule's figure (pass `amount` when the lender charged something else), or record it yourself with manage_transactions on that account in the loan's interest category. It adds to what is owed, the payment takes the full amount off, and the balance falls by the principal only.",
+          what_counts_as_booked: "Any transaction on the linked account in the loan's interest category counts, however it was entered, and is matched to the nearest payment date. post_interest refuses a period that already has interest.",
+          schedule: "A schedule is calculated from principal/rate/term or payment unless the loan has its own. set_interest overrides the interest of single calculated rows. set_schedule supplies complete rows {date, payment, interest} that replace the calculation (merge:true to change a few). reset_schedule goes back to calculated. get_loan_amortization returns the rows in effect and `scheduleMode`.",
+          interest_check: "get_loan_amortization returns `interestCheck` once interest is booked: whether the lender charged more or less than the schedule, plus a suggested rate when the difference is steady. It is judged on the most recent booked payments ONLY, because an extra payment or a change of terms shifts every later period. Always tell the user the `window` it covers.",
         });
       }
 

@@ -323,8 +323,24 @@ Within 2% (or a cent per payment) is treated as rounding and reads as in line.
 figure while the schedule's figures differ, which points at a fixed charge
 rather than a rate.
 
-Still to do: surface the verdict on the dashboard (with the same window
-wording), and expose it to MCP.
+Where the verdict is shown, each time with its window:
+
+- **Loans page** — the Interest entries tab (the callout above the table).
+- **Dashboard Action Center** — `getLoanInterestMismatches` in
+  [spotlight.ts](../src/lib/spotlight.ts) raises a card for `over` (warning),
+  `under` and `inconsistent` (info); `in_line` and `insufficient` raise
+  nothing. Amounts are converted to the display currency. The card links to
+  `/loans?loan=<id>&tab=entries`, which opens that loan's panel on the Interest
+  entries tab.
+- **MCP** — `get_loan_amortization` returns `interestCheck` (the verdict plus
+  `window`) and `scheduleMode`; `finlynq_help(topic:"loans")` tells an
+  assistant how payments, interest and schedules are recorded and to relay the
+  window with any verdict. The dashboard card also reaches `get_spotlight_items`.
+
+The read side lives in [interest-check.ts](../src/lib/loans/interest-check.ts),
+apart from the transaction-writing `interest-entries.ts`, so the Action Center
+does not pull the writer onto the dashboard's hot path. Only loans with a
+linked account AND an interest category are read at all.
 
 ## Deferred (Phase 4 — tracked on FINLYNQ-136)
 

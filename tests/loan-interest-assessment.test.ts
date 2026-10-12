@@ -14,6 +14,8 @@ import {
   type BookedInterest,
 } from "@/lib/loans/interest-plan";
 import { buildLoanSchedule } from "@/lib/loan-calculator";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
 const TODAY = "2026-10-12";
 const schedule = [
@@ -196,5 +198,58 @@ describe("assessBookedInterest", () => {
       before.suggestedRate!,
     );
     expect(after.status).toBe("in_line");
+  });
+});
+
+describe("where the verdict is shown (static wiring)", () => {
+  const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
+  const code = (p: string) => read(p).replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+  // The owner's rule: a verdict without its window reads as a claim about the
+  // whole loan. Every surface that shows one must say which payments it covers.
+  it("the dashboard card states the window it is based on", () => {
+    const spotlight = code("src/lib/spotlight.ts");
+    expect(spotlight).toContain("assessAllLoansInterest(");
+    expect(spotlight).toContain("assessmentWindowNote(assessment)");
+  });
+
+  it("the MCP schedule tool returns the verdict together with its window", () => {
+    const mcp = code("mcp-server/tools/loans.ts");
+    expect(mcp).toContain("assessLoanInterest(");
+    expect(mcp).toContain("window: assessmentWindowNote(check)");
+  });
+
+  it("the Loans page names the window too", () => {
+    const panel = read("src/app/(app)/loans/_components/interest-entries.tsx");
+    expect(panel).toContain("assessBookedInterest(");
+    expect(panel).toContain("most recent booked payments");
+  });
+
+  it("the dashboard card lands on the loan's Interest entries tab", () => {
+    expect(code("src/lib/spotlight.ts")).toContain("/loans?loan=${loan.id}&tab=entries");
+    const page = code("src/app/(app)/loans/page.tsx");
+    expect(page).toContain('params.get("loan")');
+    expect(page).toContain('"entries"');
+  });
+
+  it("in-line and too-little-history loans raise no card", () => {
+    expect(code("src/lib/spotlight.ts")).toMatch(
+      /status === "insufficient" \|\| assessment\.status === "in_line"\) continue/,
+    );
+  });
+
+  // The Action Center runs on every dashboard load. The read-only check must
+  // not pull the transaction-writing stack in with it.
+  it("the read-only check does not import the transaction writer", () => {
+    const check = code("src/lib/loans/interest-check.ts");
+    for (const heavy of ["@/lib/queries", "interest-entries", "createTransaction", "user-tx-cache"]) {
+      expect(check, heavy).not.toContain(heavy);
+    }
+  });
+
+  it("only loans that book interest are read at all", () => {
+    const check = code("src/lib/loans/interest-check.ts");
+    expect(check).toContain("isNotNull(schema.loans.accountId)");
+    expect(check).toContain("isNotNull(schema.loans.interestCategoryId)");
   });
 });

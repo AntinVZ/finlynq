@@ -340,7 +340,8 @@ describe("every surface applies the loan's own schedule (static wiring)", () => 
   // calculator. A new schedule build that omits them has to be added here.
   const expected: Record<string, number> = {
     "src/app/api/loans/route.ts": 3,
-    "src/lib/loans/interest-entries.ts": 1,
+    // The interest writer and the dashboard check both get their rows here.
+    "src/lib/loans/interest-check.ts": 1,
     "src/lib/loans/schedule-store.ts": 2,
     "src/lib/health/debt-service.ts": 1,
     "src/lib/financial-health.ts": 1,

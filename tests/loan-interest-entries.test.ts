@@ -238,7 +238,9 @@ describe("posting chokepoint (static wiring)", () => {
   });
 
   it("does not count a transfer leg filed under the interest category", () => {
-    expect(lib).toContain("isNull(schema.transactions.linkId)");
+    expect(code("src/lib/loans/interest-check.ts")).toContain("isNull(schema.transactions.linkId)");
+    // ...and the writer reads the ledger through that one query, not its own.
+    expect(lib).toContain("loadInterestTransactions(");
   });
 
   it("invalidates the MCP transaction cache and stamps the snapshot dirty marker", () => {

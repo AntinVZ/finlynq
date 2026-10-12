@@ -12,7 +12,7 @@
  */
 
 import { db, schema, withDbTransaction } from "@/db";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { createTransaction, getAccountById } from "@/lib/queries";
 import { encryptField } from "@/lib/crypto/envelope";
 import { decryptName } from "@/lib/crypto/encrypted-columns";
@@ -22,7 +22,7 @@ import { verifyOwnership } from "@/lib/verify-ownership";
 import { AppError } from "@/lib/validate";
 import { getDisplayCurrency } from "@/lib/fx-service";
 import { computeReportingFields } from "@/lib/fx/reporting-amount";
-import { buildLoanSchedule, LoanValidationError, loanScheduleExtras } from "@/lib/loan-calculator";
+import { LoanValidationError } from "@/lib/loan-calculator";
 import type { TransactionSource } from "@/lib/tx-source";
 import {
   interestLedgerAmount,
@@ -31,6 +31,7 @@ import {
   type InterestScheduleRow,
   type InterestTx,
 } from "./interest-plan";
+import { loadInterestTransactions, scheduleRowsFor, type LoanRow } from "./interest-check";
 
 export const LOAN_INTEREST_PAYEE = "Loan interest";
 
@@ -51,62 +52,12 @@ export type InterestEntryInput = {
   date?: string;
 };
 
-type LoanRow = typeof schema.loans.$inferSelect;
-
 async function loadLoan(userId: string, loanId: number): Promise<LoanRow | undefined> {
   return db
     .select()
     .from(schema.loans)
     .where(and(eq(schema.loans.id, loanId), eq(schema.loans.userId, userId)))
     .get();
-}
-
-function scheduleFor(loan: LoanRow): InterestScheduleRow[] {
-  return buildLoanSchedule({
-    principal: loan.principal,
-    annualRate: loan.annualRate,
-    termMonths: loan.termMonths,
-    startDate: loan.startDate,
-    paymentAmount: loan.paymentAmount,
-    paymentFrequency: loan.paymentFrequency,
-    extraPayment: loan.extraPayment ?? 0,
-    residualValue: loan.residualValue,
-    ...loanScheduleExtras(loan),
-  }).schedule;
-}
-
-/**
- * Interest transactions on an account: everything in the given categories that
- * is not one leg of a transfer (a payment mis-filed under the interest category
- * must not read as negative interest).
- */
-async function interestTransactions(
-  userId: string,
-  accountId: number,
-  categoryIds: number[],
-): Promise<InterestTx[]> {
-  if (!categoryIds.length) return [];
-  const rows = await db
-    .select({
-      transactionId: schema.transactions.id,
-      date: schema.transactions.date,
-      amount: schema.transactions.amount,
-    })
-    .from(schema.transactions)
-    .where(
-      and(
-        eq(schema.transactions.userId, userId),
-        eq(schema.transactions.accountId, accountId),
-        inArray(schema.transactions.categoryId, categoryIds),
-        isNull(schema.transactions.linkId),
-      ),
-    )
-    .all();
-  return rows.map((r) => ({
-    transactionId: r.transactionId,
-    date: r.date,
-    amount: Number(r.amount),
-  }));
 }
 
 /**
@@ -130,7 +81,7 @@ export async function readLoanInterest(
   const effective = categoryId ?? loan.interestCategoryId ?? null;
   const entries =
     loan.accountId != null && effective != null
-      ? await interestTransactions(userId, loan.accountId, [effective])
+      ? await loadInterestTransactions(userId, loan.accountId, [effective])
       : [];
   return {
     accountId: loan.accountId,
@@ -195,7 +146,7 @@ export async function postLoanInterest(
 
   let schedule: InterestScheduleRow[];
   try {
-    schedule = scheduleFor(loan);
+    schedule = scheduleRowsFor(loan);
   } catch (e) {
     if (e instanceof LoanValidationError) throw new AppError(e.message, 400);
     throw e;
@@ -225,7 +176,7 @@ export async function postLoanInterest(
   const refuseIfBooked = async () => {
     const { booked } = matchInterestToSchedule(
       schedule,
-      await interestTransactions(userId, accountId, lookIn),
+      await loadInterestTransactions(userId, accountId, lookIn),
     );
     const dup = [...seen].filter((d) => booked.has(d)).sort();
     if (dup.length) {

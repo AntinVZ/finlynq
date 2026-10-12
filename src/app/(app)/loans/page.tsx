@@ -1,7 +1,7 @@
 "use client";
 
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -62,6 +62,9 @@ const FREQUENCY_OPTIONS = [
 const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(
   FREQUENCY_OPTIONS.map((f) => [f.value, f.label])
 );
+
+// Tabs of the schedule panel, in display order. A `?tab=` deep link must name one.
+const PANEL_TABS = ["chart", "table", "monthly", "entries", "whatif"];
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semi_monthly: 24, monthly: 12, quarterly: 4, annual: 1 };
 
@@ -245,6 +248,28 @@ function LoansPageContent() {
   }, [load]);
 
   const sortAccount = useDropdownOrder("account");
+
+  // Schedule panel tab. Controlled so a deep link can open a specific one.
+  const [panelTab, setPanelTab] = useState("chart");
+  // `/loans?loan=<id>&tab=<tab>` opens that loan's schedule panel on that tab
+  // (the dashboard's loan-interest card links here). Read once, after the
+  // loans have loaded; later clicks own the panel from then on.
+  const deepLinkDone = useRef(false);
+  useEffect(() => {
+    if (deepLinkDone.current || loans.length === 0) return;
+    deepLinkDone.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const target = loans.find((l) => String(l.id) === params.get("loan"));
+    // A loan the server could not schedule has no panel to open.
+    if (!target || target.remainingBalance == null) return;
+    const tab = params.get("tab");
+    if (tab && PANEL_TABS.includes(tab)) setPanelTab(tab);
+    void viewAmortization(target).then(() => {
+      document.getElementById("loan-schedule")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    // viewAmortization is recreated every render; this runs once by design.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loans]);
 
   async function viewAmortization(loan: Loan) {
     setSelectedLoan(loan);
@@ -611,12 +636,12 @@ function LoansPageContent() {
 
       {/* Amortization detail modal */}
       {selectedLoan && amort && (
-        <Card>
+        <Card id="loan-schedule">
           {/* Every figure in this panel comes from the schedule the server
               computed in the loan's OWN currency — never the display one. */}
           <CardHeader><CardTitle>Amortization: {selectedLoan.name} <span className="text-sm font-normal text-muted-foreground font-mono">({selectedLoan.currency})</span></CardTitle></CardHeader>
           <CardContent>
-            <Tabs defaultValue="chart">
+            <Tabs value={panelTab} onValueChange={(v) => setPanelTab(String(v ?? "chart"))}>
               <TabsList><TabsTrigger value="chart">Chart</TabsTrigger><TabsTrigger value="table">Table</TabsTrigger><TabsTrigger value="monthly">Monthly Interest</TabsTrigger><TabsTrigger value="entries">Interest entries</TabsTrigger><TabsTrigger value="whatif">What-If</TabsTrigger></TabsList>
               <TabsContent value="chart">
                 <ResponsiveContainer width="100%" height={300}>

@@ -15,6 +15,7 @@ import { formatCurrency } from "@/lib/currency";
 import { unrecordedBankRowSql } from "@/lib/reconcile/unrecorded-rows";
 import { getReconcileHiddenAccountIds } from "@/lib/reconcile/hidden-accounts";
 import { advanceStaleSubscriptionDatesSafe } from "@/lib/subscriptions/advance-next-dates";
+import { assessAllLoansInterest, assessmentWindowNote } from "@/lib/loans/interest-check";
 
 const { accounts, categories, transactions, budgets, goals, subscriptions } = schema;
 
@@ -633,6 +634,54 @@ async function getUnrecordedBankRows(
   return items;
 }
 
+// ─── 9. Loan interest that does not match the schedule ─────────────────────────
+// When the interest booked on a loan's account differs from what its schedule
+// calculates, the loan's rate (or the schedule) is probably wrong. The verdict
+// is deliberately short-sighted (see `assessBookedInterest`): only the most
+// recent booked payments count, because an extra payment or a change to the
+// loan shifts every later period. The card SAYS which window it covers — a
+// verdict without its window reads as a claim about the whole loan.
+
+async function getLoanInterestMismatches(
+  userId: string,
+  dek: Buffer | null,
+  fx: RateCtx,
+): Promise<SpotlightItem[]> {
+  const items: SpotlightItem[] = [];
+  for (const { loan, assessment } of await assessAllLoansInterest(userId)) {
+    if (assessment.status === "insufficient" || assessment.status === "in_line") continue;
+    const name = decryptName(loan.nameCt, dek, null) ?? "A loan";
+    // The schedule is in the loan's own currency; convert before presenting it
+    // under the display currency's symbol (FINLYNQ-123).
+    const toDisplay = (n: number) => convertWithRateMap(n, loan.currency ?? fx.displayCurrency, fx.rateMap);
+    const booked = toDisplay(assessment.booked);
+    const calculated = toDisplay(assessment.calculated);
+    const title =
+      assessment.status === "over"
+        ? "Loan interest is higher than scheduled"
+        : assessment.status === "under"
+          ? "Loan interest is lower than scheduled"
+          : "Loan interest does not follow the schedule";
+    const hint =
+      assessment.suggestedRate != null
+        ? ` A rate of about ${assessment.suggestedRate}% would match.`
+        : "";
+    items.push({
+      id: `loan-interest-${loan.id}`,
+      type: "loan_interest_mismatch",
+      // Paying more than expected is worth a look; the rest is a nudge.
+      severity: assessment.status === "over" ? "warning" : "info",
+      title,
+      description: `${name} · ${formatCurrency(booked, fx.displayCurrency)} booked vs ${formatCurrency(calculated, fx.displayCurrency)} calculated.${hint} ${assessmentWindowNote(assessment)}`,
+      // Lands on the loan's Interest entries tab, where the comparison lives.
+      actionUrl: `/loans?loan=${loan.id}&tab=entries`,
+      amount: booked - calculated,
+      currency: fx.displayCurrency,
+    });
+  }
+  return items;
+}
+
 export async function getSpotlightItems(userId: string, dek: Buffer | null = null): Promise<SpotlightItem[]> {
   // FINLYNQ-123 — resolve the display currency + current-rate map ONCE and hand
   // it to every builder. Each converts its own figures before emitting, so an
@@ -655,6 +704,7 @@ export async function getSpotlightItems(userId: string, dek: Buffer | null = nul
     lowBalances,
     upcomingSubs,
     unrecordedBankRows,
+    loanInterest,
   ] = await Promise.all([
     getOverspentBudgets(userId, dek, fx),
     getUpcomingLargeBills(userId, dek, fx),
@@ -664,6 +714,7 @@ export async function getSpotlightItems(userId: string, dek: Buffer | null = nul
     getLowBalances(userId, dek, fx),
     getUpcomingSubscriptions(userId, dek, fx),
     getUnrecordedBankRows(userId, dek, fx),
+    getLoanInterestMismatches(userId, dek, fx),
   ]);
 
   const items: SpotlightItem[] = [
@@ -675,6 +726,7 @@ export async function getSpotlightItems(userId: string, dek: Buffer | null = nul
     ...lowBalances,
     ...upcomingSubs,
     ...unrecordedBankRows,
+    ...loanInterest,
   ];
 
   return items.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);

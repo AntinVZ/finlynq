@@ -52,6 +52,7 @@ import { registerManageTool } from "./_consolidate";
 import { postLoanInterest, readLoanInterest } from "../../src/lib/loans/interest-entries";
 import { dueUnpostedInterest, matchInterestToSchedule } from "../../src/lib/loans/interest-plan";
 import { saveLoanSchedule, type ScheduleChange } from "../../src/lib/loans/schedule-store";
+import { assessLoanInterest, assessmentWindowNote } from "../../src/lib/loans/interest-check";
 import { todayISO } from "../../src/lib/utils/date";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -740,11 +741,20 @@ export function registerLoansTools(server: McpServer, ctx: PgToolContext) {
       const paid = summary.schedule.filter((r) => r.date <= cutoff);
       const principalPaid = paid.reduce((s, r) => s + r.principal, 0);
       const interestPaid = paid.reduce((s, r) => s + r.interest, 0);
+      // Booked-versus-calculated interest, judged on the most recent booked
+      // payments only. `window` says which, and must be relayed with the verdict.
+      const check = await assessLoanInterest(userId, loan_id);
+      const interestCheck =
+        check && check.status !== "insufficient"
+          ? { ...check, window: assessmentWindowNote(check) }
+          : null;
       return text({
         success: true,
         data: {
           loanId: loan_id,
           loanName: loan.name,
+          scheduleMode: summary.scheduleMode,
+          interestCheck,
           // FINLYNQ-183/284: never a CAD literal. A loan predating an explicit
           // currency reads as the user's own reporting currency, not Canada's.
           loanCurrency: String(loan.currency ?? reporting).toUpperCase(),
