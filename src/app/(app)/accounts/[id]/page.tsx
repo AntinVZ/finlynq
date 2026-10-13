@@ -413,13 +413,14 @@ export default function AccountDetailPage() {
     (o) => o.op === "deposit" || o.op === "withdrawal",
   );
 
-  const dialogAccount: DialogAccount = {
-    id: account.id,
-    name: account.name,
-    currency: account.currency,
-    type: account.type,
-    isInvestment: account.isInvestment,
-  };
+  // EVERY account goes to the dialog, with this one pre-selected. It used to
+  // get this account alone, which left the Transfer tab with no destination to
+  // offer ("No matches"): a transfer needs a second account. The viewed account
+  // is passed as not archived so it stays selectable on its own page, as it
+  // always was; the dialog hides other archived accounts when creating.
+  const dialogAccounts: DialogAccount[] = accounts.map((a) =>
+    a.id === account.id ? { ...a, archived: false } : a,
+  );
 
   return (
     <div className="space-y-6">
@@ -593,12 +594,14 @@ export default function AccountDetailPage() {
       <TransactionDialog
         open={txDialogOpen}
         onOpenChange={setTxDialogOpen}
-        accounts={[dialogAccount]}
+        accounts={dialogAccounts}
         categories={dialogCategories}
         holdings={dialogHoldings}
         initialState={{
           kind: "transaction-prefill",
           values: { accountId: String(account.id), currency: account.currency },
+          // Transfer tab: money leaves this account unless the user says otherwise.
+          transferSeed: { fromAccountId: String(account.id) },
         }}
         onSaved={() => {
           setTxDialogOpen(false);
