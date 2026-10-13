@@ -23,6 +23,7 @@
 import { payeeMatchKey, payeeTokens } from "./match-key";
 import { brandCoreOfKey, defaultVocabulary, type PayeeVocabulary } from "./type-words";
 import type { PayeeEntity } from "./directory";
+import { st } from "@/lib/i18n/current";
 
 export type SuspicionCode = "short" | "no_letters" | "latin_no_brand";
 
@@ -36,11 +37,11 @@ export function suspiciousReasons(name: string, opts: { brandSigns?: boolean; vo
   const trimmed = name.replace(/\s+/g, " ").trim();
   const alnum = trimmed.replace(/[^\p{L}\p{N}]/gu, "");
   if (!/\p{L}/u.test(trimmed)) {
-    out.push({ code: "no_letters", reason: "у назві немає жодної літери" });
+    out.push({ code: "no_letters", reason: st("srv.suspicious.noLetters") });
     return out;
   }
   if (opts.brandSigns) return out; // a typed / profiled entry (KFC with a merchant type) is a real brand
-  if (alnum.length <= 3) out.push({ code: "short", reason: `коротка назва (${alnum.length} симв.)` });
+  if (alnum.length <= 3) out.push({ code: "short", reason: st("srv.suspicious.short", { n: alnum.length }) });
   const words = trimmed.split(" ");
   if (words.length > 2 || !words.every((w) => LATIN_WORD.test(w))) return out;
   if (/\d/.test(trimmed) || /\.[a-z]{2,4}\b/i.test(trimmed)) return out;
@@ -53,7 +54,7 @@ export function suspiciousReasons(name: string, opts: { brandSigns?: boolean; vo
     const fragment = words.length === 2 && /^[a-z]/.test(words[1]);
     out.push({
       code: "latin_no_brand",
-      reason: fragment ? "схоже на уривок тексту латиницею, без ознак бренду" : "одне слово латиницею без ознак бренду",
+      reason: fragment ? st("srv.suspicious.latinFragment") : st("srv.suspicious.latinWord"),
     });
   }
   return out;

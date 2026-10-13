@@ -21,7 +21,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft } from "lucide-react";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency } from "@/lib/i18n/format-current";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { batchLabel, PAYEE_TYPE_OPTIONS, PayeeAvatar, typeLabel, WebsiteLink, type BatchRow, type PayeeGroupRow, type PayeeSettings } from "../_components/payee-ui";
 
@@ -137,7 +137,7 @@ export default function PayeeEntityPage() {
           const hint = current ? null : (data.merchantTypeHint ?? null);
           const setType = (v: { group: string; name: string } | null) =>
             setAction({
-              title: v ? t("profile.typeTitle", { type: merchantTypeLabel(v) }) : t("profile.typeClear"),
+              title: v ? t("profile.typeTitle", { type: merchantTypeLabel(v, t) }) : t("profile.typeClear"),
               body: { op: "update", entityId: e.id, merchantType: v, apply: false },
               confirm: t("common.save"),
             });
@@ -147,7 +147,7 @@ export default function PayeeEntityPage() {
               <MerchantTypeSelect types={types} value={current} onChange={setType} />
               {hint && (
                 <Button size="sm" variant="outline" className={`h-8 text-xs ${hint.strength === "weak" ? "opacity-70" : ""}`} title={t("common.hintTitle", { reason: hint.reason })} onClick={() => setType(hint)}>
-                  {hint.strength === "weak" ? t("common.weakHint") : t("common.hint")}: {merchantTypeLabel(hint)}
+                  {hint.strength === "weak" ? t("common.weakHint") : t("common.hint")}: {merchantTypeLabel(hint, t)}
                 </Button>
               )}
               {hint?.strength === "weak" && <span className="text-xs text-muted-foreground">({hint.reason})</span>}
@@ -235,7 +235,7 @@ export default function PayeeEntityPage() {
             <span>
               {t("profile.pending", { n: data.pending.total, list: `${data.pending.changes.slice(0, 3).map((c) => `“${c.from}”`).join(", ")}${data.pending.changes.length > 3 ? ", …" : ""}` })}
             </span>
-            <Button size="sm" className="ml-auto" onClick={() => setAction({ title: t("common.renameTo", { name: e.name }), body: { op: "apply", entityIds: [e.id] }, confirm: t("common.rename") })}>
+            <Button size="sm" className="ms-auto" onClick={() => setAction({ title: t("common.renameTo", { name: e.name }), body: { op: "apply", entityIds: [e.id] }, confirm: t("common.rename") })}>
               {t("profile.applyNow")}
             </Button>
           </CardContent>
@@ -341,7 +341,7 @@ export default function PayeeEntityPage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="ml-auto h-7 text-xs text-destructive"
+                    className="ms-auto h-7 text-xs text-destructive"
                     onClick={() => setAction({ title: t("profile.removeAlias", { name: a.pattern }), body: { op: "alias_remove", entityId: e.id, aliasIds: [a.id] }, confirm: t("common.remove") })}
                   >
                     {t("common.remove")}
@@ -397,7 +397,7 @@ export default function PayeeEntityPage() {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="ml-auto h-7 text-xs"
+                      className="ms-auto h-7 text-xs"
                       onClick={() => setAction({ title: t("profile.fromRuleTitle", { name: r.name }), body: { op: "alias_from_rule", ruleId: r.id, entityId: e.id }, confirm: t("common.add") })}
                     >
                       {t("profile.use")}
@@ -433,7 +433,7 @@ export default function PayeeEntityPage() {
                 g.spellings.map((s) => (
                   <li key={`${g.key}|${s.spelling}`} className="flex flex-wrap items-center gap-2 p-2 text-sm">
                     <span className="break-all">{s.spelling}</span>
-                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">× {s.count}</span>
+                    <span className="ms-auto text-xs text-muted-foreground tabular-nums">× {s.count}</span>
                   </li>
                 )),
               )}
@@ -459,7 +459,7 @@ export default function PayeeEntityPage() {
                   <span className="font-medium">#{b.id}</span>
                   <span>{batchLabel(b, t)}</span>
                   <span className="text-xs text-muted-foreground tabular-nums">{b.createdAt.slice(0, 16).replace("T", " ")}</span>
-                  <span className="ml-auto">
+                  <span className="ms-auto">
                     {b.undoneAt ? (
                       <span className="text-xs text-muted-foreground">{t("common.undoneBadge")}</span>
                     ) : b.canUndo ? (

@@ -132,7 +132,7 @@ export default function PayeeReviewPage() {
                         {t("review.extends", { id: p.entityId })}
                       </Link>
                     )}
-                    <span className="ml-auto flex gap-1">
+                    <span className="ms-auto flex gap-1">
                       <Button size="sm" className="h-7 text-xs" onClick={() => setApproving([p.id])}>
                         {t("review.acceptEllipsis")}
                       </Button>
@@ -147,7 +147,7 @@ export default function PayeeReviewPage() {
                       {p.aliases.map((a) => (
                         <Badge key={`${a.mode}|${a.pattern}`} variant="secondary" className="font-normal">
                           {a.pattern}
-                          {a.mode !== "exact" && <span className="ml-1 text-muted-foreground">({a.mode})</span>}
+                          {a.mode !== "exact" && <span className="ms-1 text-muted-foreground">({a.mode})</span>}
                         </Badge>
                       ))}
                     </div>

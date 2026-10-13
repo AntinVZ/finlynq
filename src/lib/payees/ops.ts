@@ -55,6 +55,7 @@ import { invalidatePayeeSuggest } from "./suggest";
 import {
   ensureMerchantTypes,
   findMerchantType,
+  defaultMerchantTypeByCode,
   formatMerchantType,
   insertMerchantType,
   sameMerchantType,
@@ -79,6 +80,7 @@ import {
 } from "./own-accounts";
 import { getPayeeSettings, vocabularyOf } from "./settings";
 import { isPersonsMerchantGroup, payeeTypeForMerchantType } from "./payee-type";
+import { st } from "@/lib/i18n/current";
 
 export type AliasInput = { pattern: string; mode?: AliasMode };
 export type IdentifierInput = { kind: IdentifierKind; value: string } & IdentifierDetails;
@@ -180,7 +182,7 @@ const emptyRows = (): PayeeOpResult["rows"] => ({ total: 0, byTable: { transacti
 
 function entityOf(entities: PayeeEntity[], id: number): PayeeEntity {
   const e = entities.find((x) => x.id === id);
-  if (!e) throw new PayeeDirectoryError(`No payee entity #${id}.`, "not_found");
+  if (!e) throw new PayeeDirectoryError(st("srv.ops.noEntity", { id }), "not_found");
   return e;
 }
 
@@ -192,14 +194,14 @@ function cleanIdentifierDetails(d: IdentifierDetails): IdentifierDetails {
   const text = (v: string | null | undefined, what: string) => {
     if (v == null) return null;
     const t = v.replace(/\s+/g, " ").trim();
-    if (t.length > 60) throw new PayeeDirectoryError(`The ${what} is too long (60 characters max).`);
+    if (t.length > 60) throw new PayeeDirectoryError(what === "label" ? st("srv.ops.labelTooLong") : st("srv.ops.bankTooLong"));
     return t || null;
   };
   if (d.label !== undefined) out.label = text(d.label, "label");
   if (d.bank !== undefined) out.bank = text(d.bank, "bank name");
   if (d.currency !== undefined) {
     const c = d.currency?.trim().toUpperCase() || null;
-    if (c && !/^[A-Z]{3}$/.test(c)) throw new PayeeDirectoryError("The currency is a 3-letter code (UAH, USD, EUR…).");
+    if (c && !/^[A-Z]{3}$/.test(c)) throw new PayeeDirectoryError(st("srv.ops.currencyCode"));
     out.currency = c;
   }
   if (d.isPrimary !== undefined) out.isPrimary = d.isPrimary;
@@ -220,7 +222,7 @@ function assertExactFree(entities: PayeeEntity[], pattern: string, selfId: numbe
   const owners = exactAliasOwners(entities, pattern, selfId).filter((o) => !allowedOwners.has(o.id));
   if (owners.length) {
     throw new PayeeDirectoryError(
-      `"${pattern}" already belongs to "${owners[0].name}" (#${owners[0].id}). Merge the two, or remove that alias first.`,
+      st("srv.ops.aliasTaken", { pattern, owner: owners[0].name, id: owners[0].id }),
       "alias_conflict",
     );
   }
@@ -278,7 +280,7 @@ async function runUndo(tx: PayeeExecutor, userId: string, dek: Buffer, batchId: 
     entitiesRemoved: undo.removedEntities,
     rows: { ...emptyRows(), total: undo.restoredRows },
     undo,
-    warnings: undo.skippedRows ? [`${undo.skippedRows} row(s) were changed after this batch and are left as they are.`] : [],
+    warnings: undo.skippedRows ? [st("srv.ops.undoSkippedRows", { n: undo.skippedRows })] : [],
     blocked: null,
     emptyReason: null,
     typed: [],
@@ -298,6 +300,8 @@ async function runOp(
   actor: BatchActor,
   dryRun: boolean,
 ): Promise<PayeeOpResult> {
+  /** Language-independent own-account changes for the fingerprint (the descriptions follow the request language). */
+  const ownFp: unknown[] = [];
   const out: PayeeOpResult = {
     op: root.op,
     dryRun,
@@ -357,7 +361,7 @@ async function runOp(
       const self = entities.find((e) => e.id === entityId);
       const type = entityType ?? self?.type ?? "other";
       for (const i of ids) {
-        if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(`Unknown identifier kind "${i.kind}".`);
+        if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(st("srv.ops.unknownIdentifierKind", { kind: i.kind }));
         const value = normalizeIdentifier(i.kind, i.value);
         if (self?.identifiers.some((x) => x.kind === i.kind && x.value === value)) continue;
         if (out.identifiersAdded.some((x) => x.kind === i.kind && x.masked === maskIdentifier(i.kind, value))) continue;
@@ -367,7 +371,7 @@ async function runOp(
         out.identifiersAdded.push({ kind: i.kind, masked: maskIdentifier(i.kind, value) });
         for (const w of identifierWarnings(i.kind, value, type)) if (!out.warnings.includes(w)) out.warnings.push(w);
         const mine = await ownOf(i.kind, value);
-        if (mine) out.warnings.push(`${maskIdentifier(i.kind, value)} схоже на ваш рахунок (${describeOwnAccount(mine)}): платежі на нього — перекази між своїми рахунками, а не витрати. Перевірте, чи це справді реквізит контрагента.`);
+        if (mine) out.warnings.push(st("srv.ops.identifierLooksOwn", { value: maskIdentifier(i.kind, value), account: describeOwnAccount(mine) }));
         journal.count("identifiers_added");
       }
     };
@@ -383,7 +387,7 @@ async function runOp(
     const checkCategory = async (id: number | null | undefined) => {
       if (id == null) return;
       const cat = normalizeDbRows(await btx.execute(sql`SELECT id FROM categories WHERE id = ${id} AND user_id = ${userId}`));
-      if (!cat.length) throw new PayeeDirectoryError(`No category #${id}.`, "not_found");
+      if (!cat.length) throw new PayeeDirectoryError(st("srv.ops.noCategory", { id }), "not_found");
     };
     /** Resolve a merchant-type input to an id (creating `{ group, name }` when missing). */
     const resolveMerchantType = async (input: MerchantTypeInput): Promise<number | null> => {
@@ -392,9 +396,9 @@ async function runOp(
       const types = await storedTypes();
       const found = findMerchantType(types, input);
       if (found?.id != null) return found.id;
-      if (typeof input === "number") throw new PayeeDirectoryError(`No merchant type #${input}.`, "not_found");
+      if (typeof input === "number") throw new PayeeDirectoryError(st("srv.ops.noMerchantType", { id: input }), "not_found");
       const parsed = typeof input === "string" ? parseMerchantTypeText(input) : input;
-      if (!parsed.group) throw new PayeeDirectoryError(`Невідомий тип мерчанта «${parsed.name}». Вкажіть «Група → Позиція», щоб створити новий.`, "not_found");
+      if (!parsed.group) throw new PayeeDirectoryError(st("srv.ops.unknownMerchantType", { name: parsed.name }), "not_found");
       let ref: MerchantTypeRef;
       try {
         ref = validateMerchantTypeRef(parsed);
@@ -409,7 +413,11 @@ async function runOp(
       await storedTypes();
       return id;
     };
-    const groupOfType = (id: number | null) => (id == null ? null : (typeList?.find((x) => x.id === id)?.group ?? null));
+    /** The type's group; a renamed built-in counts as its starting-set group (P8: by its stable key), so people stay people. */
+    const groupOfType = (id: number | null) => {
+      const t = id == null ? undefined : typeList?.find((x) => x.id === id);
+      return t ? (defaultMerchantTypeByCode(t.code)?.group ?? t.group) : null;
+    };
     /** P6.1: an explicit entity type wins; otherwise it follows the merchant type (people stay people). */
     const entityTypeFor = (explicit: string | undefined, name: string, typeId: number | null): PayeeType =>
       explicit && (PAYEE_TYPES as readonly string[]).includes(explicit) ? (explicit as PayeeType) : payeeTypeForMerchantType(groupOfType(typeId), guessPayeeType(name).type);
@@ -452,7 +460,7 @@ async function runOp(
               out.typed.push({ id, name: out.entity!.name, from: null, to: typeLabel(typeId) });
             }
             if (guessPayeeType(op.name).isPerson && !["person", "sole_proprietor"].includes(out.entity!.type)) {
-              out.warnings.push(`"${op.name}" looks like a private person; check the type.`);
+              out.warnings.push(st("srv.ops.looksLikePerson", { name: op.name }));
             }
             if (op.apply !== false) applyTo.push(id);
             break;
@@ -475,7 +483,7 @@ async function runOp(
             if (op.defaultCategoryId !== undefined) {
               if (op.defaultCategoryId != null) {
                 const cat = normalizeDbRows(await btx.execute(sql`SELECT id FROM categories WHERE id = ${op.defaultCategoryId} AND user_id = ${userId}`));
-                if (!cat.length) throw new PayeeDirectoryError(`No category #${op.defaultCategoryId}.`, "not_found");
+                if (!cat.length) throw new PayeeDirectoryError(st("srv.ops.noCategory", { id: op.defaultCategoryId }), "not_found");
               }
               patch.defaultCategoryId = op.defaultCategoryId;
             }
@@ -488,7 +496,7 @@ async function runOp(
               if (patch.logo === e.logo) delete patch.logo;
             }
             if ((patch.website || patch.logo) && PERSON_ENTITY_TYPES.has(patch.type ?? e.type)) {
-              out.warnings.push(`“${e.name}” is a private person or sole proprietor; a website or logo is usually for merchants.`);
+              out.warnings.push(st("srv.ops.personWebsite", { name: e.name }));
             }
             if (op.merchantType !== undefined) {
               const typeId = await resolveMerchantType(op.merchantType);
@@ -519,7 +527,7 @@ async function runOp(
           case "alias_add": {
             const e = entityOf(entities, op.entityId);
             await journal.willModify([e.id]);
-            if (!op.aliases.length) throw new PayeeDirectoryError("Name at least one alias.");
+            if (!op.aliases.length) throw new PayeeDirectoryError(st("srv.ops.nameAlias"));
             await addAliases(e.id, op.aliases, src("manual"));
             out.entity = { id: e.id, name: e.name, type: e.type };
             if (op.apply !== false && out.aliasesAdded.length) applyTo.push(e.id);
@@ -529,7 +537,7 @@ async function runOp(
             const rows = normalizeDbRows<{ id: unknown; conditions: unknown; actions: unknown }>(
               await btx.execute(sql`SELECT id, conditions, actions FROM transaction_rules WHERE id = ${op.ruleId} AND user_id = ${userId}`),
             );
-            if (!rows.length) throw new PayeeDirectoryError(`No rule #${op.ruleId}.`, "not_found");
+            if (!rows.length) throw new PayeeDirectoryError(st("srv.ops.noRule", { id: op.ruleId }), "not_found");
             const parse = (v: unknown) => (typeof v === "string" ? JSON.parse(v) : v);
             const rule = decryptRuleFields(dek, { conditions: parse(rows[0].conditions), actions: parse(rows[0].actions) } as Parameters<typeof decryptRuleFields>[1]) as {
               conditions: { all?: Array<{ field?: string; op?: string; value?: unknown }> };
@@ -538,11 +546,11 @@ async function runOp(
             const aliases: AliasInput[] = (rule.conditions?.all ?? [])
               .filter((c) => c.field === "payee" && typeof c.value === "string" && c.value)
               .map((c) => ({ pattern: String(c.value), mode: asMode(c.op === "exact" ? "exact" : c.op) }));
-            if (!aliases.length) throw new PayeeDirectoryError("This rule has no payee condition to turn into an alias.");
+            if (!aliases.length) throw new PayeeDirectoryError(st("srv.ops.ruleNoPayeeCondition"));
             let entityId = op.entityId;
             if (entityId == null) {
               const to = rule.actions?.find((a) => a.kind === "rename_payee" && typeof a.to === "string")?.to as string | undefined;
-              if (!to) throw new PayeeDirectoryError("Pick the payee entity: this rule doesn't rename the payee.");
+              if (!to) throw new PayeeDirectoryError(st("srv.ops.ruleNoRename"));
               const owner = exactAliasOwners(entities, to)[0];
               entityId = owner ? owner.id : await createEntity(to, guessPayeeType(to).type);
             }
@@ -562,8 +570,8 @@ async function runOp(
               for (const a of e.aliases) if (a.pattern === p.trim() || (a.mode === "exact" && key && payeeMatchKey(a.pattern) === key)) ids.add(a.id);
             }
             const victims = e.aliases.filter((a) => ids.has(a.id));
-            if (!victims.length) throw new PayeeDirectoryError("None of those aliases belong to this payee.", "not_found");
-            if (victims.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name can't be removed; rename the payee instead.");
+            if (!victims.length) throw new PayeeDirectoryError(st("srv.ops.aliasesNotOwned"), "not_found");
+            if (victims.some((a) => a.source === "canonical")) throw new PayeeDirectoryError(st("srv.ops.canonicalNotRemovable"));
             await journal.willModify([e.id]);
             await btx.execute(sql`DELETE FROM payee_aliases WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(victims.map((a) => sql`${a.id}`), sql`, `)})`);
             out.aliasesRemoved = victims.length;
@@ -577,7 +585,7 @@ async function runOp(
             await addIdentifiers(e.id, op.add ?? []);
             const own = (id: number) => {
               const i = e.identifiers.find((x) => x.id === id);
-              if (!i) throw new PayeeDirectoryError(`Requisite #${id} doesn't belong to this payee.`, "not_found");
+              if (!i) throw new PayeeDirectoryError(st("srv.ops.requisiteNotOwned", { id }), "not_found");
               return i;
             };
             for (const u of op.update ?? []) {
@@ -601,7 +609,7 @@ async function runOp(
               out.identifiersRemoved = remove.length;
               journal.count("identifiers_removed", remove.length);
             }
-            if (!out.identifiersAdded.length && !remove.length && !out.identifiersUpdated) throw new PayeeDirectoryError("Nothing to add, change or remove.");
+            if (!out.identifiersAdded.length && !remove.length && !out.identifiersUpdated) throw new PayeeDirectoryError(st("srv.ops.nothingToChange"));
             out.entity = { id: e.id, name: e.name, type: e.type };
             break;
           }
@@ -613,12 +621,12 @@ async function runOp(
             // Aliases owned by the entities being merged may move freely.
             const allowed = new Set([...sourceIds, ...(target ? [target.id] : [])]);
             const merged = sources.filter((s) => s.id !== target?.id);
-            if (!merged.length && !payees.length) throw new PayeeDirectoryError("Name the payees or entities to merge.");
+            if (!merged.length && !payees.length) throw new PayeeDirectoryError(st("srv.ops.nameMerge"));
             // Person / merchant mixing is allowed by hand, but said out loud.
             const names = [...merged.map((s) => s.name), ...payees, target?.name ?? ("name" in op.into ? op.into.name : "")];
             const people = names.filter((n) => n && guessPayeeType(n).isPerson);
             if (people.length && people.length < names.filter(Boolean).length) {
-              out.warnings.push(`This mixes a private person (${people[0]}) with other payees. Check before confirming.`);
+              out.warnings.push(st("srv.ops.mergeMixesPerson", { name: people[0] }));
             }
             for (const p of payees) assertExactFree(entities, p, target?.id, allowed);
             let targetId: number;
@@ -658,8 +666,8 @@ async function runOp(
           case "split": {
             const e = entityOf(entities, op.entityId);
             const moving = e.aliases.filter((a) => op.aliasIds.includes(a.id));
-            if (!moving.length) throw new PayeeDirectoryError("Pick the aliases to split off.", "not_found");
-            if (moving.some((a) => a.source === "canonical")) throw new PayeeDirectoryError("The canonical name stays with the payee; pick other aliases.");
+            if (!moving.length) throw new PayeeDirectoryError(st("srv.ops.pickSplitAliases"), "not_found");
+            if (moving.some((a) => a.source === "canonical")) throw new PayeeDirectoryError(st("srv.ops.canonicalStays"));
             await journal.willModify([e.id]);
             const id = await createEntity(op.name, asType(op.type, op.name), {}, new Set([e.id]));
             await btx.execute(sql`
@@ -667,7 +675,7 @@ async function runOp(
               WHERE user_id = ${userId} AND entity_id = ${e.id} AND id IN (${sql.join(moving.map((a) => sql`${a.id}`), sql`, `)})`);
             journal.count("aliases_moved", moving.length);
             await dedupeEntity(btx, userId, dek, id);
-            out.warnings.push(`Rows already renamed to "${e.name}" keep that name; undo the batch that renamed them to get the original spellings back.`);
+            out.warnings.push(st("srv.ops.splitKeepsRenamed", { name: e.name }));
             if (op.apply !== false) applyTo.push(id);
             break;
           }
@@ -680,12 +688,12 @@ async function runOp(
           case "move_remainder": {
             const e = entityOf(entities, op.entityId);
             const keys = new Set(op.payees.map((p) => payeeMatchKey(p)).filter(Boolean));
-            if (!keys.size) throw new PayeeDirectoryError("Name the spelling(s) to rename.");
+            if (!keys.size) throw new PayeeDirectoryError(st("srv.ops.nameSpellings"));
             const target = op.target === "note" ? "note" : "tag";
             // A tag can't hold the tag separator; a note can hold anything.
             const remainder = (target === "tag" ? op.remainder.replace(/,/g, " ") : op.remainder).replace(/\s+/g, " ").trim();
-            if (!remainder) throw new PayeeDirectoryError("The text to keep can't be empty.");
-            if (remainder.length > 200) throw new PayeeDirectoryError("The text to keep is too long (200 characters max).");
+            if (!remainder) throw new PayeeDirectoryError(st("srv.ops.remainderEmpty"));
+            if (remainder.length > 200) throw new PayeeDirectoryError(st("srv.ops.remainderTooLong"));
             await journal.willModify([e.id]);
             const planned: Array<{ id: string; payee: string | null; tags: string | null; note: string | null; plain: string }> = [];
             let after = 0;
@@ -702,7 +710,7 @@ async function runOp(
               if (page.length < 2000) break;
             }
             if (planned.length > PAYEE_APPLY_MAX_ROWS) {
-              out.blocked = `This would change ${planned.length.toLocaleString("en-US")} rows; one change can cover at most ${PAYEE_APPLY_MAX_ROWS.toLocaleString("en-US")}.`;
+              out.blocked = st("srv.ops.tooLargeChange", { n: planned.length, max: PAYEE_APPLY_MAX_ROWS });
               break;
             }
             const payeeWrites: Array<{ id: string; value: string | null }> = [];
@@ -741,14 +749,14 @@ async function runOp(
             };
             out.fingerprint = createHash("sha256").update(`move_remainder:${e.id}:${target}:${remainder}:${planned.map((p) => p.id).join(",")}`).digest("hex").slice(0, 32);
             out.entity = { id: e.id, name: e.name, type: e.type };
-            if (!payeeWrites.length) out.warnings.push("No transactions carry that spelling any more.");
+            if (!payeeWrites.length) out.warnings.push(st("srv.ops.spellingGone"));
             break;
           }
           case "merchant_types": {
             const types = await storedTypes();
             const byId = (id: number) => {
               const t = types.find((x) => x.id === id);
-              if (!t) throw new PayeeDirectoryError(`No merchant type #${id}.`, "not_found");
+              if (!t) throw new PayeeDirectoryError(st("srv.ops.noMerchantType", { id }), "not_found");
               return t;
             };
             const taken = (ref: MerchantTypeRef, exceptId?: number) =>
@@ -762,7 +770,7 @@ async function runOp(
             };
             for (const a of op.add ?? []) {
               const ref = valid(a);
-              if (taken(ref)) throw new PayeeDirectoryError(`Тип «${formatMerchantType(ref)}» уже є.`, "conflict");
+              if (taken(ref)) throw new PayeeDirectoryError(st("srv.ops.typeExists", { type: formatMerchantType(ref) }), "conflict");
               await checkCategory(a.defaultCategoryId);
               const id = await insertMerchantType(btx, userId, { ...ref, sort: a.sort, defaultCategoryId: a.defaultCategoryId ?? null });
               journal.createdType(id);
@@ -774,7 +782,7 @@ async function runOp(
             for (const u of op.update ?? []) {
               const cur = byId(u.id);
               const ref = valid({ group: u.group ?? cur.group, name: u.name ?? (u.group != null && cur.name === cur.group ? u.group : cur.name) });
-              if (taken(ref, cur.id!)) throw new PayeeDirectoryError(`Тип «${formatMerchantType(ref)}» уже є.`, "conflict");
+              if (taken(ref, cur.id!)) throw new PayeeDirectoryError(st("srv.ops.typeExists", { type: formatMerchantType(ref) }), "conflict");
               if (u.defaultCategoryId !== undefined) await checkCategory(u.defaultCategoryId);
               await journal.willModifyTypes([cur.id!]);
               await btx.execute(sql`
@@ -797,7 +805,7 @@ async function runOp(
               out.merchantTypes.removed.push(formatMerchantType(cur));
             }
             if (!out.merchantTypes.added.length && !out.merchantTypes.updated.length && !out.merchantTypes.removed.length) {
-              throw new PayeeDirectoryError("Nothing to add, change or remove.");
+              throw new PayeeDirectoryError(st("srv.ops.nothingToChange"));
             }
             typeList = null;
             break;
@@ -806,12 +814,12 @@ async function runOp(
             const typeId = await resolveMerchantType(op.merchantType);
             let targets: Array<{ e: PayeeEntity; via?: string }>;
             if (op.entityIds?.length) {
-              targets = [...new Set(op.entityIds)].map((id) => ({ e: entityOf(entities, id), via: "вибрано вручну" }));
+              targets = [...new Set(op.entityIds)].map((id) => ({ e: entityOf(entities, id), via: st("srv.ops.viaManual") }));
             } else if (op.typeWord?.trim()) {
               const vocab = vocabularyOf(await getPayeeSettings(btx, userId));
               // B30: the word and every type word that means the same (аптека → apteka, pharmacy…).
               const words = typeWordSynonymKeys(op.typeWord, vocab);
-              if (!words.length) throw new PayeeDirectoryError("Вкажіть слово-тип (наприклад «ресторан»).");
+              if (!words.length) throw new PayeeDirectoryError(st("srv.ops.giveTypeWord"));
               // Whole-word match on the matching key.
               const has = (text: string) => {
                 const k = ` ${payeeMatchKey(text)} `;
@@ -827,26 +835,26 @@ async function runOp(
                     if (!op.onlyUntyped || e.merchantTypeId == null) out.skipped.push({ id: e.id, name: e.name, reason: h.mixedReason! });
                     continue;
                   }
-                  targets.push({ e, via: `назва «${e.name}»` });
+                  targets.push({ e, via: st("srv.ops.viaName", { name: e.name }) });
                   continue;
                 }
                 const alias = e.aliases.find((a) => a.mode === "exact" && has(a.pattern));
                 if (alias && (!op.onlyUntyped || e.merchantTypeId == null)) {
-                  out.skipped.push({ id: e.id, name: e.name, reason: `збіг лише через alias “${alias.pattern}” — слабка підказка, не призначається` });
+                  out.skipped.push({ id: e.id, name: e.name, reason: st("srv.ops.skipAliasOnly", { alias: alias.pattern }) });
                 }
               }
             } else {
-              throw new PayeeDirectoryError("Name the payees (entityIds) or a type word (typeWord).");
+              throw new PayeeDirectoryError(st("srv.ops.nameEntitiesOrWord"));
             }
             if (op.onlyUntyped) targets = targets.filter((t) => t.e.merchantTypeId == null);
             for (const t of targets) await setEntityType(t.e, typeId, t.via);
-            if (!out.typed.length) out.warnings.push("Жоден запис не змінює тип.");
-            if (out.skipped.length) out.warnings.push(`${out.skipped.length} запис(ів) пропущено: збіг лише через alias або змішані підказки.`);
+            if (!out.typed.length) out.warnings.push(st("srv.ops.noTypeChange"));
+            if (out.skipped.length) out.warnings.push(st("srv.ops.typeSkipped", { n: out.skipped.length }));
             break;
           }
           case "mark_reviewed": {
             const flag = op.reviewed !== false;
-            if (!op.entityIds?.length) throw new PayeeDirectoryError("Name the payees (entityIds).");
+            if (!op.entityIds?.length) throw new PayeeDirectoryError(st("srv.ops.nameEntities"));
             for (const id of [...new Set(op.entityIds)]) {
               const e = entityOf(entities, id);
               if (Boolean(e.reviewedAt) === flag) continue;
@@ -855,7 +863,7 @@ async function runOp(
               out.reviewed.push({ id: e.id, name: e.name, reviewed: flag });
               journal.count(flag ? "entities_reviewed" : "entities_unreviewed");
             }
-            if (!out.reviewed.length) out.warnings.push(flag ? "Ці записи вже позначені як перевірені." : "Ці записи й так не позначені.");
+            if (!out.reviewed.length) out.warnings.push(flag ? st("srv.ops.alreadyReviewed") : st("srv.ops.alreadyUnreviewed"));
             break;
           }
           case "own_accounts": {
@@ -864,15 +872,16 @@ async function runOp(
             const removeIds = new Set(op.remove ?? []);
             for (const id of removeIds) {
               const a = current.find((x) => x.id === id);
-              if (!a) throw new PayeeDirectoryError(`Немає рахунку #${id} у списку «Мої рахунки і картки».`, "not_found");
+              if (!a) throw new PayeeDirectoryError(st("srv.ops.noOwnAccount", { id }), "not_found");
               await journal.willModifyOwn([id]);
               await btx.execute(sql`DELETE FROM payee_own_accounts WHERE user_id = ${userId} AND id = ${id}`);
               out.ownAccounts.removed.push(describeOwnAccount(a));
+              ownFp.push(["-", id]);
               journal.count("own_accounts_removed");
             }
             for (const u of op.update ?? []) {
               const a = current.find((x) => x.id === u.id);
-              if (!a || removeIds.has(u.id)) throw new PayeeDirectoryError(`Немає рахунку #${u.id} у списку «Мої рахунки і картки».`, "not_found");
+              if (!a || removeIds.has(u.id)) throw new PayeeDirectoryError(st("srv.ops.noOwnAccount", { id: u.id }), "not_found");
               const pick = <K extends keyof OwnAccountInput>(k: K, fallback: OwnAccountInput[K]) => (k in u ? u[k] : fallback);
               const { warnings, ...next } = normalizeOwnAccount({
                 iban: pick("iban", a.iban),
@@ -887,6 +896,7 @@ async function runOp(
               await journal.willModifyOwn([a.id]);
               await updateOwnAccountRow(btx, userId, dek, a.id, next);
               out.ownAccounts.updated.push(describeOwnAccount(next));
+              ownFp.push(["~", a.id, next]);
               journal.count("own_accounts_updated");
             }
             const kept = current.filter((x) => !removeIds.has(x.id));
@@ -894,18 +904,19 @@ async function runOp(
               const { warnings, ...next } = normalizeOwnAccount(input);
               out.warnings.push(...warnings);
               if (kept.some((x) => same(x, next))) {
-                out.warnings.push(`${describeOwnAccount(next)} уже є у списку — пропущено.`);
+                out.warnings.push(st("srv.ops.ownAccountDuplicate", { account: describeOwnAccount(next) }));
                 continue;
               }
-              if (kept.length >= OWN_ACCOUNTS_MAX) throw new PayeeDirectoryError(`У списку може бути щонайбільше ${OWN_ACCOUNTS_MAX} рахунків і карток.`);
+              if (kept.length >= OWN_ACCOUNTS_MAX) throw new PayeeDirectoryError(st("srv.ops.ownAccountsMax", { max: OWN_ACCOUNTS_MAX }));
               const id = await insertOwnAccount(btx, userId, dek, next);
               journal.createdOwn(id);
               kept.push({ id, ...next });
               out.ownAccounts.added.push(describeOwnAccount(next));
+              ownFp.push(["+", next]);
               journal.count("own_accounts_added");
             }
             const changed = out.ownAccounts.added.length + out.ownAccounts.updated.length + out.ownAccounts.removed.length;
-            if (!changed) out.warnings.push("Нічого не змінюється.");
+            if (!changed) out.warnings.push(st("srv.ops.nothingChanges"));
             break;
           }
           case "delete": {
@@ -932,13 +943,13 @@ async function runOp(
       const plan = await planPayeeApply({ executor: btx, userId, dek, matcher, entityIds: new Set(applyTo) });
       out.rows = { total: plan.total, byTable: plan.byTable, changes: plan.changes.slice(0, 50), conflicts: plan.conflicts.slice(0, 50), truncated: plan.truncated };
       out.fingerprint = planFingerprint({ rows: plan.rows.map((r) => ({ ...r, entityId: 0 })) });
-      if (plan.tooLarge) out.blocked = `This would rename ${plan.total.toLocaleString("en-US")} rows; one change can cover at most ${PAYEE_APPLY_MAX_ROWS.toLocaleString("en-US")}. Apply fewer payees at a time.`;
-      else if (plan.truncated) out.blocked = "The payee scan stopped early (very large ledger); apply fewer payees at a time.";
-      if (plan.conflicts.length) out.warnings.push(`${plan.conflicts.length} spelling(s) match more than one payee and are left alone.`);
+      if (plan.tooLarge) out.blocked = st("srv.ops.tooLarge", { n: plan.total, max: PAYEE_APPLY_MAX_ROWS });
+      else if (plan.truncated) out.blocked = st("srv.ops.scanTruncated");
+      if (plan.conflicts.length) out.warnings.push(st("srv.ops.conflicts", { n: plan.conflicts.length }));
       out.emptyReason = explainEmptyApply(plan, (id) => dir.find((d) => d.id === id)?.name);
       const near = plan.diagnostics.nearMisses;
       if (plan.total > 0 && near.length) {
-        out.warnings.push(`Ще ${near.length} схожих написань без aliases не змінюються, наприклад ${near.slice(0, 3).map((n) => `«${n.payee}»`).join(", ")}.`);
+        out.warnings.push(st("srv.ops.nearMisses", { n: near.length, examples: near.slice(0, 3).map((n) => `«${n.payee}»`).join(", ") }));
       }
       if (!out.blocked) await runPayeeApply({ tx: btx, journal, userId, dek, matcher, plan });
       if (out.entity) {
@@ -951,7 +962,7 @@ async function runOp(
     const who = out.created ? `new:${out.entity?.name ?? ""}` : `${out.entity?.id ?? ""}`;
     if (!out.fingerprint) out.fingerprint = `${root.op}:${who}:${out.aliasesAdded.length}:${out.aliasesRemoved}:${out.identifiersAdded.length}:${out.identifiersRemoved}:${out.identifiersUpdated}:${out.entitiesRemoved}`;
     const own = out.ownAccounts;
-    if (own.added.length || own.updated.length || own.removed.length) out.fingerprint += `:o:${createHash("sha256").update(JSON.stringify(own)).digest("hex").slice(0, 16)}`;
+    if (own.added.length || own.updated.length || own.removed.length) out.fingerprint += `:o:${createHash("sha256").update(JSON.stringify(ownFp)).digest("hex").slice(0, 16)}`;
     if (out.reviewed.length) out.fingerprint += `:r:${out.reviewed.map((r) => `${r.id}${r.reviewed ? "+" : "-"}`).join(",")}`;
     if (out.typed.length || out.merchantTypes.added.length || out.merchantTypes.updated.length || out.merchantTypes.removed.length) {
       const typed = out.typed.map((t) => [out.created && t.id === out.entity?.id ? `new:${t.name}` : t.id, t.from, t.to]);

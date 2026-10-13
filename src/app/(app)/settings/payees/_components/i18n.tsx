@@ -1,24 +1,20 @@
 "use client";
 
 /**
- * Payee Studio language for client components (P6.2). Reads the Studio
- * settings (GET /api/payees/settings, cached by SWR across the Studio's
- * screens) and returns a translator bound to its `language` (default "uk").
+ * Payee Studio texts on the client. Since P8 stage 6 the Studio follows the
+ * interface language (Settings → Display → Language; `useT` from
+ * @/lib/i18n/client); these names stay for the Studio's components.
  */
 
-import { useCallback } from "react";
-import useSWR from "swr";
-import { jsonFetcher } from "@/lib/swr";
-import { studioT, type StudioLang, type StudioT, type StudioTextKey } from "@/lib/payees/i18n";
+import { useLocale, useT } from "@/lib/i18n/client";
+import type { StudioLang, StudioT } from "@/lib/payees/i18n";
 
 export type { StudioT, StudioTextKey } from "@/lib/payees/i18n";
 
 export function useStudioLang(): StudioLang {
-  const { data } = useSWR<{ language?: StudioLang }>("/api/payees/settings", jsonFetcher, { revalidateOnFocus: false });
-  return data?.language === "en" ? "en" : "uk";
+  return useLocale().locale;
 }
 
 export function useStudioT(): StudioT {
-  const lang = useStudioLang();
-  return useCallback((key: StudioTextKey, vars?: Record<string, string | number>) => studioT(lang, key, vars), [lang]);
+  return useT();
 }

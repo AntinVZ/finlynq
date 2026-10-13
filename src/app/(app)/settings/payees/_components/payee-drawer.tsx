@@ -10,7 +10,7 @@ import Link from "next/link";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { needsDecisionBadge, type PayeeGroupRow } from "./payee-ui";
 import { PayeeTypeLabel } from "./merchant-type-ui";
@@ -36,7 +36,7 @@ export function PayeeDrawer({
     <Sheet open onOpenChange={(open) => { if (!open) onClose(); }}>
       <SheetContent side="right" className="w-full sm:max-w-md overflow-y-auto">
         <SheetHeader>
-          <SheetTitle className="break-all pr-6">{g.name}</SheetTitle>
+          <SheetTitle className="break-all pe-6">{g.name}</SheetTitle>
           <SheetDescription>
             <PayeeTypeLabel type={g.type.type} />
             {g.type.isPerson ? " · " : ""}
@@ -54,16 +54,16 @@ export function PayeeDrawer({
               <dt className="text-xs text-muted-foreground">{t("common.transactions")}</dt>
               <dd className="font-semibold tabular-nums">
                 {g.count}
-                {g.rows > g.count && <span className="ml-1 text-xs font-normal text-muted-foreground">{t("common.otherRows", { n: g.rows - g.count })}</span>}
+                {g.rows > g.count && <span className="ms-1 text-xs font-normal text-muted-foreground">{t("common.otherRows", { n: g.rows - g.count })}</span>}
               </dd>
             </div>
             <div className="rounded-md border p-2">
               <dt className="text-xs text-muted-foreground">{t("common.first")}</dt>
-              <dd className="tabular-nums">{g.firstDate ?? "—"}</dd>
+              <dd className="tabular-nums">{formatDate(g.firstDate)}</dd>
             </div>
             <div className="rounded-md border p-2">
               <dt className="text-xs text-muted-foreground">{t("common.lastDate")}</dt>
-              <dd className="tabular-nums">{g.lastDate ?? "—"}</dd>
+              <dd className="tabular-nums">{formatDate(g.lastDate)}</dd>
             </div>
           </dl>
           <section>
@@ -92,7 +92,7 @@ export function PayeeDrawer({
             <div className="flex flex-wrap gap-1.5">
               {g.spellings.map((s) => (
                 <Badge key={s.spelling} variant="secondary" className="font-normal break-all">
-                  {s.spelling} <span className="ml-1 text-muted-foreground">× {s.count}</span>
+                  {s.spelling} <span className="ms-1 text-muted-foreground">× {s.count}</span>
                 </Badge>
               ))}
             </div>

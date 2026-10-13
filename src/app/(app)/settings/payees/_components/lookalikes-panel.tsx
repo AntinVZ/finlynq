@@ -24,7 +24,7 @@ import { jsonFetcher } from "@/lib/swr";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { confidenceBadge, needsDecisionBadge } from "./payee-ui";
 import { PayeeTypeLabel } from "./merchant-type-ui";
 import { OpDialog, type OpPreview } from "./op-dialog";
@@ -105,7 +105,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                     <Button
                       size="sm"
                       variant="outline"
-                      className="ml-auto h-7 text-xs"
+                      className="ms-auto h-7 text-xs"
                       onClick={() => setAction({ title: t("common.renameTo", { name: u.entityName }), body: { op: "apply", entityIds: [u.entityId] }, confirm: t("common.rename") })}
                     >
                       {t("common.apply")}
@@ -131,9 +131,9 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                       <PayeeTypeLabel className="text-xs text-muted-foreground" merchantType={c.entity.merchantType} type={c.entity.type} />
                       {confidenceBadge(c.confidence, t)}
                       {c.needsDecision && needsDecisionBadge(c.decisionReason, t)}
-                      <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      <span className="ms-auto text-xs text-muted-foreground tabular-nums">
                         {t("common.tx", { n: c.count })} · {formatCurrency(c.total, cur)}
-                        {c.lastDate ? ` · ${t("common.last", { date: c.lastDate })}` : ""}
+                        {c.lastDate ? ` · ${t("common.last", { date: formatDate(c.lastDate) })}` : ""}
                       </span>
                     </div>
                     <p className="text-xs text-muted-foreground">
@@ -144,7 +144,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                     {c.spellings.length > 1 && (
                       <div className="flex flex-wrap gap-1.5">
                         {c.spellings.map((s) => (
-                          <Badge key={s.spelling} variant="secondary" className="font-normal">{s.spelling} <span className="ml-1 text-muted-foreground">× {s.count}</span></Badge>
+                          <Badge key={s.spelling} variant="secondary" className="font-normal">{s.spelling} <span className="ms-1 text-muted-foreground">× {s.count}</span></Badge>
                         ))}
                       </div>
                     )}
@@ -214,7 +214,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                 {data.rejections.map((r) => (
                   <li key={r.id} className="flex flex-wrap items-center gap-2 p-2 text-xs">
                     <span className="break-all">{r.payee ?? t("lookalikes.goneSpelling")} ≠ {r.entityName ?? `#${r.entityId}`}</span>
-                    <Button size="sm" variant="ghost" className="ml-auto h-6 text-xs" onClick={() => post({ action: "unreject", id: r.id })}>
+                    <Button size="sm" variant="ghost" className="ms-auto h-6 text-xs" onClick={() => post({ action: "unreject", id: r.id })}>
                       {t("common.cancel")}
                     </Button>
                   </li>

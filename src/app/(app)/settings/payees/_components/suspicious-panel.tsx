@@ -58,7 +58,7 @@ export function SuspiciousPanel({ rows, entities, onDone }: { rows: SuspiciousRo
                   {r.name}
                 </Link>
                 <span className="text-xs text-amber-700 dark:text-amber-300">{r.reasons.map((x) => x.reason).join("; ")}</span>
-                <span className="ml-auto text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: r.count })}</span>
+                <span className="ms-auto text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: r.count })}</span>
               </div>
               {r.spellings.length > 0 && (
                 <p className="text-xs text-muted-foreground break-all">

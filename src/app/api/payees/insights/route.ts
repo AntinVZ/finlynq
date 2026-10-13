@@ -38,7 +38,7 @@ const intParam = (v: string | null, def: number) => {
   return Number.isInteger(n) && n > 0 ? n : def;
 };
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payee insights" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payee insights" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   if (params.get("view") === "merchants") {
     const entityId = Number(params.get("entityId") ?? "");

@@ -17,7 +17,7 @@ import { jsonFetcher } from "@/lib/swr";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { OpDialog, type OpPreview } from "./op-dialog";
-import { MerchantTypeSelect, type MerchantTypeOption, type MerchantTypeRef } from "./merchant-type-ui";
+import { MerchantTypeSelect, merchantTypeLabel, type MerchantTypeOption, type MerchantTypeRef } from "./merchant-type-ui";
 import { useStudioT } from "./i18n";
 
 export type BulkRowView = {
@@ -114,7 +114,7 @@ export function BulkPanel({ types, onDone }: { types: readonly MerchantTypeOptio
         )}
         <span className="text-muted-foreground">{t("bulk.selected", { n: chosen.length, total: rows.length })}</span>
         {data && <span className="text-muted-foreground">{t("bulk.left", { below: data.left.belowThreshold, decision: data.left.needsDecision })}</span>}
-        <Button size="sm" className="ml-auto" disabled={!chosen.length || tooMany} onClick={() => setConfirming(true)}>
+        <Button size="sm" className="ms-auto" disabled={!chosen.length || tooMany} onClick={() => setConfirming(true)}>
           {t("bulk.create")}
         </Button>
       </div>
@@ -140,10 +140,10 @@ export function BulkPanel({ types, onDone }: { types: readonly MerchantTypeOptio
             <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
                 <th className="w-8 p-2" />
-                <th className="p-2 text-left">{t("bulk.colName")}</th>
-                <th className="p-2 text-left">{t("bulk.colType")}</th>
-                <th className="p-2 text-left">{t("bulk.colSpellings")}</th>
-                <th className="p-2 text-right">{t("bulk.colRows")}</th>
+                <th className="p-2 text-start">{t("bulk.colName")}</th>
+                <th className="p-2 text-start">{t("bulk.colType")}</th>
+                <th className="p-2 text-start">{t("bulk.colSpellings")}</th>
+                <th className="p-2 text-end">{t("bulk.colRows")}</th>
               </tr>
             </thead>
             <tbody>
@@ -173,12 +173,12 @@ export function BulkPanel({ types, onDone }: { types: readonly MerchantTypeOptio
                           title={t("bulk.hintTitle", { reason: r.merchantTypeHint.reason })}
                           onClick={() => edit(r.rowId, { type: { group: r.merchantTypeHint!.group, name: r.merchantTypeHint!.name } })}
                         >
-                          {t("bulk.useHint", { type: `${r.merchantTypeHint.group} → ${r.merchantTypeHint.name}` })}
+                          {t("bulk.useHint", { type: merchantTypeLabel(r.merchantTypeHint, t) })}
                         </button>
                       )}
                     </td>
                     <td className="p-2 text-xs text-muted-foreground break-all">{r.spellings.map((s) => `“${s.spelling}” × ${s.count}`).join(", ")}</td>
-                    <td className="p-2 text-right tabular-nums">{r.rows}</td>
+                    <td className="p-2 text-end tabular-nums">{r.rows}</td>
                   </tr>
                 );
               })}
@@ -232,7 +232,7 @@ export function PeoplePanel({ onAdd }: { onAdd: (row: BulkRowView) => void }) {
               <span className="font-medium break-all">{p.name}</span>
               {p.personReason && <span className="text-xs text-amber-700 dark:text-amber-300">{p.personReason}</span>}
               <span className="text-xs text-muted-foreground break-all">{p.spellings.map((s) => `“${s.spelling}” × ${s.count}`).join(", ")}</span>
-              <span className="ml-auto flex items-center gap-2">
+              <span className="ms-auto flex items-center gap-2">
                 <span className="text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: p.rows })}</span>
                 <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => onAdd(p)}>
                   {t("people.add")}

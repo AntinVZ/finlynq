@@ -12,10 +12,11 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { OpDialog, type OpPreview } from "./op-dialog";
 import { typeLabel } from "./payee-ui";
-import { useStudioT } from "./i18n";
+import { useStudioT, type StudioT } from "./i18n";
+import { localizeMerchantType } from "@/lib/payees/merchant-types";
 
-export type MerchantTypeOption = { id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null };
-export type MerchantTypeRef = { group: string; name: string };
+export type MerchantTypeOption = { id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null; code?: string | null };
+export type MerchantTypeRef = { group: string; name: string; code?: string | null };
 
 const SEP = "\u0001";
 const keyOf = (t: MerchantTypeRef) => `${t.group}${SEP}${t.name}`;
@@ -25,10 +26,17 @@ const refOf = (key: string): MerchantTypeRef | null => {
   return { group, name };
 };
 
+/** A type as the interface shows it: built-in names in the interface language (P8), the user's own as written. */
+export function localizedType(t: MerchantTypeRef, tr?: StudioT): { group: string; name: string } {
+  return tr ? localizeMerchantType(t, tr as (key: string) => string) : { group: t.group, name: t.name };
+}
+
 /** "Група → Позиція", or just the group when it is its own only position. */
-export function merchantTypeLabel(t: MerchantTypeRef | null | undefined): string {
+export function merchantTypeLabel(t: MerchantTypeRef | null | undefined, tr?: StudioT): string {
   if (!t) return "";
-  return t.group.toLowerCase() === t.name.toLowerCase() ? t.group : `${t.group} → ${t.name}`;
+  const single = t.group.toLowerCase() === t.name.toLowerCase();
+  const l = localizedType(t, tr);
+  return single ? l.group : `${l.group} → ${l.name}`;
 }
 
 /**
@@ -37,7 +45,7 @@ export function merchantTypeLabel(t: MerchantTypeRef | null | undefined): string
  */
 export function PayeeTypeLabel({ merchantType, type, className = "" }: { merchantType?: MerchantTypeRef | null; type?: string | null; className?: string }) {
   const t = useStudioT();
-  if (merchantType) return <span className={className}>{merchantTypeLabel(merchantType)}</span>;
+  if (merchantType) return <span className={className}>{merchantTypeLabel(merchantType, t)}</span>;
   if (!type) return null;
   return (
     <span className={`${className} opacity-60`} title={t("types.notAssigned")}>
@@ -80,13 +88,13 @@ export function MerchantTypeSelect({
       {groupMerchantTypes(types).map((g) =>
         g.items.length === 1 && g.items[0].name === g.group ? (
           <option key={g.group} value={keyOf(g.items[0])}>
-            {g.group}
+            {localizedType(g.items[0], t).group}
           </option>
         ) : (
-          <optgroup key={g.group} label={g.group}>
+          <optgroup key={g.group} label={localizedType(g.items[0], t).group}>
             {g.items.map((x) => (
               <option key={keyOf(x)} value={keyOf(x)}>
-                {x.name}
+                {localizedType(x, t).name}
               </option>
             ))}
           </optgroup>
@@ -172,7 +180,7 @@ export function MerchantTypesEditor({
       <ul className="max-h-72 overflow-y-auto divide-y rounded-md border text-sm">
         {groupMerchantTypes(types).map((g) => (
           <li key={g.group} className="p-2">
-            <p className="font-medium">{g.group}</p>
+            <p className="font-medium">{localizedType(g.items[0], t).group}</p>
             <ul className="mt-1 space-y-1">
               {g.items.map((x) => (
                 <li key={`${x.group}:${x.name}`} className="flex flex-wrap items-center gap-2 text-xs">
@@ -184,7 +192,7 @@ export function MerchantTypesEditor({
                         size="sm"
                         className="h-7 text-xs"
                         disabled={!rename.group.trim()}
-                        onClick={() => setChange({ title: t("types.renameTitle", { name: merchantTypeLabel(x) }), body: { op: "merchant_types", update: [{ id: x.id, group: rename.group.trim(), name: rename.name.trim() || rename.group.trim() }] } })}
+                        onClick={() => setChange({ title: t("types.renameTitle", { name: merchantTypeLabel(x, t) }), body: { op: "merchant_types", update: [{ id: x.id, group: rename.group.trim(), name: rename.name.trim() || rename.group.trim() }] } })}
                       >
                         {t("types.check")}
                       </Button>
@@ -194,13 +202,13 @@ export function MerchantTypesEditor({
                     </>
                   ) : (
                     <>
-                      <span className="flex-1 break-all">{x.name}</span>
+                      <span className="flex-1 break-all" title={x.name}>{localizedType(x, t).name}</span>
                       {x.id != null && (
                         <>
                           <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setRename({ id: x.id!, group: x.group, name: x.name })}>
                             {t("types.rename")}
                           </Button>
-                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setChange({ title: t("types.removeTitle", { name: merchantTypeLabel(x) }), body: { op: "merchant_types", remove: [x.id] } })}>
+                          <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setChange({ title: t("types.removeTitle", { name: merchantTypeLabel(x, t) }), body: { op: "merchant_types", remove: [x.id] } })}>
                             {t("types.remove")}
                           </Button>
                         </>

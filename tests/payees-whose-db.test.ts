@@ -90,7 +90,7 @@ describeDb("Payee Studio P5g whose card (seeded DB)", () => {
     const st = r.candidates.find((c: { payee: string }) => c.payee === "Степаненко");
     expect(st).toMatchObject({ inDirectory: true, transactions: 2, typicalAmount: 12000, accounts: ["Mono"], evidence: ["directory"] });
     expect(r.hints[0]).toMatch(/belong to \d payees/);
-    expect(r.hints.join(" ")).toMatch(/Степаненко: 2 payment\(s\), usually 12000/);
+    expect(r.hints.join(" ")).toMatch(/Степаненко: 2 payments, usually 12000/);
 
     const search = await mcpTool(authedUser, TEST_DEK, "search_transactions");
     const s = await search({ identifier: "1234" });

@@ -13,8 +13,10 @@ import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { extractRequisites } from "@/lib/payees/requisites";
 import { OpDialog } from "@/app/(app)/settings/payees/_components/op-dialog";
+import { useT } from "@/lib/i18n/client";
+import type { MessageKey } from "@/lib/i18n";
 
-const KIND: Record<string, string> = { iban: "IBAN", card_last4: "Card", tax_id: "ІПН", edrpou: "EDRPOU" };
+const KIND: Record<string, MessageKey> = { iban: "mine.kind.iban", card_last4: "mine.kind.card_last4", tax_id: "mine.kind.tax_id", edrpou: "mine.kind.edrpou" };
 
 const fetchEntity = async (url: string) => {
   const res = await fetch(url);
@@ -24,6 +26,7 @@ const fetchEntity = async (url: string) => {
 };
 
 export function CounterpartyRequisites({ payee, note }: { payee: string; note: string }) {
+  const t = useT();
   const found = useMemo(() => {
     const seen = new Set<string>();
     return [...extractRequisites(payee), ...extractRequisites(note)].filter((r) => {
@@ -40,31 +43,31 @@ export function CounterpartyRequisites({ payee, note }: { payee: string; note: s
   const [done, setDone] = useState<Set<string>>(new Set());
   if (!found.length) return null;
   return (
-    <div className="rounded-md border p-2 text-xs space-y-1" aria-label="Counterparty requisites found">
-      <p className="font-medium">Counterparty requisites found</p>
+    <div className="rounded-md border p-2 text-xs space-y-1" aria-label={t("counterparty.title")}>
+      <p className="font-medium">{t("counterparty.title")}</p>
       <ul className="space-y-1">
         {found.map((r) => (
           <li key={`${r.kind}:${r.value}`} className="flex flex-wrap items-center gap-2">
-            <span className="text-muted-foreground">{KIND[r.kind] ?? r.kind}</span>
+            <span className="text-muted-foreground">{KIND[r.kind] ? t(KIND[r.kind]) : r.kind}</span>
             <span className="font-mono">{r.masked}</span>
-            {!r.valid && <span className="text-amber-700 dark:text-amber-300">check digits fail</span>}
+            {!r.valid && <span className="text-amber-700 dark:text-amber-300">{t("counterparty.checkDigits")}</span>}
             {done.has(`${r.kind}:${r.value}`) ? (
-              <span className="ml-auto text-emerald-600">Added</span>
+              <span className="ms-auto text-emerald-600">{t("counterparty.added")}</span>
             ) : entity ? (
-              <Button type="button" size="sm" variant="outline" className="ml-auto h-6 text-xs" onClick={() => setAdding(r)}>
-                Add to payee {entity.name}
+              <Button type="button" size="sm" variant="outline" className="ms-auto h-6 text-xs" onClick={() => setAdding(r)}>
+                {t("counterparty.addTo", { name: entity.name })}
               </Button>
             ) : (
-              <span className="ml-auto text-muted-foreground">Add the payee to the directory to keep it</span>
+              <span className="ms-auto text-muted-foreground">{t("counterparty.needEntity")}</span>
             )}
           </li>
         ))}
       </ul>
       {adding && entity && (
         <OpDialog
-          title={`Add ${adding.masked} to “${entity.name}”`}
+          title={t("counterparty.addTitle", { masked: adding.masked, name: entity.name })}
           body={{ op: "identifiers", entityId: entity.id, add: [{ kind: adding.kind, value: adding.value }] }}
-          confirmLabel="Add"
+          confirmLabel={t("common.add")}
           onClose={() => setAdding(null)}
           onDone={() => {
             setDone((d) => new Set(d).add(`${adding.kind}:${adding.value}`));

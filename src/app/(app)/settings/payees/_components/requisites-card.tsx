@@ -126,7 +126,7 @@ export function RequisitesCard({
                         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing(null)}>{t("common.cancel")}</Button>
                       </span>
                     ) : (
-                      <span className="ml-auto flex flex-wrap gap-1">
+                      <span className="ms-auto flex flex-wrap gap-1">
                         <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setEditing({ id: r.id, label: r.label ?? "", bank: r.bank ?? "", currency: r.currency ?? "" })}>
                           {t("common.edit")}
                         </Button>

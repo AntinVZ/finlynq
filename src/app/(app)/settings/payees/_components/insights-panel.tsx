@@ -12,7 +12,7 @@ import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
 import type { StudioTextKey } from "@/lib/payees/i18n";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { MerchantAnalyticsPanel } from "./merchant-analytics-panel";
 import { useStudioT } from "./i18n";
 
@@ -130,18 +130,18 @@ export function InsightsPanel() {
           <table className="w-full text-xs">
             <thead className="text-muted-foreground">
               <tr>
-                <th className="text-left py-1 pr-2">{t("insights.counterparty")}</th>
+                <th className="text-start py-1 pe-2">{t("insights.counterparty")}</th>
                 {data.monthly.months.map((m) => (
-                  <th key={m} className="text-right py-1 px-1 whitespace-nowrap">{m.slice(2)}</th>
+                  <th key={m} className="text-end py-1 px-1 whitespace-nowrap">{m.slice(2)}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {data.monthly.series.map((s) => (
                 <tr key={s.id} className="border-t">
-                  <td className="py-1 pr-2 max-w-40 truncate">{s.name}</td>
+                  <td className="py-1 pe-2 max-w-40 truncate">{s.name}</td>
                   {s.values.map((v, i) => (
-                    <td key={i} className="text-right py-1 px-1 tabular-nums">{v ? Math.round(v) : "·"}</td>
+                    <td key={i} className="text-end py-1 px-1 tabular-nums">{v ? Math.round(v) : "·"}</td>
                   ))}
                 </tr>
               ))}
@@ -153,8 +153,8 @@ export function InsightsPanel() {
       <div className="grid gap-5 sm:grid-cols-2">
         {list(t("insights.topBySpend"), data.topBySpend, (c) => formatCurrency(c.spend, cur), t("insights.noSpend"))}
         {list(t("insights.topByCount"), data.topByCount, (c) => t("common.tx", { n: c.count }), t("insights.noTx"))}
-        {list(t("insights.new"), data.newCounterparties, (c) => t("common.since", { date: c.firstDate ?? "—" }), t("insights.noNew"))}
-        {list(t("insights.gone"), data.goneCounterparties, (c) => t("common.last", { date: c.lastDate ?? "—" }), t("insights.noGone"))}
+        {list(t("insights.new"), data.newCounterparties, (c) => t("common.since", { date: formatDate(c.firstDate) ?? "—" }), t("insights.noNew"))}
+        {list(t("insights.gone"), data.goneCounterparties, (c) => t("common.last", { date: formatDate(c.lastDate) ?? "—" }), t("insights.noGone"))}
       </div>
 
       <div>
@@ -167,7 +167,7 @@ export function InsightsPanel() {
               <li key={r.id} className="flex flex-wrap gap-x-3 gap-y-0.5 p-2">
                 <span className="min-w-0 flex-1">{name(r)}</span>
                 <span className="text-xs text-muted-foreground">
-                  {CADENCE[r.cadence] ? t(CADENCE[r.cadence]) : r.cadence} · {t("insights.interval", { n: r.intervalDays })} · {formatCurrency(r.typicalAmount, cur)} · {t("common.next", { date: r.nextExpected })}
+                  {CADENCE[r.cadence] ? t(CADENCE[r.cadence]) : r.cadence} · {t("insights.interval", { n: r.intervalDays })} · {formatCurrency(r.typicalAmount, cur)} · {t("common.next", { date: formatDate(r.nextExpected) })}
                 </span>
               </li>
             ))}

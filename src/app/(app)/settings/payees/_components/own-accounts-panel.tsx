@@ -83,7 +83,7 @@ export function OwnAccountsPanel({ onChanged }: { onChanged?: () => void }) {
           {rows.map((r) => (
             <li key={r.id} className="flex flex-wrap items-center gap-2 p-2">
               <span className="break-all">{r.description}</span>
-              <span className="ml-auto flex items-center gap-1.5">
+              <span className="ms-auto flex items-center gap-1.5">
                 {ownerSelect(r.owner, (o) => o !== r.owner && setAction({ kind: "owner", row: r, owner: o }), t("own.owner"))}
                 <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setAction({ kind: "remove", row: r })}>
                   {t("own.remove")}

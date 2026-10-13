@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { DictionaryCard } from "./dictionary-card";
 import type { PayeeSettings } from "./payee-ui";
 import { useStudioT } from "./i18n";
+import { LanguagePicker } from "@/components/i18n/language-picker";
 
 /** A one-entry-per-line list that saves on blur. Remounts (via key) when the saved value changes. */
 function WordListField({ label, value, disabled, onSave, placeholder }: { label: string; value?: string[]; disabled: boolean; onSave: (v: string[]) => void; placeholder?: string }) {
@@ -55,19 +56,7 @@ export function StudioSettingsDialog({
           <DialogDescription>{t("settings.description")}</DialogDescription>
         </DialogHeader>
         <div className="space-y-4 text-sm">
-          <label className="flex items-center gap-2">
-            <span>Мова Studio / Studio language</span>
-            <select
-              aria-label="Мова Studio / Studio language"
-              className="h-8 rounded-md border bg-background px-2 text-sm"
-              value={settings?.language ?? "uk"}
-              disabled={disabled}
-              onChange={(e) => onSave({ language: e.target.value as "uk" | "en" })}
-            >
-              <option value="uk">Українська</option>
-              <option value="en">English</option>
-            </select>
-          </label>
+          <LanguagePicker />
           <label className="flex items-start gap-2">
             <input type="checkbox" className="mt-1" checked={settings?.importHint ?? false} disabled={disabled} onChange={(e) => onSave({ importHint: e.target.checked })} />
             <span>

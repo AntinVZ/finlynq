@@ -27,6 +27,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { type PgToolContext, dataResponse, err } from "./_shared";
 import { registerManageTool } from "./_consolidate";
+import { runInUserLocale } from "../../src/lib/i18n/server";
+import { st } from "../../src/lib/i18n/current";
 import { signPreviewToken, verifyPreviewToken } from "./_confirm";
 import { executePayeeOp, PayeeBatchError, PayeeDirectoryError, type PayeeOp, type PayeeOpResult } from "../../src/lib/payees/ops";
 import { listPayeeBatches } from "../../src/lib/payees/batches";
@@ -685,7 +687,8 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         confirmation_token: tokenArg,
       }),
     ]),
-    async (input) => {
+    // P8: answers (warnings, reasons, errors) in the user's interface language.
+    (input) => runInUserLocale(db, userId, null, async () => {
       try {
         switch (input.op) {
           case "list":
@@ -783,7 +786,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
                 accounts: c.accounts.map((a) => a.name),
                 examples: c.examples,
               })),
-              ...(r.own ? { yourAccount: `Це ваш рахунок: ${r.own.description}` } : {}),
+              ...(r.own ? { yourAccount: st("srv.mcp.yourAccount", { account: r.own.description }) } : {}),
               ...(r.hints.length ? { hints: r.hints } : {}),
               bankRowsMentioning: r.bankRows,
               ...(r.truncated ? { truncated: true } : {}),
@@ -1089,6 +1092,6 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       } catch (e) {
         return err(String(e instanceof Error ? e.message : e));
       }
-    },
+    }),
   );
 }

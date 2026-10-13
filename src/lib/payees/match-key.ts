@@ -23,6 +23,7 @@
  */
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { brandCoreOfKey, type PayeeVocabulary } from "./type-words";
+import { st } from "@/lib/i18n/current";
 
 // ─── transliteration ───────────────────────────────────────────────────────
 
@@ -309,22 +310,22 @@ const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|\bs
  */
 export function guessPayeeType(raw: string | null | undefined): TypeGuess {
   const s = normalizeForMatch(raw ?? "");
-  if (!s) return { type: "other", confidence: 0.2, isPerson: false, reason: "empty payee" };
-  if (SOLE_PROP_RE.test(s)) return { type: "sole_proprietor", confidence: 0.9, isPerson: true, reason: "starts with ФОП / FOP" };
+  if (!s) return { type: "other", confidence: 0.2, isPerson: false, reason: st("srv.matchKey.type_emptyPayee") };
+  if (SOLE_PROP_RE.test(s)) return { type: "sole_proprietor", confidence: 0.9, isPerson: true, reason: st("srv.matchKey.type_solePropPrefix") };
   const words = s.split(/\s+/).filter(Boolean);
   const patronymic = words.some((w) => PATRONYMIC_RE.test(w) || PATRONYMIC_LAT_RE.test(w));
   if (patronymic && words.length >= 2 && words.length <= 4) {
-    return { type: "person", confidence: 0.85, isPerson: true, reason: "full name with a patronymic" };
+    return { type: "person", confidence: 0.85, isPerson: true, reason: st("srv.matchKey.type_patronymic") };
   }
   if (INITIALS_RE.test((raw ?? "").trim())) {
-    return { type: "person", confidence: 0.6, isPerson: true, reason: "surname with initials" };
+    return { type: "person", confidence: 0.6, isPerson: true, reason: st("srv.matchKey.type_initials") };
   }
-  if (GOV_RE.test(s)) return { type: "government", confidence: 0.7, isPerson: false, reason: "tax / state body wording" };
-  if (BANK_RE.test(s)) return { type: "bank", confidence: 0.7, isPerson: false, reason: "bank name" };
-  if (SERVICE_RE.test(s)) return { type: "service", confidence: 0.7, isPerson: false, reason: "known online service" };
-  if (RETAIL_RE.test(s)) return { type: "retail", confidence: 0.6, isPerson: false, reason: "shop / food wording" };
-  if (COMPANY_RE.test(s)) return { type: "company", confidence: 0.6, isPerson: false, reason: "legal form (ТОВ / LLC …)" };
-  return { type: "other", confidence: 0.2, isPerson: false, reason: "no type signal in the name" };
+  if (GOV_RE.test(s)) return { type: "government", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_government") };
+  if (BANK_RE.test(s)) return { type: "bank", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_bank") };
+  if (SERVICE_RE.test(s)) return { type: "service", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_service") };
+  if (RETAIL_RE.test(s)) return { type: "retail", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_retail") };
+  if (COMPANY_RE.test(s)) return { type: "company", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_company") };
+  return { type: "other", confidence: 0.2, isPerson: false, reason: st("srv.matchKey.type_noSignal") };
 }
 
 // ─── similarity ─────────────────────────────────────────────────────────────
@@ -364,12 +365,12 @@ export function keySimilarity(a: string, b: string): number {
  * apostrophes, terminal noise, or transliteration.
  */
 export function spellingDifferenceReason(a: string, b: string): string {
-  if (normalizeForMatch(a) === normalizeForMatch(b)) return "letter case, spacing or apostrophes";
+  if (normalizeForMatch(a) === normalizeForMatch(b)) return st("srv.matchKey.diffCase");
   const ta = payeeTokens(a).kept.join(" ");
   const tb = payeeTokens(b).kept.join(" ");
-  if (ta === tb) return "card-terminal noise (codes, city, long numbers)";
+  if (ta === tb) return st("srv.matchKey.diffNoise");
   const cyrA = HAS_CYRILLIC.test(a);
   const cyrB = HAS_CYRILLIC.test(b);
-  if (cyrA !== cyrB) return "Latin / Cyrillic transliteration";
-  return "spelling variant (transliteration, doubled letters, noise)";
+  if (cyrA !== cyrB) return st("srv.matchKey.diffTranslit");
+  return st("srv.matchKey.diffVariant");
 }

@@ -34,6 +34,7 @@ import { extractRequisites, maskSensitiveText, type RequisiteKind } from "./requ
 import { maskIdentifier, type PayeeEntity, type PayeeMatcher } from "./directory";
 import { saveProposals, type ProposalInput } from "./proposals";
 import { loadOwnMatcher, type OwnMatcher } from "./own-accounts";
+import { st } from "@/lib/i18n/current";
 
 export const MINE_BATCH = 2_000;
 export const MINE_MAX_ROWS = 250_000;
@@ -235,7 +236,7 @@ export async function proposeMined(opts: {
         canonical: e.entity.name,
         entityId: link.entityId,
         aliases: [link.payee],
-        reason: `“${link.payee}” rows mention ${e.via}, a requisite of “${e.entity.name}”.`,
+        reason: st("srv.mine.linkReason", { payee: link.payee, via: e.via, name: e.entity.name }),
         confidence: 0.8,
       });
       continue;
@@ -251,7 +252,7 @@ export async function proposeMined(opts: {
       canonical: cp.name,
       ...(cp.entityId != null ? { entityId: cp.entityId } : { aliases: [] }),
       identifiers: [],
-      reason: "Found in your transactions' payee / note / bank statement text.",
+      reason: st("srv.mine.foundReason"),
       confidence: 0.6,
     };
     p.identifiers = [...(p.identifiers ?? []), { kind: it.s.kind, value: it.value }];

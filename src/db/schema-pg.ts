@@ -2175,9 +2175,12 @@ export const payeeMerchantTypes = pgTable("payee_merchant_types", {
   name: text("name").notNull(),
   sort: integer("sort").notNull().default(0),
   defaultCategoryId: integer("default_category_id").references(() => categories.id, { onDelete: "set null" }),
+  /** P8: stable key of a built-in position (cafe, fuel, …); null for the user's own types. */
+  code: text("code"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("payee_merchant_types_user_group_name_idx").on(t.userId, t.groupName, t.name),
+  index("payee_merchant_types_user_code_idx").on(t.userId, t.code).where(sql`code IS NOT NULL`),
 ]);
 
 // ─── Payee own accounts and cards (P6.2, item 76 / B27) ─────────────────────

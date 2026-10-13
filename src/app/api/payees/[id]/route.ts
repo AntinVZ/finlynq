@@ -18,7 +18,7 @@ import { listPayeeBatches } from "@/lib/payees/batches";
 import { planPayeeApply } from "@/lib/payees/apply";
 import { loadPayeeNameMaps } from "@/lib/payees/scan";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payee" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payee" }, async ({ request, userId, dek }) => {
   const id = Number(request.nextUrl.pathname.split("/").filter(Boolean).pop());
   if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "Bad entity id" }, { status: 400 });
   const overview = await loadPayeeOverview({ executor: db, userId, dek });

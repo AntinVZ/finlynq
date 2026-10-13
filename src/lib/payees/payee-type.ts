@@ -25,8 +25,9 @@ const GROUP_TYPE: Record<string, PayeeType> = {
   [iso("Комунальні й зв'язок")]: "service",
 };
 
-export function isPersonsMerchantGroup(group: string | null | undefined): boolean {
-  return group != null && iso(group) === iso(PERSONS_MERCHANT_GROUP);
+/** The persons group, by its starting-set name or (P8) its stable key `persons`. */
+export function isPersonsMerchantGroup(group: string | null | undefined, code?: string | null): boolean {
+  return code === "persons" || (group != null && iso(group) === iso(PERSONS_MERCHANT_GROUP));
 }
 
 const isPersonType = (t: PayeeType) => t === "person" || t === "sole_proprietor";

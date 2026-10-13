@@ -8,6 +8,7 @@
  * are saved as DRAFT proposals for the AI review page — nothing changes yet.
  */
 
+import { formatDate } from "@/lib/i18n/format-current";
 import { useState } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -141,7 +142,7 @@ export function MinePanel({ onSaved }: { onSaved?: () => void }) {
                   ) : (
                     <span className="font-medium break-all">{s.counterparty.name}</span>
                   )}
-                  <span className="ml-auto text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: s.rows })} · {s.firstDate ?? "—"} → {s.lastDate ?? "—"}</span>
+                  <span className="ms-auto text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: s.rows })} · {formatDate(s.firstDate)} → {formatDate(s.lastDate)}</span>
                   {s.ownedBy.length > 0 && <span className="w-full text-xs text-amber-700 dark:text-amber-300">{t("mine.alsoOn", { list: s.ownedBy.map((o) => o.name).join(", ") })}</span>}
                   <span className="w-full truncate text-xs text-muted-foreground">{s.example}</span>
                 </li>

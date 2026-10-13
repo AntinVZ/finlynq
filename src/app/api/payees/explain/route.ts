@@ -16,7 +16,7 @@ import { buildPayeeMatcher, loadDirectory } from "@/lib/payees/directory";
 import { explainPayeePair } from "@/lib/payees/explain";
 import { getPayeeSettings, vocabularyOf } from "@/lib/payees/settings";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to explain" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to explain" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   const a = (params.get("a") ?? "").trim().slice(0, 500);
   const b = (params.get("b") ?? "").trim().slice(0, 500);

@@ -39,6 +39,7 @@ import type { BatchActor } from "./batches";
 import type { PayeeOverview } from "./service";
 import type { PayeeGroup } from "./overview";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export const MAX_PROPOSALS_PER_CALL = 100;
 
@@ -96,7 +97,7 @@ export function normalizeProposal(input: ProposalInput): { payload: ProposalPayl
   }
   const identifiers: ProposalPayload["identifiers"] = [];
   for (const i of input.identifiers ?? []) {
-    if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(`Unknown identifier kind "${i.kind}".`);
+    if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(st("srv.ops.unknownIdentifierKind", { kind: i.kind }));
     identifiers.push({ kind: i.kind as IdentifierKind, value: normalizeIdentifier(i.kind as IdentifierKind, String(i.value ?? "")) });
   }
   const confidence = Math.round(Math.min(1, Math.max(0, Number(input.confidence ?? 0) || 0)) * 100) / 100;
@@ -107,7 +108,7 @@ export function normalizeProposal(input: ProposalInput): { payload: ProposalPayl
   const notes: string[] = [];
   let website: string | null = null;
   if (input.website?.trim()) {
-    if (type === "person" || type === "sole_proprietor") notes.push("Website skipped: private persons and sole proprietors don't get one.");
+    if (type === "person" || type === "sole_proprietor") notes.push(st("srv.proposals.websiteSkipped"));
     else website = normalizeWebsite(input.website);
   }
   return {
@@ -126,7 +127,7 @@ export async function saveProposals(opts: {
   source?: string;
 }): Promise<{ saved: Array<{ id: number; canonical: string; needsDecision: boolean; notes: string[] }>; rejected: Array<{ index: number; error: string }> }> {
   const { executor, userId, dek } = opts;
-  if (opts.proposals.length > MAX_PROPOSALS_PER_CALL) throw new PayeeDirectoryError(`At most ${MAX_PROPOSALS_PER_CALL} proposals per call.`);
+  if (opts.proposals.length > MAX_PROPOSALS_PER_CALL) throw new PayeeDirectoryError(st("srv.proposals.tooMany", { max: MAX_PROPOSALS_PER_CALL }));
   const directory = await loadDirectory(executor, userId, dek);
   const saved: Array<{ id: number; canonical: string; needsDecision: boolean; notes: string[] }> = [];
   const rejected: Array<{ index: number; error: string }> = [];
@@ -140,13 +141,13 @@ export async function saveProposals(opts: {
     }
     const p = norm.payload;
     if (p.entityId != null && !directory.some((e) => e.id === p.entityId)) {
-      rejected.push({ index: i, error: `No payee entity #${p.entityId}.` });
+      rejected.push({ index: i, error: st("srv.ops.noEntity", { id: p.entityId }) });
       continue;
     }
     for (const name of [p.entityId == null ? p.canonical : null, ...p.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)]) {
       if (!name) continue;
       const owner = exactAliasOwners(directory, name, p.entityId ?? undefined)[0];
-      if (owner) p.notes.push(`"${name}" already belongs to "${owner.name}" (#${owner.id}); propose with entity_id ${owner.id} to extend it instead.`);
+      if (owner) p.notes.push(st("srv.proposals.aliasTaken", { name, owner: owner.name, id: owner.id }));
     }
     const rows = normalizeDbRows<{ id: unknown }>(
       await executor.execute(sql`
@@ -228,13 +229,13 @@ export async function approveProposals(opts: {
   // Applied in submission order (oldest first), so a failure is predictable.
   const drafts = (await listProposals(executor, userId, dek, { status: "draft", ids: opts.ids })).sort((a, b) => a.id - b.id);
   const missing = opts.ids.filter((id) => !drafts.some((d) => d.id === id));
-  if (missing.length) throw new PayeeDirectoryError(`No draft proposal ${missing.map((m) => `#${m}`).join(", ")} (already decided, or not yours).`, "not_found");
-  if (!drafts.length) throw new PayeeDirectoryError("Pick at least one proposal.");
+  if (missing.length) throw new PayeeDirectoryError(st("srv.proposals.noDraft", { ids: missing.map((m) => `#${m}`).join(", ") }), "not_found");
+  if (!drafts.length) throw new PayeeDirectoryError(st("srv.proposals.pickOne"));
   const ops: SingleOp[] = [];
   const labels: string[] = [];
   for (const d of drafts) for (const o of proposalOps(d)) {
     ops.push(o);
-    labels.push(`proposal #${d.id} ("${d.canonical}")`);
+    labels.push(st("srv.proposals.label", { id: d.id, name: d.canonical }));
   }
   const result = await executePayeeOp({
     executor,

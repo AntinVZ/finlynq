@@ -21,14 +21,14 @@ import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, PATRONYMIC_TOKEN_RE } from "./match-key";
 
 /** A merchant-type suggestion: group → position (stage 3 dictionary). */
-export type MerchantTypeHint = { group: string; name: string };
+export type MerchantTypeHint = { group: string; name: string; code?: string };
 
-const CAFE: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Кафе" };
-const RESTAURANT: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Ресторани" };
-const BAR: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Бари" };
-const PHARMACY: MerchantTypeHint = { group: "Аптеки", name: "Аптеки" };
-const HOTEL: MerchantTypeHint = { group: "Готелі", name: "Готелі" };
-const FUEL: MerchantTypeHint = { group: "Пальне (АЗС)", name: "Пальне (АЗС)" };
+const CAFE: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Кафе", code: "cafe" };
+const RESTAURANT: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Ресторани", code: "restaurant" };
+const BAR: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Бари", code: "bar" };
+const PHARMACY: MerchantTypeHint = { group: "Аптеки", name: "Аптеки", code: "pharmacy" };
+const HOTEL: MerchantTypeHint = { group: "Готелі", name: "Готелі", code: "hotel" };
+const FUEL: MerchantTypeHint = { group: "Пальне (АЗС)", name: "Пальне (АЗС)", code: "fuel" };
 
 /**
  * Default type words (uk, ru, en, transliterated). Multi-word entries

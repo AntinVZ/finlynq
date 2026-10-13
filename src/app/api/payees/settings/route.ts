@@ -14,7 +14,7 @@ import { db } from "@/db";
 import { AUTOPILOT_MAX_THRESHOLD, AUTOPILOT_MIN_THRESHOLD, getPayeeSettings, savePayeeSettings, STUDIO_LANGUAGES, VOCAB_LIST_MAX } from "@/lib/payees/settings";
 import { IDENTIFIER_KINDS } from "@/lib/payees/directory";
 
-export const GET = apiHandler({ auth: "auth", raw: true, fallbackMessage: "Failed to load settings" }, async ({ userId }) =>
+export const GET = apiHandler({ auth: "auth", locale: true, raw: true, fallbackMessage: "Failed to load settings" }, async ({ userId }) =>
   NextResponse.json(await getPayeeSettings(db, userId)),
 );
 
@@ -31,6 +31,6 @@ const putSchema = z.object({
   language: z.enum(STUDIO_LANGUAGES).optional(),
 });
 
-export const PUT = apiHandler({ auth: "auth", raw: true, body: putSchema, fallbackMessage: "Failed to save settings" }, async ({ userId, body }) =>
+export const PUT = apiHandler({ auth: "auth", locale: true, raw: true, body: putSchema, fallbackMessage: "Failed to save settings" }, async ({ userId, body }) =>
   NextResponse.json(await savePayeeSettings(db, userId, body)),
 );

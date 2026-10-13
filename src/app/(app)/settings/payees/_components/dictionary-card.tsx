@@ -141,7 +141,7 @@ export function DictionaryCard({ onImported }: { onImported: () => void }) {
                   {(p.action === "conflict" || resolutions[String(p.index)]) && (
                     <select
                       aria-label={t("dictionary.decisionFor", { name: p.name })}
-                      className="ml-auto h-7 rounded-md border bg-background px-1"
+                      className="ms-auto h-7 rounded-md border bg-background px-1"
                       value={resolutions[String(p.index)] ?? ""}
                       onChange={(e) => decide(p.index, e.target.value)}
                     >

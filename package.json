@@ -22,6 +22,7 @@
     "indexnow": "npx tsx scripts/indexnow-submit.ts",
     "audit:invariants": "npx tsx scripts/audit-invariants.ts",
     "lint:tool-descriptions": "npx tsx scripts/lint-tool-descriptions.ts",
+    "lint:i18n": "npx tsx scripts/lint-i18n.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

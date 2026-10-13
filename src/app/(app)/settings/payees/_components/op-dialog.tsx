@@ -166,7 +166,7 @@ export function OpDialog({
                   {preview.rows.changes.map((c) => (
                     <li key={`${c.from}→${c.to}`} className="break-all">
                       “{c.from}” → “{c.to}” <span className="text-muted-foreground">× {c.count}</span>
-                      {c.caseOnly && <span className="ml-1 text-muted-foreground">{t("op.caseOnly")}</span>}
+                      {c.caseOnly && <span className="ms-1 text-muted-foreground">{t("op.caseOnly")}</span>}
                     </li>
                   ))}
                 </ul>

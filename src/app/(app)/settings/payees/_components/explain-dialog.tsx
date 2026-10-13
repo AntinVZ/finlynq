@@ -89,7 +89,7 @@ export function ExplainDialog({ initialA = "", initialB = "", onClose }: { initi
                 {VERDICT[result.verdict] ? t(VERDICT[result.verdict]) : result.verdict}
                 {result.score ? ` · ${t("explain.score", { pct: Math.round(result.score.confidence * 100) })}` : ""}
               </p>
-              <ul className="list-disc pl-5 text-xs space-y-1">
+              <ul className="list-disc ps-5 text-xs space-y-1">
                 {result.reasons.map((r) => (
                   <li key={r}>{r}</li>
                 ))}

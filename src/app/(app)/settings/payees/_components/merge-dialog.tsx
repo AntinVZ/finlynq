@@ -68,7 +68,7 @@ export function MergeDialog({
 
   const autoType = payeeTypeForMerchantType(merchantType?.group, asPayeeType(suggestedType));
   const type = manualType || autoType;
-  const hint = typeHint && !(merchantType && merchantTypeLabel(merchantType) === merchantTypeLabel(typeHint)) ? typeHint : null;
+  const hint = typeHint && !(merchantType && merchantTypeLabel(merchantType, t) === merchantTypeLabel(typeHint, t)) ? typeHint : null;
 
   const body =
     mode === "new"
@@ -102,11 +102,11 @@ export function MergeDialog({
             <Button
               size="sm"
               variant="outline"
-              className="h-auto min-h-7 max-w-full whitespace-normal break-words text-left text-xs"
+              className="h-auto min-h-7 max-w-full whitespace-normal break-words text-start text-xs"
               title={t("common.hintTitle", { reason: hint.reason })}
               onClick={() => setMerchantType({ group: hint.group, name: hint.name })}
             >
-              {t("common.hint")}: {merchantTypeLabel(hint)}
+              {t("common.hint")}: {merchantTypeLabel(hint, t)}
             </Button>
           )}
           <details className="text-xs">

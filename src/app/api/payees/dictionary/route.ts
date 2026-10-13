@@ -26,7 +26,7 @@ import { loadMerchantTypes } from "@/lib/payees/merchant-types";
 import { executePayeeOp } from "@/lib/payees/ops";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Export failed" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Export failed" }, async ({ request, userId, dek }) => {
   const yaml = request.nextUrl.searchParams.get("format") === "yaml";
   const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
   const date = dict.exportedAt.slice(0, 10);
@@ -48,7 +48,7 @@ const postSchema = z.object({
 });
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Import failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Import failed" },
   async ({ userId, dek, body }) => {
     let parsed: ReturnType<typeof parseDictionary>;
     try {

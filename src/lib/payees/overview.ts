@@ -41,6 +41,7 @@ import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type
 import { scoreKeys, type KeyScore } from "./score-keys";
 import { describeOwnAccount, type OwnMatcher } from "./own-accounts";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export type NamedCount = { id: number; name: string; count: number };
 
@@ -292,7 +293,7 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
     if (!l.some((i) => groups[i].type.isPerson)) continue;
     for (let x = 1; x < l.length; x++) {
       if (groups[l[0]].key === groups[l[x]].key) continue;
-      edges.push({ a: l[0], b: l[x], confidence: 0.7, reason: "same person's name (word order or patronymic differ)", sameBrand: false });
+      edges.push({ a: l[0], b: l[x], confidence: 0.7, reason: st("srv.overview.samePerson"), sameBrand: false });
     }
   }
   // Strongest edges first so a component's weakest link is its confidence.
@@ -326,7 +327,7 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
     const reasons = new Set<string>();
     let confidence = 0.95;
     for (const g of members) {
-      for (const s of g.spellings.slice(1)) reasons.add(`same name: ${spellingDifferenceReason(g.spellings[0].spelling, s.spelling)}`);
+      for (const s of g.spellings.slice(1)) reasons.add(st("srv.overview.sameName", { why: spellingDifferenceReason(g.spellings[0].spelling, s.spelling) }));
     }
     for (const e of compEdges.get(root) ?? []) {
       reasons.add(e.reason);
@@ -342,9 +343,9 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
       reasons: [...reasons],
       needsDecision: Boolean(person || brandEdge),
       decisionReason: person
-        ? `Looks like a ${person.type.type === "sole_proprietor" ? "sole proprietor (ФОП)" : "private person"} (${person.type.reason}); people are never merged automatically.`
+        ? st(person.type.type === "sole_proprietor" ? "srv.overview.looksSoleProprietor" : "srv.overview.looksPerson", { reason: person.type.reason })
         : brandEdge
-          ? `Різні бренд-токени («${groups[brandEdge.a].brand.core}» / «${groups[brandEdge.b].brand.core}»): назви лише схожі, автоматично не зливаються.`
+          ? st("srv.overview.brandDiffers", { a: groups[brandEdge.a].brand.core, b: groups[brandEdge.b].brand.core })
           : null,
       // P6.2: across every member's spellings, so one mixed-case spelling anywhere wins over ALL CAPS.
       suggestedName: canonicalSpelling(lead.spellings, { mixedOnly: true }) || canonicalSpelling(members.flatMap((g) => g.spellings), { mixedOnly: true }) || lead.suggestedName,

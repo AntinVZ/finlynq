@@ -32,6 +32,7 @@ import type { PayeeGroup } from "./overview";
 import type { PayeeOverview } from "./service";
 import type { BatchActor } from "./batches";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export const BULK_DEFAULT_THRESHOLD = 0.9;
 /** Most entries one confirmation may create (one batch). */
@@ -160,9 +161,9 @@ export async function commitBulkRegistry(opts: {
   dryRun?: boolean;
 }): Promise<BulkResult> {
   const { executor, userId, dek, overview, items } = opts;
-  if (!items.length) throw new PayeeDirectoryError("Виберіть хоча б один рядок.");
+  if (!items.length) throw new PayeeDirectoryError(st("srv.bulk.pickRow"));
   if (items.length > BULK_MAX) {
-    throw new PayeeDirectoryError(`Завеликий пакет: ${items.length} сутностей, за одне підтвердження — щонайбільше ${BULK_MAX}. Зніміть частину галочок або підтвердьте частинами.`, "too_large");
+    throw new PayeeDirectoryError(st("srv.bulk.tooLarge", { n: items.length, max: BULK_MAX }), "too_large");
   }
   const all = buildBulkCandidates(overview, { threshold: 0 });
   const byId = new Map(all.rows.map((r) => [r.rowId, r]));
@@ -175,14 +176,14 @@ export async function commitBulkRegistry(opts: {
   for (const it of items) {
     if (seen.has(it.rowId)) continue;
     seen.add(it.rowId);
-    if (personIds.has(it.rowId)) throw new PayeeDirectoryError("Особи й ФОП не входять у пакет: додайте їх вручну на вкладці «Особи».", "person");
+    if (personIds.has(it.rowId)) throw new PayeeDirectoryError(st("srv.bulk.peopleExcluded"), "person");
     const row = byId.get(it.rowId);
     if (!row) {
       missing.push(it.rowId);
       continue;
     }
     const name = (it.name ?? row.name).replace(/\s+/g, " ").trim();
-    if (guessPayeeType(name).isPerson) throw new PayeeDirectoryError(`«${name}» схоже на особу або ФОП: такі записи додаються лише вручну (вкладка «Особи»).`, "person");
+    if (guessPayeeType(name).isPerson) throw new PayeeDirectoryError(st("srv.bulk.looksPerson", { name }), "person");
     const nameKey = payeeMatchKey(name);
     const aliases = row.spellings.filter((s) => payeeMatchKey(s.spelling) !== nameKey || s.spelling !== name).map((s) => ({ pattern: s.spelling, mode: "exact" as const }));
     const merchantType = it.merchantType ?? null;
@@ -191,7 +192,7 @@ export async function commitBulkRegistry(opts: {
     planned.push({ rowId: row.rowId, name, aliases: aliases.length, merchantType: typeof merchantType === "string" ? merchantType : merchantType == null ? null : typeof merchantType === "number" ? `#${merchantType}` : `${merchantType.group} → ${merchantType.name}` });
   }
   if (missing.length) {
-    throw new PayeeDirectoryError(`${missing.length} рядк. уже немає в списку (дані змінилися або їх додали до довідника). Оновіть таблицю й підтвердьте ще раз.`, "not_found");
+    throw new PayeeDirectoryError(st("srv.bulk.rowsGone", { n: missing.length }), "not_found");
   }
   const before = new Set(overview.directory.map((e) => e.id));
   let createdIds: number[] = [];

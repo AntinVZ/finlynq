@@ -14,6 +14,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import useSWR from "swr";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n/client";
 
 export type PayeeSuggestion = {
   value: string;
@@ -39,7 +40,7 @@ export function PayeeCombobox({
   placeholder,
   className,
   inputClassName,
-  ariaLabel = "Payee",
+  ariaLabel,
   limit = 8,
   disabled,
   id,
@@ -56,6 +57,7 @@ export function PayeeCombobox({
   disabled?: boolean;
   id?: string;
 }) {
+  const t = useT();
   const listId = useId();
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
@@ -64,8 +66,8 @@ export function PayeeCombobox({
 
   // Debounce the query that hits the server.
   useEffect(() => {
-    const t = setTimeout(() => setQuery(value), 150);
-    return () => clearTimeout(t);
+    const timer = setTimeout(() => setQuery(value), 150);
+    return () => clearTimeout(timer);
   }, [value]);
 
   const { data } = useSWR(open ? `/api/payees/suggest?q=${encodeURIComponent(query.trim())}&limit=${limit}` : null, fetchSuggestions, {
@@ -95,7 +97,7 @@ export function PayeeCombobox({
       <Input
         id={id}
         role="combobox"
-        aria-label={ariaLabel}
+        aria-label={ariaLabel ?? t("payeePicker.label")}
         aria-expanded={open && items.length > 0}
         aria-controls={listId}
         aria-autocomplete="list"
@@ -130,7 +132,7 @@ export function PayeeCombobox({
         <ul
           id={listId}
           role="listbox"
-          aria-label="Payee suggestions"
+          aria-label={t("payeePicker.suggestions")}
           className="absolute z-50 mt-1 max-h-64 w-full min-w-56 overflow-y-auto rounded-md border bg-popover p-1 text-sm shadow-md"
         >
           {items.map((s, i) => (
@@ -146,7 +148,7 @@ export function PayeeCombobox({
             >
               <span className="min-w-0 flex-1 truncate">{s.label}</span>
               {s.kind === "alias" && <span className="shrink-0 truncate text-xs text-muted-foreground">→ {s.value}</span>}
-              {s.kind === "entity" && <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">directory</span>}
+              {s.kind === "entity" && <span className="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">{t("payeePicker.directory")}</span>}
               {s.kind === "recent" && s.count ? <span className="shrink-0 text-xs text-muted-foreground tabular-nums">× {s.count}</span> : null}
             </li>
           ))}

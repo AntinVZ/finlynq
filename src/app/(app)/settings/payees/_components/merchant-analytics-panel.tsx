@@ -13,7 +13,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
@@ -69,7 +69,7 @@ export function MerchantAnalyticsPanel() {
   return (
     <section className="space-y-4 border-t pt-4" aria-label={t("analytics.title")}>
       <div className="flex flex-wrap items-end gap-2">
-        <h3 className="text-sm font-medium mr-auto">{t("analytics.title")}</h3>
+        <h3 className="text-sm font-medium me-auto">{t("analytics.title")}</h3>
         <label className="text-xs">
           {t("analytics.from")}
           <Input type="date" aria-label={t("analytics.fromAria")} className="h-8 w-36" value={draft.from} onChange={(e) => setDraft({ ...draft, from: e.target.value })} />
@@ -99,10 +99,10 @@ export function MerchantAnalyticsPanel() {
             {!data.receipt.length ? empty(t("analytics.noPayments")) : (
               <>
                 <table className="w-full text-xs">
-                  <thead className="text-muted-foreground"><tr><th className="text-left py-1">{t("analytics.payee")}</th><th className="text-right">{t("analytics.payments")}</th><th className="text-right">{t("analytics.average")}</th><th className="text-right">{t("analytics.median")}</th><th className="text-right">{t("analytics.max")}</th><th className="text-right hidden sm:table-cell">Q1 · Q3</th></tr></thead>
+                  <thead className="text-muted-foreground"><tr><th className="text-start py-1">{t("analytics.payee")}</th><th className="text-end">{t("analytics.payments")}</th><th className="text-end">{t("analytics.average")}</th><th className="text-end">{t("analytics.median")}</th><th className="text-end">{t("analytics.max")}</th><th className="text-end hidden sm:table-cell">Q1 · Q3</th></tr></thead>
                   <tbody>
                     {data.receipt.map((r) => (
-                      <tr key={r.id} className="border-t"><td className="py-1 pr-2">{who(r)}</td><td className="text-right tabular-nums">{r.payments}</td><td className="text-right tabular-nums">{money(r.average)}</td><td className="text-right tabular-nums">{money(r.median)}</td><td className="text-right tabular-nums">{money(r.max)}</td><td className="text-right tabular-nums hidden sm:table-cell">{money(r.quartiles[0])} · {money(r.quartiles[2])}</td></tr>
+                      <tr key={r.id} className="border-t"><td className="py-1 pe-2">{who(r)}</td><td className="text-end tabular-nums">{r.payments}</td><td className="text-end tabular-nums">{money(r.average)}</td><td className="text-end tabular-nums">{money(r.median)}</td><td className="text-end tabular-nums">{money(r.max)}</td><td className="text-end tabular-nums hidden sm:table-cell">{money(r.quartiles[0])} · {money(r.quartiles[2])}</td></tr>
                     ))}
                   </tbody>
                 </table>
@@ -140,10 +140,10 @@ export function MerchantAnalyticsPanel() {
             </p>
             {!data.change.rows.length ? empty(t("analytics.changeEmpty")) : (
               <table className="w-full text-xs">
-                <thead className="text-muted-foreground"><tr><th className="text-left py-1">{t("analytics.payee")}</th><th className="text-right">{t("analytics.payments")}</th><th className="text-right">{t("analytics.countEffect")}</th><th className="text-right">{t("analytics.receiptEffect")}</th><th className="text-right">{t("analytics.total")}</th></tr></thead>
+                <thead className="text-muted-foreground"><tr><th className="text-start py-1">{t("analytics.payee")}</th><th className="text-end">{t("analytics.payments")}</th><th className="text-end">{t("analytics.countEffect")}</th><th className="text-end">{t("analytics.receiptEffect")}</th><th className="text-end">{t("analytics.total")}</th></tr></thead>
                 <tbody>
                   {data.change.rows.map((r) => (
-                    <tr key={r.id} className="border-t"><td className="py-1 pr-2">{who(r)}</td><td className="text-right tabular-nums">{r.n1} → {r.n2}</td><td className="text-right tabular-nums">{money(r.countEffect)}</td><td className="text-right tabular-nums">{money(r.receiptEffect)}</td><td className="text-right tabular-nums">{money(r.total)}</td></tr>
+                    <tr key={r.id} className="border-t"><td className="py-1 pe-2">{who(r)}</td><td className="text-end tabular-nums">{r.n1} → {r.n2}</td><td className="text-end tabular-nums">{money(r.countEffect)}</td><td className="text-end tabular-nums">{money(r.receiptEffect)}</td><td className="text-end tabular-nums">{money(r.total)}</td></tr>
                   ))}
                 </tbody>
               </table>
@@ -152,10 +152,10 @@ export function MerchantAnalyticsPanel() {
 
           <div className="grid gap-4 sm:grid-cols-2">
             {([
-              [t("analytics.new"), data.lifecycle.new.map((r) => [r, t("common.since", { date: r.firstDate })] as const)],
-              [t("analytics.quiet"), data.lifecycle.quiet.map((r) => [r, `${t("common.last", { date: r.lastDate })} · ${t("analytics.activeMonths", { n: r.activeMonths })}`] as const)],
+              [t("analytics.new"), data.lifecycle.new.map((r) => [r, t("common.since", { date: formatDate(r.firstDate) })] as const)],
+              [t("analytics.quiet"), data.lifecycle.quiet.map((r) => [r, `${t("common.last", { date: formatDate(r.lastDate) })} · ${t("analytics.activeMonths", { n: r.activeMonths })}`] as const)],
               [t("analytics.returned"), data.lifecycle.returned.map((r) => [r, t("analytics.silentMonths", { n: r.silentMonths })] as const)],
-              [t("analytics.churned"), data.lifecycle.churned.map((r) => [r, t("common.last", { date: r.lastDate })] as const)],
+              [t("analytics.churned"), data.lifecycle.churned.map((r) => [r, t("common.last", { date: formatDate(r.lastDate) })] as const)],
             ] as const).map(([title, rows]) => (
               <div key={title}>
                 <h4 className="font-medium mb-1">{title}</h4>
@@ -171,7 +171,7 @@ export function MerchantAnalyticsPanel() {
             {!data.regular.length ? empty(t("analytics.noRegular")) : (
               <ul className="divide-y rounded-lg border">
                 {data.regular.map((r) => (
-                  <li key={r.id} className="flex flex-wrap gap-x-3 p-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">{t("analytics.every", { n: r.intervalDays })} · {money(r.average)} · {t("analytics.perYear", { amount: money(r.yearlyCost) })} · {t("common.next", { date: r.nextExpected })}</span></li>
+                  <li key={r.id} className="flex flex-wrap gap-x-3 p-2"><span className="min-w-0 flex-1">{who(r)}</span><span className="text-xs text-muted-foreground">{t("analytics.every", { n: r.intervalDays })} · {money(r.average)} · {t("analytics.perYear", { amount: money(r.yearlyCost) })} · {t("common.next", { date: formatDate(r.nextExpected) })}</span></li>
                 ))}
               </ul>
             )}

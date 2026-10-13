@@ -39,7 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ArrowDown, ArrowUp, Search, Settings2 } from "lucide-react";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { containsNormalized } from "@/lib/text-normalize";
 import {
   batchLabel,
@@ -253,7 +253,7 @@ export default function PayeesSettingsPage() {
     g.spellings.length > 1 ? (
       <Badge
         variant="outline"
-        className="ml-2 border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"
+        className="ms-2 border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"
         title={g.spellings.map((s) => `"${s.spelling}" × ${s.count}`).join(", ")}
       >
         {t("page.spellingsBadge", { n: g.spellings.length })}
@@ -265,7 +265,7 @@ export default function PayeesSettingsPage() {
         {g.entityName ?? g.name}
       </Link>
     ) : (
-      <button type="button" className="font-medium hover:underline break-all text-left" onClick={() => setDrawer(g)}>
+      <button type="button" className="font-medium hover:underline break-all text-start" onClick={() => setDrawer(g)}>
         {g.name}
       </button>
     );
@@ -314,7 +314,7 @@ export default function PayeesSettingsPage() {
         <Button variant="outline" size="sm" className="h-7 text-xs" disabled={(page + 1) * pageSize >= total} onClick={() => setPage((p) => p + 1)}>
           {t("page.next")}
         </Button>
-        <label className="ml-auto inline-flex items-center gap-1">
+        <label className="ms-auto inline-flex items-center gap-1">
           {t("page.perPage")}
           <select aria-label={t("page.rowsPerPage")} className="h-7 rounded-md border bg-background px-1" value={pageSize} onChange={(e) => setPageSize(Number(e.target.value))}>
             {PAGE_SIZES.map((n) => (
@@ -348,7 +348,7 @@ export default function PayeesSettingsPage() {
         </div>
         <Button variant="outline" size="sm" aria-label={t("page.settingsAria")} title={t("page.settingsAria")} onClick={() => setSettingsOpen(true)}>
           <Settings2 className="h-4 w-4" />
-          <span className="ml-1 hidden sm:inline">{t("page.settings")}</span>
+          <span className="ms-1 hidden sm:inline">{t("page.settings")}</span>
         </Button>
       </div>
 
@@ -360,7 +360,7 @@ export default function PayeesSettingsPage() {
           { label: t("page.sum.newLookalikes"), value: data ? String(data.lookalikeCount ?? 0) : "…", onClick: () => setTab("lookalikes") },
           { label: t("page.sum.autoReplace"), value: data ? (data.settings.importHint ? t("page.on") : t("page.off")) : "…", onClick: () => setSettingsOpen(true) },
         ].map((c) => (
-          <button key={c.label} type="button" onClick={c.onClick} className="rounded-lg border p-2 text-left hover:bg-accent/50">
+          <button key={c.label} type="button" onClick={c.onClick} className="rounded-lg border p-2 text-start hover:bg-accent/50">
             <span className="block text-xs text-muted-foreground">{c.label}</span>
             <span className="block text-lg font-semibold tabular-nums">{c.value}</span>
           </button>
@@ -397,8 +397,8 @@ export default function PayeesSettingsPage() {
               ))}
             </div>
             <div className="relative flex-1 min-w-48">
-              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-              <Input className="pl-8" placeholder={t("page.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
+              <Search className="absolute start-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+              <Input className="ps-8" placeholder={t("page.search")} value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {(tab === "all" || tab === "unrecognized") && (
               <Button
@@ -506,11 +506,11 @@ export default function PayeesSettingsPage() {
                         type={c.suggestedType.type}
                       />
                       {c.needsDecision && needsDecisionBadge(c.decisionReason, t)}
-                      <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                      <span className="ms-auto text-xs text-muted-foreground tabular-nums">
                         {t("common.tx", { n: c.count })} · {formatCurrency(c.total, currency)}
                       </span>
                     </div>
-                    <ul className="text-xs text-muted-foreground list-disc pl-5">
+                    <ul className="text-xs text-muted-foreground list-disc ps-5">
                       {c.reasons.map((r) => (
                         <li key={r}>{r}</li>
                       ))}
@@ -520,7 +520,7 @@ export default function PayeesSettingsPage() {
                       {c.keys.flatMap((k) =>
                         (groupsByKey.get(k)?.spellings ?? []).map((s) => (
                           <Badge key={`${k}|${s.spelling}`} variant="secondary" className="font-normal">
-                            {s.spelling} <span className="ml-1 text-muted-foreground">× {s.count}</span>
+                            {s.spelling} <span className="ms-1 text-muted-foreground">× {s.count}</span>
                           </Badge>
                         )),
                       )}
@@ -576,7 +576,7 @@ export default function PayeesSettingsPage() {
                     <span className="text-xs" title={t("types.merchantType")}>
                       {t("page.typeLabel")}{" "}
                       {e.merchantType ? (
-                        merchantTypeLabel(e.merchantType)
+                        merchantTypeLabel(e.merchantType, t)
                       ) : e.merchantTypeMixed ? (
                         <span className="text-amber-600 dark:text-amber-400" title={t("page.mixedTitle", { reason: e.merchantTypeMixed })}>
                           — ({t("page.mixed")})
@@ -586,7 +586,7 @@ export default function PayeesSettingsPage() {
                           className={`text-muted-foreground ${e.merchantTypeHint.strength === "weak" ? "opacity-70 italic" : ""}`}
                           title={t("page.hintTitle", { reason: e.merchantTypeHint.reason })}
                         >
-                          — ({e.merchantTypeHint.strength === "weak" ? t("page.weakHintLower") : t("page.hintLower")}: {merchantTypeLabel(e.merchantTypeHint)}
+                          — ({e.merchantTypeHint.strength === "weak" ? t("page.weakHintLower") : t("page.hintLower")}: {merchantTypeLabel(e.merchantTypeHint, t)}
                           {e.merchantTypeHint.strength === "weak" ? `, ${e.merchantTypeHint.reason}` : ""})
                         </span>
                       ) : (
@@ -597,9 +597,9 @@ export default function PayeesSettingsPage() {
                       {t("common.aliases", { n: e.aliasCount })}
                       {data?.settings.advancedMode && e.identifierCount ? ` · ${t("page.requisitesCount", { n: e.identifierCount })}` : ""}
                     </span>
-                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
+                    <span className="ms-auto text-xs text-muted-foreground tabular-nums">
                       {t("common.tx", { n: e.count })} · {formatCurrency(e.total, currency)}
-                      {e.lastDate ? ` · ${t("common.last", { date: e.lastDate })}` : ""}
+                      {e.lastDate ? ` · ${t("common.last", { date: formatDate(e.lastDate) })}` : ""}
                     </span>
                   </li>
                 ))}
@@ -617,7 +617,7 @@ export default function PayeesSettingsPage() {
                     <span className="font-medium">#{b.id}</span>
                     <span>{batchLabel(b, t)}</span>
                     <span className="text-xs text-muted-foreground tabular-nums">{b.createdAt.slice(0, 16).replace("T", " ")}</span>
-                    <span className="ml-auto">
+                    <span className="ms-auto">
                       {b.undoneAt ? (
                         <span className="text-xs text-muted-foreground">{t("common.undoneBadge")}</span>
                       ) : b.canUndo ? (
@@ -649,7 +649,7 @@ export default function PayeesSettingsPage() {
                         </div>
                         <p className="text-xs text-muted-foreground mt-1">{typeCell(g)}</p>
                         <p className="text-xs text-muted-foreground mt-1 tabular-nums">
-                          {t("common.tx", { n: g.count })} · {formatCurrency(g.total, currency)} · {g.firstDate ?? "—"} → {g.lastDate ?? "—"}
+                          {t("common.tx", { n: g.count })} · {formatCurrency(g.total, currency)} · {formatDate(g.firstDate)} → {formatDate(g.lastDate)}
                         </p>
                         {g.categories.length > 0 && (
                           <p className="text-xs text-muted-foreground truncate">{g.categories.map((c) => c.name).join(", ")}</p>
@@ -662,33 +662,33 @@ export default function PayeesSettingsPage() {
               </ul>
               <div className="hidden sm:block overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="text-left text-xs text-muted-foreground">
+                  <thead className="text-start text-xs text-muted-foreground">
                     <tr className="border-b">
                       <th className="w-8 py-2" />
-                      <th className="py-2 pr-2">
+                      <th className="py-2 pe-2">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("name")}>
                           {t("analytics.payee")} {sortIcon("name")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">{t("common.type")}</th>
-                      <th className="py-2 pr-2 text-right">
+                      <th className="py-2 pe-2">{t("common.type")}</th>
+                      <th className="py-2 pe-2 text-end">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("count")}>
                           {t("common.transactions")} {sortIcon("count")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2 text-right">
+                      <th className="py-2 pe-2 text-end">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("total")}>
                           {t("page.totalCol", { currency })} {sortIcon("total")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">{t("common.first")}</th>
-                      <th className="py-2 pr-2">
+                      <th className="py-2 pe-2">{t("common.first")}</th>
+                      <th className="py-2 pe-2">
                         <button type="button" className="inline-flex items-center gap-1" onClick={() => toggleSort("lastDate")}>
                           {t("common.lastDate")} {sortIcon("lastDate")}
                         </button>
                       </th>
-                      <th className="py-2 pr-2">{t("common.accounts")}</th>
-                      <th className="py-2 pr-2">{t("page.categories")}</th>
+                      <th className="py-2 pe-2">{t("common.accounts")}</th>
+                      <th className="py-2 pe-2">{t("page.categories")}</th>
                       <th className="py-2" />
                     </tr>
                   </thead>
@@ -696,7 +696,7 @@ export default function PayeesSettingsPage() {
                     {pageRows.map((g) => (
                       <tr key={g.key} className="border-b last:border-0 align-top">
                         <td className="py-2">{checkbox(g)}</td>
-                        <td className="py-2 pr-2">
+                        <td className="py-2 pe-2">
                           <div className="flex flex-wrap items-center">
                             {payeeLink(g)}
                             {spellingsBadge(g)}
@@ -705,8 +705,8 @@ export default function PayeesSettingsPage() {
                             <p className="text-xs text-muted-foreground">{t("page.asSpelling", { name: g.name })}</p>
                           )}
                         </td>
-                        <td className="py-2 pr-2 text-xs">{typeCell(g)}</td>
-                        <td className="py-2 pr-2 text-right tabular-nums">
+                        <td className="py-2 pe-2 text-xs">{typeCell(g)}</td>
+                        <td className="py-2 pe-2 text-end tabular-nums">
                           {g.count}
                           {g.rows > g.count && (
                             <span className="block text-xs text-muted-foreground" title={t("page.otherRowsTitle")}>
@@ -714,12 +714,12 @@ export default function PayeesSettingsPage() {
                             </span>
                           )}
                         </td>
-                        <td className="py-2 pr-2 text-right tabular-nums">{formatCurrency(g.total, currency)}</td>
-                        <td className="py-2 pr-2 text-xs tabular-nums">{g.firstDate ?? "—"}</td>
-                        <td className="py-2 pr-2 text-xs tabular-nums">{g.lastDate ?? "—"}</td>
-                        <td className="py-2 pr-2 text-xs text-muted-foreground max-w-40 truncate">{g.accounts.map((a) => a.name).join(", ") || "—"}</td>
-                        <td className="py-2 pr-2 text-xs text-muted-foreground max-w-48 truncate">{g.categories.map((c) => c.name).join(", ") || "—"}</td>
-                        <td className="py-2 text-right whitespace-nowrap">{rowAction(g)}</td>
+                        <td className="py-2 pe-2 text-end tabular-nums">{formatCurrency(g.total, currency)}</td>
+                        <td className="py-2 pe-2 text-xs tabular-nums">{formatDate(g.firstDate)}</td>
+                        <td className="py-2 pe-2 text-xs tabular-nums">{formatDate(g.lastDate)}</td>
+                        <td className="py-2 pe-2 text-xs text-muted-foreground max-w-40 truncate">{g.accounts.map((a) => a.name).join(", ") || "—"}</td>
+                        <td className="py-2 pe-2 text-xs text-muted-foreground max-w-48 truncate">{g.categories.map((c) => c.name).join(", ") || "—"}</td>
+                        <td className="py-2 text-end whitespace-nowrap">{rowAction(g)}</td>
                       </tr>
                     ))}
                   </tbody>

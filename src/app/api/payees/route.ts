@@ -49,7 +49,7 @@ import { getPayeeSettings } from "@/lib/payees/settings";
 import { PAYEE_TYPES } from "@/lib/payees/match-key";
 import { ALIAS_MODES, IDENTIFIER_KINDS } from "@/lib/payees/directory";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payees" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payees" }, async ({ request, userId, dek }) => {
   const limitRaw = Number(request.nextUrl.searchParams.get("limit") ?? "");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 20_000) : 5_000;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
@@ -171,7 +171,7 @@ const postSchema = z.discriminatedUnion("op", [
 ]);
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Payee change failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Payee change failed" },
   async ({ userId, dek, body }) => {
     const { dryRun: isDry, ...op } = body;
     const result = await executePayeeOp({ executor: db, userId, dek: dek!, op: op as PayeeOp, actor: "web", dryRun: isDry === true });

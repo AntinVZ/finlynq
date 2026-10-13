@@ -61,7 +61,7 @@ describe("B29: only the canonical name gives a strong hint", () => {
   it("different hints from the name and an alias make the entry mixed", () => {
     const h = entityMerchantTypeHints(ent("Кафе Дача", ["Hotel Dacha"]), types);
     expect(h.mixed).toBe(true);
-    expect(h.mixedReason).toContain("змішаний");
+    expect(h.mixedReason).toContain("mixed:");
     expect(h.mixedReason).toContain("Готелі");
   });
 });

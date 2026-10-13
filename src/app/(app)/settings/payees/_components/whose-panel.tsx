@@ -15,7 +15,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { formatCurrency } from "@/lib/currency";
+import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import type { StudioTextKey } from "@/lib/payees/i18n";
 import { OpDialog, type OpPreview } from "./op-dialog";
@@ -128,8 +128,8 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
                     {c.evidence.map((e) => (
                       <Badge key={e} variant="outline">{EVIDENCE[e] ? t(EVIDENCE[e]) : e}</Badge>
                     ))}
-                    <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-                      {t("common.tx", { n: c.transactions })}{c.firstDate ? ` · ${c.firstDate} → ${c.lastDate}` : ""}
+                    <span className="ms-auto text-xs text-muted-foreground tabular-nums">
+                      {t("common.tx", { n: c.transactions })}{c.firstDate ? ` · ${formatDate(c.firstDate)} → ${formatDate(c.lastDate)}` : ""}
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground">
