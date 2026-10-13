@@ -21,6 +21,7 @@ import { useState } from "react";
 import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
+import { ActionButton } from "@/components/actions/action-button";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -102,14 +103,14 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                     <span className="break-all">
                       {u.spellings.map((s) => `“${s.spelling}” × ${s.count}`).join(", ")} → <Link href={`/settings/payees/${u.entityId}`} className="font-medium hover:underline">{u.entityName}</Link>
                     </span>
-                    <Button
-                      size="sm"
-                      variant="outline"
+                    <ActionButton
+                      intent="confirm"
+                      soft
                       className="ms-auto h-7 text-xs"
                       onClick={() => setAction({ title: t("common.renameTo", { name: u.entityName }), body: { op: "apply", entityIds: [u.entityId] }, confirm: t("common.rename") })}
                     >
                       {t("common.apply")}
-                    </Button>
+                    </ActionButton>
                   </li>
                 ))}
               </ul>
@@ -139,7 +140,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                     <p className="text-xs text-muted-foreground">
                       {t("lookalikes.why", { reason: c.reason, alias: c.matchedAlias })}
                       {c.alternatives.length > 0 && <> {t("lookalikes.alsoLike", { list: c.alternatives.map((a) => `${a.name} ${Math.round(a.confidence * 100)}%`).join(", ") })}</>}
-                      {c.decisionReason && <span className="block text-rose-700 dark:text-rose-300">{c.decisionReason}</span>}
+                      {c.decisionReason && <span className="block text-action-reject-text">{c.decisionReason}</span>}
                     </p>
                     {c.spellings.length > 1 && (
                       <div className="flex flex-wrap gap-1.5">
@@ -149,9 +150,9 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                       </div>
                     )}
                     <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        size="sm"
-                        variant="outline"
+                      <ActionButton
+                        intent="confirm"
+                        soft
                         className="h-7 text-xs"
                         onClick={() =>
                           setAction({
@@ -162,7 +163,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                         }
                       >
                         {t("lookalikes.same")}
-                      </Button>
+                      </ActionButton>
                       <span className="inline-flex flex-wrap items-center gap-1 rounded-md border px-1.5 py-1">
                         <Input
                           aria-label={t("lookalikes.keepFrom", { name: c.name })}
@@ -180,9 +181,9 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                           <option value="tag">{t("lookalikes.asTag")}</option>
                           <option value="note">{t("lookalikes.inNote")}</option>
                         </select>
-                        <Button
-                          size="sm"
-                          variant="outline"
+                        <ActionButton
+                          intent="neutral"
+                          soft
                           className="h-7 text-xs"
                           disabled={!r.text.trim()}
                           onClick={() =>
@@ -195,11 +196,11 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                           }
                         >
                           {t("lookalikes.sameKeepRest")}
-                        </Button>
+                        </ActionButton>
                       </span>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => post({ action: "reject", payee: c.name, entityId: c.entity.id })}>
+                      <ActionButton intent="reject" soft className="h-7 text-xs" onClick={() => post({ action: "reject", payee: c.name, entityId: c.entity.id })}>
                         {t("lookalikes.different")}
-                      </Button>
+                      </ActionButton>
                     </div>
                   </li>
                 );

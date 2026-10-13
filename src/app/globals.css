@@ -39,6 +39,19 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  /* P8: the action palette (see src/components/actions/action-button.tsx). */
+  --color-action-confirm: var(--action-confirm);
+  --color-action-confirm-foreground: var(--action-confirm-foreground);
+  --color-action-confirm-text: var(--action-confirm-text);
+  --color-action-reject: var(--action-reject);
+  --color-action-reject-foreground: var(--action-reject-foreground);
+  --color-action-reject-text: var(--action-reject-text);
+  --color-action-open: var(--action-open);
+  --color-action-open-foreground: var(--action-open-foreground);
+  --color-action-open-text: var(--action-open-text);
+  --color-action-caution: var(--action-caution);
+  --color-action-caution-foreground: var(--action-caution-foreground);
+  --color-action-caution-text: var(--action-caution-text);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -86,6 +99,23 @@
   --sidebar-accent-foreground: oklch(0.95 0.003 245);
   --sidebar-border: oklch(0.22 0.010 245);
   --sidebar-ring: oklch(0.75 0.165 70);
+  /* P8 action palette. Every pair meets WCAG AA (≥ 4.5:1): solid = button
+     background, -foreground = text on it, -text = coloured text / icons on
+     the page background. Green confirms, red rejects / deletes / undoes,
+     blue opens, amber asks for a decision; grey (secondary) is everything else.
+     Colour is never the only signal: each action also has an icon and a label. */
+  --action-confirm: #15803d;            /* on #fff: 5.0:1 */
+  --action-confirm-foreground: #ffffff;
+  --action-confirm-text: #15803d;
+  --action-reject: #b91c1c;             /* 6.5:1 */
+  --action-reject-foreground: #ffffff;
+  --action-reject-text: #b91c1c;
+  --action-open: #1d4ed8;               /* 6.7:1 */
+  --action-open-foreground: #ffffff;
+  --action-open-text: #1d4ed8;
+  --action-caution: #fcd34d;            /* #451a03 on it: 11:1 */
+  --action-caution-foreground: #451a03;
+  --action-caution-text: #92400e;       /* on #fff: 6.8:1 */
 }
 
 .dark {
@@ -121,6 +151,19 @@
   --sidebar-accent-foreground: oklch(0.925 0.003 250);
   --sidebar-border: oklch(0.22 0.010 245);
   --sidebar-ring: oklch(0.75 0.165 70);
+  /* P8 action palette, dark: light fills with dark text (all ≥ 6:1). */
+  --action-confirm: #4ade80;
+  --action-confirm-foreground: #052e16;
+  --action-confirm-text: #4ade80;
+  --action-reject: #f87171;
+  --action-reject-foreground: #450a0a;
+  --action-reject-text: #f87171;
+  --action-open: #60a5fa;
+  --action-open-foreground: #172554;
+  --action-open-text: #60a5fa;
+  --action-caution: #fbbf24;
+  --action-caution-foreground: #451a03;
+  --action-caution-text: #fbbf24;
 }
 
 @layer base {

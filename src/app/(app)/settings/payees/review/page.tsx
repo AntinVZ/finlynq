@@ -17,7 +17,9 @@ import useSWR from "swr";
 import Link from "next/link";
 import { jsonFetcher } from "@/lib/swr";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { ActionButton } from "@/components/actions/action-button";
+import { ShortcutHelp } from "@/components/actions/shortcut-help";
+import { useListKeyboard } from "@/components/actions/use-list-keyboard";
 import { Badge } from "@/components/ui/badge";
 import { ArrowLeft } from "lucide-react";
 import { confidenceBadge, needsDecisionBadge } from "../_components/payee-ui";
@@ -71,6 +73,8 @@ export default function PayeeReviewPage() {
     } else setStatus(t("review.rejectFailed"));
   }
 
+  const kb = useListKeyboard({ items: proposals, onConfirm: (p) => setApproving([p.id]), onReject: (p) => void reject([p.id]), enabled: !approving });
+
   async function approved(r: OpPreview) {
     setApproving(null);
     setSelected(new Set());
@@ -100,17 +104,22 @@ export default function PayeeReviewPage() {
               <input type="range" min={50} max={99} value={threshold} aria-label={t("review.thresholdAria")} onChange={(e) => setThreshold(Number(e.target.value))} />
               <span className="tabular-nums w-10">{threshold}%</span>
             </label>
-            <Button variant="outline" size="sm" disabled={!eligible.length} onClick={() => setSelected(new Set(eligible.map((p) => p.id)))}>
+            <ActionButton intent="neutral" soft disabled={!eligible.length} onClick={() => setSelected(new Set(eligible.map((p) => p.id)))}>
               {t("review.selectAbove", { pct: threshold, n: eligible.length })}
-            </Button>
-            <Button size="sm" disabled={!selected.size || busy} onClick={() => setApproving([...selected])}>
+            </ActionButton>
+            <ActionButton intent="confirm" disabled={!selected.size || busy} onClick={() => setApproving([...selected])}>
               {t("review.acceptSelected")}{selected.size ? ` (${selected.size})` : ""}
-            </Button>
-            <Button variant="outline" size="sm" disabled={!selected.size || busy} onClick={() => reject([...selected])}>
+            </ActionButton>
+            <ActionButton intent="reject" soft disabled={!selected.size || busy} onClick={() => reject([...selected])}>
               {t("review.rejectSelected")}
-            </Button>
+            </ActionButton>
           </div>
-          <p className="text-xs text-muted-foreground">{t("review.selectNote")}</p>
+          <p className="text-xs text-muted-foreground">
+            {t("review.selectNote")}{" "}
+            <button type="button" className="hidden underline lg:inline" onClick={() => kb.setHelpOpen(true)}>
+              {t("shortcuts.hint")}
+            </button>
+          </p>
           {status && <p className="text-sm text-emerald-600 dark:text-emerald-400">{status}</p>}
           {error && <p className="text-sm text-destructive">{t("review.loadFailed")}</p>}
           {!data && !error ? (
@@ -119,8 +128,8 @@ export default function PayeeReviewPage() {
             <p className="text-sm text-muted-foreground">{t("review.empty")}</p>
           ) : (
             <ul className="space-y-2">
-              {proposals.map((p) => (
-                <li key={p.id} className="rounded-lg border p-3 text-sm space-y-1.5">
+              {proposals.map((p, i) => (
+                <li key={p.id} aria-current={kb.index === i || undefined} className={`rounded-lg border p-3 text-sm space-y-1.5 ${kb.index === i ? "ring-2 ring-action-open" : ""}`}>
                   <div className="flex flex-wrap items-center gap-2">
                     <input type="checkbox" aria-label={t("review.selectProposal", { name: p.canonical })} checked={selected.has(p.id)} onChange={() => toggle(p.id)} />
                     <span className="font-medium break-all">{p.canonical}</span>
@@ -133,12 +142,12 @@ export default function PayeeReviewPage() {
                       </Link>
                     )}
                     <span className="ms-auto flex gap-1">
-                      <Button size="sm" className="h-7 text-xs" onClick={() => setApproving([p.id])}>
+                      <ActionButton intent="confirm" className="h-7 text-xs" shortcut={kb.index === i ? "Enter" : undefined} onClick={() => setApproving([p.id])}>
                         {t("review.acceptEllipsis")}
-                      </Button>
-                      <Button size="sm" variant="ghost" className="h-7 text-xs" disabled={busy} onClick={() => reject([p.id])}>
+                      </ActionButton>
+                      <ActionButton intent="reject" soft className="h-7 text-xs" shortcut={kb.index === i ? "⌫" : undefined} disabled={busy} onClick={() => reject([p.id])}>
                         {t("review.reject")}
-                      </Button>
+                      </ActionButton>
                     </span>
                   </div>
                   {p.reason && <p className="text-xs text-muted-foreground">{p.reason}</p>}
@@ -175,10 +184,11 @@ export default function PayeeReviewPage() {
           onDone={approved}
         >
           {proposals.some((p) => approving.includes(p.id) && p.needsDecision) && (
-            <p className="text-xs text-rose-700 dark:text-rose-300">{t("review.personWarning")}</p>
+            <p className="text-xs text-action-reject-text">{t("review.personWarning")}</p>
           )}
         </OpDialog>
       )}
+      <ShortcutHelp open={kb.helpOpen} onOpenChange={kb.setHelpOpen} />
     </div>
   );
 }

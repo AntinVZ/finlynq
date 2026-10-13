@@ -1,6 +1,8 @@
 /**
  * Shared types and small renderers for the Payee Studio pages.
  */
+import { AlertTriangle } from "lucide-react";
+import { actionChipClass } from "@/components/actions/action-button";
 import { Badge } from "@/components/ui/badge";
 import type { StudioT, StudioTextKey } from "@/lib/payees/i18n";
 
@@ -159,10 +161,10 @@ export function confidenceBadge(c: number, t: StudioT) {
   const pct = Math.round(c * 100);
   const tone =
     c >= 0.85
-      ? "border-emerald-300 text-emerald-700 dark:border-emerald-800 dark:text-emerald-300"
+      ? actionChipClass("confirm")
       : c >= 0.7
-        ? "border-amber-300 text-amber-700 dark:border-amber-800 dark:text-amber-300"
-        : "border-muted-foreground/30 text-muted-foreground";
+        ? actionChipClass("caution")
+        : actionChipClass("neutral");
   return (
     <Badge variant="outline" className={tone} title={t("common.confidenceTitle")}>
       {pct}%
@@ -170,8 +172,10 @@ export function confidenceBadge(c: number, t: StudioT) {
   );
 }
 
+/** P8: "needs your decision" is amber, with an icon and a label (never colour alone). */
 export const needsDecisionBadge = (title: string | null | undefined, t: StudioT) => (
-  <Badge variant="outline" className="border-rose-300 text-rose-700 dark:border-rose-800 dark:text-rose-300" title={title ?? undefined}>
+  <Badge variant="outline" className={`gap-1 ${actionChipClass("caution")}`} title={title ?? undefined}>
+    <AlertTriangle aria-hidden="true" className="h-3 w-3" />
     {t("common.needsDecision")}
   </Badge>
 );

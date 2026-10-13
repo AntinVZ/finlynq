@@ -12,7 +12,7 @@
 
 import { useEffect, useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { ActionButton, type ActionIntent } from "@/components/actions/action-button";
 import type { StudioT } from "@/lib/payees/i18n";
 import { useStudioT } from "./i18n";
 
@@ -82,6 +82,7 @@ export function OpDialog({
   onDone,
   children,
   confirmLabel,
+  intent,
   endpoint = "/api/payees",
 }: {
   title: string;
@@ -91,10 +92,13 @@ export function OpDialog({
   onDone: (result: OpPreview) => void;
   children?: React.ReactNode;
   confirmLabel?: string;
+  /** P8: the confirm button's colour; undo / delete / alias removal default to red (reject). */
+  intent?: ActionIntent;
   /** POST target; the proposals page approves through /api/payees/proposals. */
   endpoint?: string;
 }) {
   const t = useStudioT();
+  const action: ActionIntent = intent ?? (["undo", "delete", "alias_remove"].includes(String(body?.op)) ? "reject" : "confirm");
   const key = body ? JSON.stringify(body) : "";
   const [checked, setChecked] = useState<{ key: string; preview: OpPreview | null; error: string }>({ key: "", preview: null, error: "" });
   const [busy, setBusy] = useState(false);
@@ -186,7 +190,7 @@ export function OpDialog({
               )}
               {(preview.skipped ?? []).length > 0 && (
                 <div className="text-xs space-y-0.5">
-                  <p className="font-medium text-amber-600 dark:text-amber-400">{t("op.skipped", { n: preview.skipped!.length })}</p>
+                  <p className="font-medium text-action-caution-text">{t("op.skipped", { n: preview.skipped!.length })}</p>
                   <ul className="max-h-32 overflow-y-auto text-muted-foreground">
                     {preview.skipped!.map((x) => (
                       <li key={`s${x.id}`} className="break-all">
@@ -203,26 +207,32 @@ export function OpDialog({
               {preview.ownAccounts && preview.ownAccounts.updated.length > 0 && <p className="text-xs">{t("own.updated", { list: preview.ownAccounts.updated.join("; ") })}</p>}
               {preview.ownAccounts && preview.ownAccounts.removed.length > 0 && <p className="text-xs">{t("own.removed", { list: preview.ownAccounts.removed.join("; ") })}</p>}
               {preview.rows.conflicts.length > 0 && (
-                <p className="text-xs text-amber-600 dark:text-amber-400">
+                <p className="text-xs text-action-caution-text">
                   {t("op.conflicts", { list: preview.rows.conflicts.map((c) => `“${c.payee}”`).join(", ") })}
                 </p>
               )}
               {preview.warnings.map((w) => (
-                <p key={w} className="text-xs text-amber-600 dark:text-amber-400">{w}</p>
+                <p key={w} className="text-xs text-action-caution-text">{w}</p>
               ))}
-              {preview.emptyReason && <p className="text-xs text-amber-600 dark:text-amber-400">{preview.emptyReason}</p>}
+              {preview.emptyReason && <p className="text-xs text-action-caution-text">{preview.emptyReason}</p>}
               {preview.blocked && <p className="text-xs text-destructive">{preview.blocked}</p>}
               <p className="text-xs text-muted-foreground">{t("op.footer")}</p>
             </div>
           )}
           {error && <p className="text-destructive">{error}</p>}
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={onClose} disabled={busy}>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <ActionButton intent="neutral" soft size="default" onClick={onClose} disabled={busy}>
               {t("common.cancel")}
-            </Button>
-            <Button onClick={confirm} disabled={!preview || !!preview.blocked || previewing || busy}>
+            </ActionButton>
+            <ActionButton
+              intent={action}
+              size="default"
+              onClick={confirm}
+              disabled={!preview || !!preview.blocked || previewing || busy}
+              summary={action !== "confirm" && preview && !preview.undo ? describeRows(preview, t) : undefined}
+            >
               {busy ? t("common.saving") : (confirmLabel ?? t("common.confirm"))}
-            </Button>
+            </ActionButton>
           </div>
         </div>
       </DialogContent>

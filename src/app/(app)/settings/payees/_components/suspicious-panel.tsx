@@ -11,7 +11,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { ActionButton } from "@/components/actions/action-button";
 import { Input } from "@/components/ui/input";
 import { OpDialog, type OpPreview } from "./op-dialog";
 import { EntityPicker, type EntityOption } from "./entity-picker";
@@ -57,7 +57,7 @@ export function SuspiciousPanel({ rows, entities, onDone }: { rows: SuspiciousRo
                 <Link href={`/settings/payees/${r.id}`} className="font-medium hover:underline break-all">
                   {r.name}
                 </Link>
-                <span className="text-xs text-amber-700 dark:text-amber-300">{r.reasons.map((x) => x.reason).join("; ")}</span>
+                <span className="text-xs text-action-caution-text">{r.reasons.map((x) => x.reason).join("; ")}</span>
                 <span className="ms-auto text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: r.count })}</span>
               </div>
               {r.spellings.length > 0 && (
@@ -66,21 +66,21 @@ export function SuspiciousPanel({ rows, entities, onDone }: { rows: SuspiciousRo
                 </p>
               )}
               <div className="flex flex-wrap gap-1.5">
-                <Button size="sm" variant="outline" className="h-7 text-xs" render={<Link href={`/settings/payees/${r.id}`} />}>
+                <ActionButton intent="open" soft className="h-7 text-xs" render={<Link href={`/settings/payees/${r.id}`} />}>
                   {t("suspicious.rows")}
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => open("rename", r)}>
+                </ActionButton>
+                <ActionButton intent="neutral" soft className="h-7 text-xs" onClick={() => open("rename", r)}>
                   {t("suspicious.rename")}
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => open("merge", r)}>
+                </ActionButton>
+                <ActionButton intent="neutral" soft className="h-7 text-xs" onClick={() => open("merge", r)}>
                   {t("suspicious.merge")}
-                </Button>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => open("delete", r)}>
+                </ActionButton>
+                <ActionButton intent="reject" soft className="h-7 text-xs" onClick={() => open("delete", r)}>
                   {t("suspicious.delete")}
-                </Button>
-                <Button size="sm" variant="secondary" className="h-7 text-xs" onClick={() => open("reviewed", r)}>
+                </ActionButton>
+                <ActionButton intent="confirm" soft className="h-7 text-xs" onClick={() => open("reviewed", r)}>
                   {t("suspicious.reviewed")}
-                </Button>
+                </ActionButton>
               </div>
             </li>
           ))}

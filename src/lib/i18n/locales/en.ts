@@ -891,4 +891,13 @@ export const messages = {
   "srv.whose.ownAccount": "This is your own account: {account} (“My accounts and cards”). Payments to it are transfers between your own accounts, not spending.",
   "srv.whose.sharedLast4": "The last 4 digits {value} belong to {n, plural, one {# payee} other {# payees}}; tell them apart by the typical amount, the dates and the account you paid from:",
   "srv.mcp.yourAccount": "This is your account: {account}",
+  "shortcuts.title": "Keyboard shortcuts",
+  "shortcuts.intro": "On a list of decisions you can work without the mouse.",
+  "shortcuts.move": "Next / previous item",
+  "shortcuts.confirm": "Confirm (green)",
+  "shortcuts.reject": "Reject (red)",
+  "shortcuts.open": "Open",
+  "shortcuts.help": "Show this help",
+  "shortcuts.enabled": "Keyboard shortcuts on in this browser",
+  "shortcuts.hint": "Keyboard: J / K, Enter, Backspace (press ? for help)",
 } as const;

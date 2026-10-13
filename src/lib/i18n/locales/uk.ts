@@ -887,4 +887,13 @@ export const messages: Messages = {
   "srv.whose.ownAccount": "Це ваш рахунок: {account} («Мої рахунки і картки»). Платежі на нього — перекази між своїми рахунками, не витрати.",
   "srv.whose.sharedLast4": "Останні 4 цифри {value} належать {n, plural, one {# платнику} other {# платникам}}; розрізняйте їх за типовою сумою, датами й рахунком, з якого ви платили:",
   "srv.mcp.yourAccount": "Це ваш рахунок: {account}",
+  "shortcuts.title": "Клавіатурні скорочення",
+  "shortcuts.intro": "У списку рішень можна працювати без миші.",
+  "shortcuts.move": "Наступний / попередній",
+  "shortcuts.confirm": "Підтвердити (зелена)",
+  "shortcuts.reject": "Відхилити (червона)",
+  "shortcuts.open": "Відкрити",
+  "shortcuts.help": "Показати цю довідку",
+  "shortcuts.enabled": "Скорочення ввімкнені в цьому браузері",
+  "shortcuts.hint": "Клавіатура: J / K, Enter, Backspace (? — довідка)",
 };
