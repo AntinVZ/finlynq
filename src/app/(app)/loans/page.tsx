@@ -2,6 +2,7 @@
 
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -431,7 +432,14 @@ function LoansPageContent() {
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
                 <div>
-                  <p className="text-xs text-muted-foreground">Remaining{loan.balanceSource === "account" && <span className="ml-1 text-emerald-600" title={`Live balance from ${loan.accountName ?? "linked account"}`}>· from account</span>}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Remaining
+                    {loan.balanceSource === "account" && loan.accountId != null && (
+                      <Link href={`/accounts/${loan.accountId}`} className="ml-1 text-emerald-600 hover:underline" title={`Live balance from ${loan.accountName ?? "the linked account"}. Open the account.`}>
+                        · from account
+                      </Link>
+                    )}
+                  </p>
                   <p className="font-mono font-bold text-rose-600">{formatCurrency(loan.remainingBalance, loan.currency)}</p>
                   {loan.currency !== displayCurrency && loan.remainingBalanceDisplay != null && (
                     <p className="text-xs text-muted-foreground font-mono">≈ {formatCurrency(loan.remainingBalanceDisplay, displayCurrency)}</p>

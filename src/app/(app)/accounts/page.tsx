@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useDropdownOrder } from "@/components/dropdown-order-provider";
 import { formatCurrency } from "@/lib/currency";
+import { loanHref, useLinkedLoans } from "@/lib/hooks/useLinkedLoans";
 import { useDisplayCurrency } from "@/components/currency-provider";
 import { OnboardingTips } from "@/components/onboarding-tips";
 import { EmptyState } from "@/components/empty-state";
@@ -29,6 +30,7 @@ import {
   Plus,
   Archive,
   FolderCog,
+  Landmark,
 } from "lucide-react";
 
 type AccountBalance = {
@@ -135,6 +137,8 @@ export default function AccountsPage() {
 
   // Show-archived toggle (persists archived accounts in the list with a badge)
   const [showArchived, setShowArchived] = useState(false);
+  // Loans keyed by their linked account, for the per-row "Loan" link.
+  const loansByAccount = useLinkedLoans();
   // FINLYNQ-148: the Settings → Dropdown Ordering "account" list is the user's
   // configured account sort order. The /accounts list must honour it (it was
   // ignoring the setting and rendering in raw API order). Pinned accounts lead
@@ -289,6 +293,18 @@ export default function AccountsPage() {
                       )}
                   </span>
                 </Link>
+                {/* A sibling of the row link, not inside it: anchors cannot nest. */}
+                {(loansByAccount.get(a.accountId) ?? []).map((l) => (
+                  <Link
+                    key={l.id}
+                    href={loanHref(l.id)}
+                    title={`Open the loan "${l.name}" and its schedule`}
+                    aria-label={`Open the loan ${l.name}`}
+                    className="shrink-0 mr-2 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-primary"
+                  >
+                    <Landmark className="h-3.5 w-3.5" /> Loan
+                  </Link>
+                ))}
               </div>
             ))}
           </CardContent>
