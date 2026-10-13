@@ -91,6 +91,8 @@ export const TOOL_ANNOTATION_OVERRIDES: Record<string, ToolAnnotations> = {
   manage_rules: { destructiveHint: true },
   manage_subscriptions: { destructiveHint: true },
   manage_loans: { destructiveHint: true },
+  // op:'rebuild' resets a position's hand-made lot matching.
+  manage_lots: { destructiveHint: true },
   // Phase 3 (splits / transactions / transfers):
   manage_splits: { destructiveHint: true },
   manage_transactions: { destructiveHint: true },

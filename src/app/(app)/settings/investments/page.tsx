@@ -52,6 +52,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { CostBasisSetting } from "@/components/portfolio/cost-basis-method";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { PageSkeleton } from "@/components/page-skeleton";
 import { ErrorState } from "@/components/error-state";
@@ -825,6 +826,8 @@ export default function InvestmentsSettingsPage() {
           {toast.msg}
         </div>
       )}
+
+      <CostBasisSetting />
 
       <Tabs defaultValue="securities" className="w-full">
         <TabsList>

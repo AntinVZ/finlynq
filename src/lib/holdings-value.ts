@@ -20,6 +20,7 @@ import { isMetalCurrency, isCryptoSymbol, isCurrencyCodeSymbol } from "@/lib/fx/
 import { decryptNamedRows } from "@/lib/crypto/encrypted-columns";
 import { cashLegSkipSql } from "@/lib/portfolio/aggregation-predicates";
 import { todayISO } from "@/lib/utils/date";
+import { isLotsEnabledForUser, loadMetricsForUser } from "@/lib/portfolio/lots/read";
 import { effectivePriceAtDate, loadCustomPriceMap } from "@/lib/securities/custom-prices";
 
 export type AccountHoldingsValue = {
@@ -96,6 +97,24 @@ async function valueHoldingsAtDate(
 ): Promise<HoldingValue[]> {
   const asOfDate = opts?.asOfDate ?? todayISO();
   const isToday = asOfDate >= todayISO();
+  // The user's cost-basis method. With advanced lot allocation on, each
+  // position's cost basis is the cost of the lots still held. Loaded for a
+  // CURRENT valuation only: historical callers (net-worth snapshots) read
+  // `.value`, and reloading every lot per date would cost a great deal for a
+  // figure they never use. Holding id -> cost in the holding's currency.
+  const lotCostBasisByHolding = new Map<number, number>();
+  if (isToday && (await isLotsEnabledForUser(userId))) {
+    const lotMetrics = await loadMetricsForUser({
+      userId,
+      dek: dek ?? null,
+      asOfDate,
+      // Cost basis is price-independent; an empty price map skips the quotes.
+      prices: new Map(),
+    });
+    for (const lm of lotMetrics) {
+      if (lm.qty > 1e-9) lotCostBasisByHolding.set(lm.holdingId, lm.costBasis);
+    }
+  }
   // Stream D Phase 4 — plaintext name/symbol dropped; ciphertext only.
   const rawHoldings = await db
     .select({
@@ -409,8 +428,16 @@ async function valueHoldingsAtDate(
       totalBuyAmountInHoldingCcy += b.buyAmountInEntered * fxToHoldingCcy;
     }
     const avgCostInHoldingCcy = totalBuyQty > 0 ? totalBuyAmountInHoldingCcy / totalBuyQty : null;
+    // Advanced lot allocation: the cost of the lots still held replaces the
+    // average of every purchase. Same rule as /api/portfolio/overview (a long
+    // position with lots; cash sleeves stay on the ledger path), so the
+    // Portfolio page, account balances and the MCP tools report one figure.
+    const lotCostBasis = h.isCash === true ? undefined : lotCostBasisByHolding.get(h.id);
     let costBasisInAccountCcy: number;
-    if (avgCostInHoldingCcy != null) {
+    if (lotCostBasis != null) {
+      const fxHoldingToAccount = await getFx(h.currency, accountCurrency);
+      costBasisInAccountCcy = lotCostBasis * fxHoldingToAccount;
+    } else if (avgCostInHoldingCcy != null) {
       const costBasisInHoldingCcy = qty * avgCostInHoldingCcy;
       const fxHoldingToAccount = await getFx(h.currency, accountCurrency);
       costBasisInAccountCcy = costBasisInHoldingCcy * fxHoldingToAccount;

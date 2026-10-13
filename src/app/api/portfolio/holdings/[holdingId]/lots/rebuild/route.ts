@@ -21,11 +21,10 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { and, eq } from "drizzle-orm";
-import { db, schema } from "@/db";
 import { requireEncryption } from "@/lib/auth/require-encryption";
 import { logApiError, safeErrorMessage } from "@/lib/validate";
 import { rebuildLotsForPosition } from "@/lib/portfolio/lots/backfill";
+import { resolvePositionScope } from "@/lib/portfolio/lots/inspect";
 
 export async function POST(
   request: NextRequest,
@@ -43,48 +42,18 @@ export async function POST(
       );
     }
 
-    // Resolve the clicked holding (owner-scoped) → its account + security
-    // cluster. accountId comes from the holding itself so the scope can't be
-    // spoofed cross-account.
-    const [holding] = await db
-      .select({
-        id: schema.portfolioHoldings.id,
-        accountId: schema.portfolioHoldings.accountId,
-        securityId: schema.portfolioHoldings.securityId,
-      })
-      .from(schema.portfolioHoldings)
-      .where(
-        and(
-          eq(schema.portfolioHoldings.id, holdingId),
-          eq(schema.portfolioHoldings.userId, auth.userId),
-        ),
-      )
-      .limit(1);
-
-    if (!holding || holding.accountId == null) {
+    // The clicked holding (owner-scoped) and every position clustering under
+    // the same security IN THIS ACCOUNT. The account comes from the holding
+    // itself, so the scope can't be spoofed cross-account. Shared with the
+    // settings switch and MCP `manage_lots(op:"rebuild")`.
+    const scope = await resolvePositionScope(auth.userId, holdingId);
+    if (!scope) {
       return NextResponse.json(
         { error: "Holding not found" },
         { status: 404 },
       );
     }
-    const accountId = holding.accountId;
-
-    // Every position clustering under the same security IN THIS ACCOUNT.
-    // Un-backfilled rows (security_id null) fall back to just this holding.
-    let holdingIds: number[] = [holdingId];
-    if (holding.securityId != null) {
-      const siblings = await db
-        .select({ id: schema.portfolioHoldings.id })
-        .from(schema.portfolioHoldings)
-        .where(
-          and(
-            eq(schema.portfolioHoldings.userId, auth.userId),
-            eq(schema.portfolioHoldings.securityId, holding.securityId),
-            eq(schema.portfolioHoldings.accountId, accountId),
-          ),
-        );
-      holdingIds = [...new Set([holdingId, ...siblings.map((s) => s.id)])];
-    }
+    const { holdingIds, accountId } = scope;
 
     const result = await rebuildLotsForPosition(auth.userId, auth.dek, {
       holdingIds,

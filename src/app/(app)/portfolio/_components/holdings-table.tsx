@@ -15,6 +15,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ChevronDown, ChevronUp, Download, Layers } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { CostBasisNote } from "@/components/portfolio/cost-basis-method";
 import { LotInspectorDialog } from "@/components/portfolio/lot-inspector-dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
@@ -123,6 +124,8 @@ export function HoldingsTable({
             <p className="text-xs text-muted-foreground mt-0.5">
               Live prices from Yahoo Finance &amp; CoinGecko
             </p>
+            {/* Which cost-basis method these figures use, with the explanation. */}
+            <CostBasisNote />
           </div>
           <div className="flex items-center gap-2">
             <div className="flex gap-1 flex-wrap">
