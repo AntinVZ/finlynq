@@ -44,7 +44,7 @@ export const RELEASES: Release[] = [
     date: "2026-10-13",
     current: true,
     tagline:
-      "Finlynq v3.5.0 adds loans with real interest handling, a cost basis method you choose, reports by year, by category and on a calendar, a merged Subscriptions page, and mobile apps that keep up.",
+      "Finlynq v3.5.0 adds loans with real interest handling, a cost basis method you choose, reports by year, by category and on a calendar, and a merged Subscriptions page.",
     summary: [
       "Finlynq v3.5.0 collects everything shipped since v3.4.1. Most of it started as feedback from people using the app: loans that match how your lender actually charges interest, a cost basis that follows the shares you still hold, and more ways to read your own history.",
       "Finlynq is an open-source (AGPL v3) personal finance app with a first-party Model Context Protocol (MCP) server, so you can track your money in the app and analyze it from Claude, ChatGPT, Cursor, or any MCP-compatible assistant.",
@@ -109,7 +109,7 @@ export const RELEASES: Release[] = [
       {
         heading: "Mobile apps",
         items: [
-          "Android and iOS 1.0.22 add Loans with payment schedules, the cost basis method, Subscriptions, category reports, the transactions calendar, cross-currency transfers and yearly reports.",
+          "The mobile apps gained a Subscriptions screen and category reports. Version 1.0.22, in App Store and Google Play review as of this release, adds Loans with payment schedules, the cost basis method, the transactions calendar, cross-currency transfers and yearly reports.",
         ],
       },
       {
