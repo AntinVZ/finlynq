@@ -74,7 +74,8 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees/settings") return { ok: true, json: async () => ({ language: "en" }) };
-    if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url === "/api/payees" && body?.op === "undo") return { ok: true, json: async () => ({ ...preview, op: "undo", batchId: null, undo: { restoredRows: 12, skippedRows: 0, restoredEntities: 0, removedEntities: 1 } }) };
+    if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, op: body.op, batchId: body.dryRun === true ? null : 42, dryRun: body.dryRun === true }) };
     if (url.startsWith("/api/payees/requisites?action=whose")) {
       return {
         ok: true,
@@ -214,6 +215,27 @@ describe("Settings → Payees", () => {
     expect((dry.body!.payees as string[]).sort()).toEqual(["EPITCENTR K10 KYIV 360616", "Epicentr", "Епіцентр", "Епіцентр К"].sort());
     fireEvent.click(screen.getByRole("button", { name: "Merge" }));
     await waitFor(() => expect(calls.some((c) => c.body && c.body.op === "merge" && c.body.dryRun === undefined)).toBe(true));
+  });
+
+  it("P8: one click makes a cluster one entry, with a preview, then «Done · Undo» for 10 s", async () => {
+    const calls = setup();
+    await screen.findByLabelText("Summary");
+    open(/^Queue/);
+    // The person cluster gets no one-click button, only the full dialog.
+    expect(screen.getAllByRole("button", { name: /^Make it/ })).toHaveLength(1);
+    expect(screen.getByText(/never merged in one click/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Make it “Епіцентр”" }));
+    expect(await screen.findByText(/Renames 12 rows/)).toBeTruthy();
+    const dry = calls.find((c) => c.body?.dryRun === true)!;
+    expect(dry.body).toMatchObject({ op: "merge", into: { name: "Епіцентр", type: "retail" } });
+    expect((dry.body!.payees as string[]).sort()).toEqual(["EPITCENTR K10 KYIV 360616", "Epicentr", "Епіцентр", "Епіцентр К"].sort());
+    fireEvent.click(screen.getByRole("button", { name: "Make it one" }));
+    const toast = (await screen.findByText("Done")).closest("[role=status]") as HTMLElement;
+    expect(toast.textContent).toMatch(/Done · Saved. Renames 12 rows/);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(calls.some((c) => c.body?.op === "undo" && c.body?.batchId === 42)).toBe(true));
+    await waitFor(() => expect(screen.queryByText("Done")).toBeNull());
+    expect(await screen.findByText("Undone: restored 12 row(s).")).toBeTruthy();
   });
 
   it("lists change batches with Undo", async () => {

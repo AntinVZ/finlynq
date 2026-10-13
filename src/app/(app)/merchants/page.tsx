@@ -66,6 +66,8 @@ import { MinePanel } from "./_components/mine-panel";
 import { WhosePanel } from "./_components/whose-panel";
 import { MerchantSearchButton } from "@/components/merchants/merchant-search";
 import { EmptyState, HelpHint, ListSkeleton, LoadError } from "@/components/merchants/state";
+import { useUndoToast } from "@/components/merchants/undo-toast";
+import { ActionButton } from "@/components/actions/action-button";
 
 const PAGE_SIZES = [25, 50] as const;
 
@@ -98,6 +100,8 @@ type Action =
       clusterKeys: string[];
     }
   | { kind: "undo"; batch: BatchRow }
+  /** P8 stage 3: one-click canonical — a preview of one prepared change, then confirm. */
+  | { kind: "quick"; title: string; body: Record<string, unknown>; note: string }
   | { kind: "applyAll" }
   | { kind: "setType" }
   | { kind: "types" };
@@ -363,11 +367,43 @@ function MerchantsSection() {
     });
   }
 
+  const refresh = useCallback(() => Promise.all([mutate(), globalMutate("/api/payees/queue")]), [mutate]);
+  const undoToast = useUndoToast(async (n) => {
+    setStatus(t("common.undone", { n }));
+    await refresh();
+  });
+
   async function done(r: OpPreview, message?: string) {
     setAction(null);
     setSelected(new Set());
-    setStatus(message ?? (r.undo ? t("common.undone", { n: r.undo.restoredRows }) : t("common.saved", { rows: describeRows(r, t) })));
-    await Promise.all([mutate(), globalMutate("/api/payees/queue")]);
+    const text = message ?? (r.undo ? t("common.undone", { n: r.undo.restoredRows }) : t("common.saved", { rows: describeRows(r, t) }));
+    // P8 stage 3: a confirmed change can be undone from the toast for 10 s (and from Changes for 30 days).
+    if (r.batchId && !r.undo && r.op !== "undo") {
+      setStatus("");
+      undoToast.show(r.batchId, text);
+    } else setStatus(text);
+    await refresh();
+  }
+
+  /**
+   * P8 stage 3: one click to make a cluster one entry under its suggested
+   * canonical name (or into the one entry it already resolves to). Still a
+   * preview first; people / ФОП never get it (the full dialog only).
+   */
+  function quickCanonical(c: PayeeClusterRow) {
+    const groups = c.keys.map((k) => groupsByKey.get(k)).filter((g): g is PayeeGroupRow => !!g);
+    const entityIds = [...new Set(groups.map((g) => g.entityId).filter((id): id is number => id != null))];
+    const payees = groups.filter((g) => g.entityId == null).flatMap((g) => g.spellings.map((s) => s.spelling));
+    const target = entityIds.length === 1 ? entityById.get(entityIds[0]) : undefined;
+    const name = target?.name ?? c.suggestedName;
+    setAction({
+      kind: "quick",
+      title: t("quick.title", { name }),
+      note: target ? t("quick.intoEntry", { name }) : t("quick.newEntry", { name }),
+      body: target
+        ? { op: "merge", into: { entityId: target.id }, entityIds: [], payees }
+        : { op: "merge", into: { name, type: c.suggestedType.type }, entityIds, payees },
+    });
   }
 
   async function saveSettings(patch: Record<string, unknown>) {
@@ -631,7 +667,16 @@ function MerchantsSection() {
                 )),
               )}
             </div>
-            <div className="flex justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {c.needsDecision ? (
+                <span className="me-auto text-xs text-muted-foreground">{t("quick.peopleNote")}</span>
+              ) : (
+                c.suggestedName && (
+                  <ActionButton intent="confirm" size="sm" className="h-7 text-xs" onClick={() => quickCanonical(c)}>
+                    {t("quick.button", { name: c.suggestedName })}
+                  </ActionButton>
+                )
+              )}
               <Button
                 variant="outline"
                 size="sm"
@@ -1016,6 +1061,7 @@ function MerchantsSection() {
           }}
         />
       )}
+      {undoToast.node}
       {explain && <ExplainDialog initialA={explain.a} initialB={explain.b} onClose={() => setExplain(null)} />}
       {action?.kind === "merge" && (
         <MergeDialog
@@ -1043,6 +1089,11 @@ function MerchantsSection() {
           intent="reject"
         >
           <p className="text-xs text-muted-foreground">{batchLabel(action.batch, t)}</p>
+        </OpDialog>
+      )}
+      {action?.kind === "quick" && (
+        <OpDialog title={action.title} body={action.body} onClose={() => setAction(null)} onDone={(r) => done(r)} confirmLabel={t("quick.confirm")} intent="confirm">
+          <p className="text-xs text-muted-foreground">{action.note}</p>
         </OpDialog>
       )}
       {action?.kind === "setType" && (

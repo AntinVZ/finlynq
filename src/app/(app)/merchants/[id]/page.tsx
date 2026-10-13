@@ -28,6 +28,7 @@ import { ArrowLeft } from "lucide-react";
 import { formatCurrency, formatDate } from "@/lib/i18n/format-current";
 import { Sparkline } from "@/components/merchants/sparkline";
 import { HelpHint, ListSkeleton, LoadError } from "@/components/merchants/state";
+import { useUndoToast } from "@/components/merchants/undo-toast";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
 import { batchLabel, PAYEE_TYPE_OPTIONS, PayeeAvatar, typeLabel, WebsiteLink, type BatchRow, type PayeeGroupRow, type PayeeSettings } from "../_components/payee-ui";
 
@@ -104,6 +105,11 @@ export default function PayeeEntityPage() {
   const advanced = settings?.advancedMode ?? false;
   const kinds = settings?.identifierKinds ?? IDENTIFIER_KINDS;
 
+  const undoToast = useUndoToast(async (n) => {
+    setStatus(t("common.undone", { n }));
+    await mutate();
+  });
+
   async function done(r: OpPreview, then?: "back") {
     setAction(null);
     setEdit(null);
@@ -113,7 +119,12 @@ export default function PayeeEntityPage() {
       router.push("/merchants");
       return;
     }
-    setStatus(r.undo ? t("common.undone", { n: r.undo.restoredRows }) : t("common.saved", { rows: describeRows(r, t) }));
+    const text = r.undo ? t("common.undone", { n: r.undo.restoredRows }) : t("common.saved", { rows: describeRows(r, t) });
+    // P8 stage 3: «Готово · Скасувати» for 10 s after a confirmed change.
+    if (r.batchId && !r.undo && r.op !== "undo") {
+      setStatus("");
+      undoToast.show(r.batchId, text);
+    } else setStatus(text);
     await mutate();
   }
 
@@ -525,6 +536,17 @@ export default function PayeeEntityPage() {
                   <li key={`${g.key}|${s.spelling}`} className="flex flex-wrap items-center gap-2 p-2 text-sm">
                     <span className="break-all">{s.spelling}</span>
                     <span className="ms-auto text-xs text-muted-foreground tabular-nums">× {s.count}</span>
+                    {s.spelling !== e.name && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 text-xs"
+                        title={t("quick.makeMainTitle")}
+                        onClick={() => setAction({ title: t("quick.makeMainConfirmTitle", { name: s.spelling }), body: { op: "update", entityId: e.id, name: s.spelling }, confirm: t("quick.makeMain") })}
+                      >
+                        {t("quick.makeMain")}
+                      </Button>
+                    )}
                   </li>
                 )),
               )}
@@ -566,6 +588,7 @@ export default function PayeeEntityPage() {
         </CardContent>
       </Card>
 
+      {undoToast.node}
       {action && (
         <OpDialog title={action.title} body={action.body} confirmLabel={action.confirm} onClose={() => setAction(null)} onDone={(r) => done(r, action.then)} />
       )}
