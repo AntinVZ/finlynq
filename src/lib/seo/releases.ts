@@ -38,11 +38,106 @@ export type Release = {
 
 export const RELEASES: Release[] = [
   {
+    version: "3.5.0",
+    slug: "v3.5.0",
+    name: "Finlynq v3.5.0",
+    date: "2026-10-13",
+    current: true,
+    tagline:
+      "Finlynq v3.5.0 adds loans with real interest handling, a cost basis method you choose, reports by year, by category and on a calendar, and a merged Subscriptions page.",
+    summary: [
+      "Finlynq v3.5.0 collects everything shipped since v3.4.1. Most of it started as feedback from people using the app: loans that match how your lender actually charges interest, a cost basis that follows the shares you still hold, and more ways to read your own history.",
+      "Finlynq is an open-source (AGPL v3) personal finance app with a first-party Model Context Protocol (MCP) server, so you can track your money in the app and analyze it from Claude, ChatGPT, Cursor, or any MCP-compatible assistant.",
+    ],
+    sections: [
+      {
+        heading: "Loans and debt",
+        items: [
+          "Loans and Debt is now part of the standard app, and a loan can be edited from the web as well as created.",
+          "Loan interest has a proper home. A payment stays one plain transfer into the loan account, and the interest is its own expense on that account. Generate it straight from the loan's schedule, one payment or all due payments at once, or enter it yourself. Either way the schedule shows what has been booked.",
+          "The schedule tells you when your lender charges something different. It compares the interest you booked on recent payments with what it calculated, says whether you are being charged more or less, and suggests the rate that matches. The dashboard shows the same finding.",
+          "Make a schedule your own. Change the interest on a single payment, or replace the whole schedule: download a template, edit it in a spreadsheet and upload it back.",
+          "Enter a loan the way it was sold to you: a yearly rate, a fixed interest amount in every payment, or a total interest figure for the whole loan. For the last two, Finlynq shows the effective yearly rate so you can compare loans honestly.",
+          "A loan is kept in its own currency. Each loan shows in the currency you borrowed in, totals are converted to your display currency, and the debt payoff plan converts before it ranks your debts.",
+          "Paid-off loans move out of the way into a Completed section, and an account links directly to the loan that tracks it.",
+        ],
+      },
+      {
+        heading: "Investing",
+        items: [
+          "Choose your cost basis method. Simple uses the average price of every purchase. Advanced lot allocation keeps each purchase as its own lot and matches each sale to specific lots, first in first out, so cost basis and unrealized gain come only from the shares you still hold. You can change which lots a sale used, and switching methods never changes a transaction.",
+          "Add a security by its ISIN. Finlynq resolves it to a priced symbol, remembers the ISIN, and does the same for a Ticker column of ISINs in an investment import.",
+          "Prices saved for today are now today's. A caching layer could store the previous quote as the current one, which was invisible on a quiet day and wrong on a volatile one.",
+          "Overdrawn cash sleeves and short positions are valued rather than dropped, so an account can no longer read higher than it is.",
+        ],
+      },
+      {
+        heading: "Reports",
+        items: [
+          "A Yearly period, plus Last 5 Years and All Time ranges, for anyone with a long history.",
+          "Category reports: a month broken down by category against a usual month, and one category over time with its average, budget, top payees and recent transactions.",
+          "A calendar view of your transactions by week, month or year, with each day's income and spending. Click a day to list its transactions.",
+          "Every report can be filtered by account.",
+        ],
+      },
+      {
+        heading: "Subscriptions and the dashboard",
+        items: [
+          "Subscriptions and the bill calendar are one page now, with list and calendar views and suggestions found in your own transactions.",
+          "The financial health score uses the same net worth as the rest of the app, with investments at market value, and its debt-to-income figure counts scheduled loan payments and real debt payments instead of card spending.",
+          "The Action Center only raises things you can act on, prices them in your display currency, and now tells you when bank rows are waiting to be recorded.",
+        ],
+      },
+      {
+        heading: "Bank feeds and imports",
+        items: [
+          "A connected bank feed syncs when you sign in and reports what happened, including problems with individual accounts.",
+          "In Auto-pilot mode, older bank rows that matched no rule are retried on every sync, so a rule you add later catches them. Contributed by @amityweb.",
+          "A statement whose rows are all already in your ledger now closes itself instead of sitting in the pending list.",
+          "A CSV without a currency column takes the currency of the account you are importing into. If there is no answer, the import stops and asks rather than guessing.",
+        ],
+      },
+      {
+        heading: "AI assistants (MCP)",
+        items: [
+          "55 tools. The new manage_lots tool shows and sets your cost basis method, lists the lots of a holding, and changes which lots a sale used. manage_loans can book interest and set a loan's schedule.",
+          "Tool definitions are fully typed, which fixes strict clients such as Home Assistant that refused the whole integration over one untyped field.",
+          "Fixes to assistant-made changes: a category given per row is no longer dropped, an edited amount updates your reports, and deleting one side of a transfer discloses and removes the whole pair.",
+          "API keys return readable data. Requests made with a key could receive encrypted text and empty search results.",
+        ],
+      },
+      {
+        heading: "Mobile apps",
+        items: [
+          "The mobile apps gained a Subscriptions screen and category reports. Version 1.0.22, in App Store and Google Play review as of this release, adds Loans with payment schedules, the cost basis method, the transactions calendar, cross-currency transfers and yearly reports.",
+        ],
+      },
+      {
+        heading: "Accounts, currency and reliability",
+        items: [
+          "Archiving an account hides it from lists and pickers without removing its money from your net worth or your history, and an archived account can be opened and unarchived again.",
+          "Currencies without minor units, such as JPY, are shown without decimals, and changing your display currency refreshes your history charts.",
+          "Goals are kept in their own currency, and a debt payoff goal measures how much of the debt you have paid down.",
+          "When your session's encryption key has expired, Finlynq asks you to sign in again instead of showing unreadable data.",
+          "A trade or transfer is saved completely or not at all, and editing one can no longer lose the original.",
+        ],
+      },
+      {
+        heading: "Self-hosting",
+        items: [
+          "The documented install path is now npm run db:migrate, the same migration runner the hosted service and the Docker image use. Installs built the old way were missing indexes and constraints, which silently broke statement imports and net worth history.",
+          "The published Docker image is smoke-tested end to end, including registering a user, before it is released.",
+        ],
+      },
+    ],
+    githubUrl: "https://github.com/finlynq/finlynq/releases/tag/v3.5.0",
+  },
+  {
     version: "3.4.1",
     slug: "v3.4.1",
     name: "Finlynq v3.4.1",
     date: "2026-07-27",
-    current: true,
+    current: false,
     tagline:
       "Finlynq v3.4.1 records every balance in the account's own currency as well as your reporting currency, warns you when a holding cannot be priced, and makes MCP connections work with standard clients.",
     summary: [

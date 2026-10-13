@@ -9,8 +9,8 @@ import { todayISO } from "@/lib/utils/date";
 import { parseAccountIdsParam, ACCOUNT_IDS_PARAM } from "@/lib/reports/account-filter";
 import { parseBusinessParam, BUSINESS_PARAM } from "@/lib/reports/business-filter";
 import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
+import { isReportPeriod, type ReportPeriod as Period } from "@/lib/reports/period";
 
-type Period = "daily" | "weekly" | "monthly" | "quarterly";
 type GroupBy = "category" | "group";
 
 function periodExpr(period: Period) {
@@ -24,6 +24,8 @@ function periodExpr(period: Period) {
       return sql<string>`SUBSTR(${schema.transactions.date}, 1, 7)`;
     case "quarterly":
       return sql<string>`SUBSTR(${schema.transactions.date}, 1, 4) || '-Q' || ((CAST(SUBSTR(${schema.transactions.date}, 6, 2) AS INTEGER) - 1) / 3 + 1)`;
+    case "yearly":
+      return sql<string>`SUBSTR(${schema.transactions.date}, 1, 4)`;
   }
 }
 
@@ -38,7 +40,7 @@ function formatPeriodLabel(key: string, period: Period): string {
     const d = new Date(parseInt(y), parseInt(m) - 1);
     return d.toLocaleDateString("en-CA", { year: "numeric", month: "short" });
   }
-  // quarterly
+  // quarterly ("2026-Q1") and yearly ("2026") keys are already readable
   return key;
 }
 
@@ -53,7 +55,16 @@ export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const startDate = params.get("startDate") ?? `${new Date().getFullYear()}-01-01`;
   const endDate = params.get("endDate") ?? todayISO();
-  const period = (params.get("period") ?? "monthly") as Period;
+  // An unknown period used to fall through `periodExpr` as undefined and
+  // fail inside the query; refuse it instead of guessing a granularity.
+  const periodParam = params.get("period") ?? "monthly";
+  if (!isReportPeriod(periodParam)) {
+    return NextResponse.json(
+      { error: "period must be one of daily, weekly, monthly, quarterly, yearly" },
+      { status: 400 },
+    );
+  }
+  const period: Period = periodParam;
   const groupBy = (params.get("groupBy") ?? "category") as GroupBy;
   // true = business only, false = personal only, absent/all = every row
   // (see business-filter.ts — `business=true` reads exactly as before).

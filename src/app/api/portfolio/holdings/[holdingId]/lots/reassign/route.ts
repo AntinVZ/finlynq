@@ -33,6 +33,7 @@ import {
   reassignClosureLots,
   type ReassignError,
 } from "@/lib/portfolio/lots/write-hooks";
+import { reassignErrorMessage } from "@/lib/portfolio/lots/reassign-errors";
 
 const bodySchema = z.object({
   closeTxId: z.number().int().positive(),
@@ -55,18 +56,18 @@ function mapReassignError(err: ReassignError): NextResponse {
   switch (err.code) {
     case "close_tx_not_found":
       return NextResponse.json(
-        { error: "Closure transaction not found for this holding", code: err.code },
+        { error: reassignErrorMessage(err), code: err.code },
         { status: 404 },
       );
     case "no_closures":
       return NextResponse.json(
-        { error: "That transaction has no lot closures to reassign", code: err.code },
+        { error: reassignErrorMessage(err), code: err.code },
         { status: 400 },
       );
     case "not_reassignable":
       return NextResponse.json(
         {
-          error: `Only plain sell closures can be reassigned (this is '${err.closeKind}')`,
+          error: reassignErrorMessage(err),
           code: err.code,
         },
         { status: 400 },
@@ -74,7 +75,7 @@ function mapReassignError(err: ReassignError): NextResponse {
     case "qty_mismatch":
       return NextResponse.json(
         {
-          error: `The chosen quantities (${err.got}) must total the closure quantity (${err.expected})`,
+          error: reassignErrorMessage(err),
           code: err.code,
           expected: err.expected,
           got: err.got,
@@ -84,7 +85,7 @@ function mapReassignError(err: ReassignError): NextResponse {
     case "lot_not_in_scope":
       return NextResponse.json(
         {
-          error: `Lot #${err.lotId} is not in this holding/account — reassignment is same-account only`,
+          error: reassignErrorMessage(err),
           code: err.code,
           lotId: err.lotId,
         },

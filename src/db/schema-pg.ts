@@ -469,13 +469,34 @@ export const loans = pgTable("loans", {
   // to this instead of 0; balance at term end equals the residual.
   residualValue: doublePrecision("residual_value"),
   note: text("note").default(""),
+  // 2026-10-12 — the category this loan's interest is booked under. Interest
+  // is a separate expense transaction on the linked account, and "is this
+  // period booked" is answered by reading that account for this category, so
+  // hand-entered and generated entries are the same. SET NULL: deleting the
+  // category un-sets it, it never blocks the delete.
+  interestCategoryId: integer("interest_category_id").references(() => categories.id, { onDelete: "set null" }),
+  // 2026-10-12 — the loan's own schedule. NULL on both = calculated. Read them
+  // ONLY through `loanScheduleExtras` (loan-calculator.ts), which every
+  // schedule-building caller spreads into `buildLoanSchedule`.
+  //   manualSchedule: a complete user-supplied schedule; REPLACES the calculation.
+  //   interestOverrides: { "YYYY-MM-DD": amount } for single calculated rows.
+  manualSchedule: jsonb("manual_schedule").$type<Array<{ date: string; payment: number; interest: number }> | null>(),
+  interestOverrides: jsonb("interest_overrides").$type<Record<string, number> | null>(),
+  // 2026-10-12 — how the interest is worked out: 'rate' (annual_rate on the
+  // balance owed, the default), 'flat' (interest_amount with EVERY payment) or
+  // 'total' (interest_amount over the whole loan, spread on a declining
+  // balance). Also read through `loanScheduleExtras`.
+  interestMethod: text("interest_method").notNull().default("rate"),
+  interestAmount: doublePrecision("interest_amount"),
   // Stream D (2026-04-24) — dual-write.
   nameCt: text("name_ct"),
   nameLookup: text("name_lookup"),
 }, (t) => [
   index("idx_loans_user_id").on(t.userId),
   uniqueIndex("loans_user_name_lookup_uniq").on(t.userId, t.nameLookup),
+  check("loans_interest_method_check", sql`${t.interestMethod} IN ('rate','flat','total')`),
 ]);
+
 
 export const snapshots = pgTable("snapshots", {
   id: serial("id").primaryKey(),

@@ -1,6 +1,7 @@
 # Loans & Debt v2 (FINLYNQ-136)
 
-Status: **dev-only** (page behind `DevModeGuard`). Phases 1–3 + 5 shipped 2026-06-10;
+Status: **generally available since 2026-10-12** (the `DevModeGuard` on the page and
+`requireDevMode` on `/api/loans` were removed). Phases 1–3 + 5 shipped 2026-06-10;
 Phase 4 (ledger posting) deferred — see "Deferred" below.
 
 ## Model
@@ -164,13 +165,233 @@ second payload shape is how the two modes drift apart.
   (`/api/loans` has no idempotency key), a `try/catch` around the request, and
   `parseSaveError` on `!res.ok` with the dialog left open and input preserved.
 
+## How the interest is worked out (2026-10-12)
+
+`loans.interest_method` (CHECK `loans_interest_method_check`) with
+`loans.interest_amount`:
+
+| Method | `interest_amount` | Schedule |
+|---|---|---|
+| `rate` (default) | unused | `annual_rate` on the balance still owed. The original behaviour; every existing loan. |
+| `flat` | interest with EACH payment | Every row carries that same interest; principal is the payment less it. With a term instead of a payment, the payment is principal over the term plus the interest. |
+| `total` | interest over the WHOLE loan | Level payment of (principal + total) over the periods, then the per-period rate that makes a declining-balance loan cost exactly that total is solved by bisection (`solvePeriodRate`) and applied to the balance owed. More interest early, less late. |
+
+`flat` is how such loans are advertised ("60 payments of 587, 87 of it
+interest"), not how interest accrues. It is supported because users arrive with
+those numbers and their lender's statements show them, and `total` is offered
+beside it as the financially standard allocation of the same money. So that the
+difference is visible, every calculated schedule returns
+**`effectiveAnnualRate`**: the yearly rate on the balance owed that a loan with
+this payment and length carries. For `rate` it is the loan's own rate; for the
+other two it is the comparable figure. The feedback loan (30,000 over 60 months,
+5,220 of interest) is 3.48% a year quoted flat and about 6.5% effective. The
+loan card labels it "Effective rate".
+
+Rules:
+
+- The method is a property of the loan row and travels through
+  `loanScheduleExtras`, so it reaches every surface the same way as the
+  loan's own schedule (and every raw `SELECT ... FROM loans` feeding a
+  schedule must name `interest_method` and `interest_amount` too; pinned).
+- An update that CHANGES the method is validated with the new one: the stored
+  extras are spread first and the merged fields after (REST `PUT /api/loans`
+  and MCP `manage_loans(op:"update")`; pinned).
+- Interest overrides still apply on top of any method. A manual schedule still
+  replaces the calculation entirely.
+- No rate is suggested by the interest check unless the method is `rate`.
+- An unknown or missing method reads as `rate`.
+
+Surfaces: the loan form's **Interest** select (Yearly rate / Fixed amount each
+payment / Total for the whole loan), REST `POST`/`PUT /api/loans`
+(`interestMethod`, `interestAmount`), MCP `manage_loans` add/update
+(`interest_method`, `interest_amount`); `list` and `get_loan_amortization`
+return `interestMethod` and `effectiveAnnualRate`.
+
+## The loan's own schedule (2026-10-12)
+
+A schedule is calculated from the loan's terms unless the user says otherwise.
+Two ways to say otherwise, both stored on the loan row:
+
+| Column | Shape | Effect |
+|---|---|---|
+| `loans.interest_overrides` | `{ "YYYY-MM-DD": amount }` | Replaces the calculated interest for that payment date only. The payment is unchanged, so the principal and every later balance follow. Ignored when a manual schedule exists. |
+| `loans.manual_schedule` | `[{ date, payment, interest }]` | REPLACES the calculation. Principal (`payment - interest`, negative when a payment did not cover its interest) and the running balance are derived, never stored. |
+
+Both are nullable and NULL means calculated, so existing loans are untouched.
+
+**One rule for readers.** `buildLoanSchedule` takes `interestOverrides` and
+`manualSchedule` as options, and the pure `loanScheduleExtras(row)`
+([loan-calculator.ts](../src/lib/loan-calculator.ts)) turns a stored loan row
+(Drizzle or raw-SQL shape, JSON as object or text) into those options. **Every
+caller that builds a schedule from a stored loan spreads it in**: `GET
+/api/loans`, the `amortization` action (which now takes `loanId`), `PUT
+/api/loans` validation, interest entries, the health score's debt service, the
+MCP HTTP tools (list, update validation, post_interest, amortization, payoff
+plan) and the stdio tools. A caller that forgets shows the calculated schedule
+while the Loans page shows the user's, and balances then disagree. The one
+deliberate exception is the re-projection from today's account balance, which
+is a fresh calculation; a manual schedule skips that re-projection and keeps
+its own dates. `tests/loan-manual-schedule.test.ts` pins the callers and the
+raw SELECT column lists.
+
+**One write path.** `saveLoanSchedule`
+([schedule-store.ts](../src/lib/loans/schedule-store.ts), SERVER ONLY) serves
+REST `GET/PUT /api/loans/schedule` and the MCP ops. It validates by BUILDING
+the resulting schedule, so nothing that cannot be scheduled is stored, and it
+refuses an interest override for a date that is not a payment date (it would
+be stored and never applied). Setting a manual schedule drops the overrides.
+
+Surfaces:
+
+- **UI** — the schedule panel's **Table** tab is now an editor
+  ([_components/schedule-editor.tsx](<../src/app/(app)/loans/_components/schedule-editor.tsx>)).
+  Calculated: edit or reset any row's interest, or "Switch to manual" (keeps
+  the current rows as the starting point). Manual: "Edit rows" (date, payment,
+  interest, add, remove), "Back to calculated". Both: **Download template** and
+  **Upload schedule**.
+- **CSV, fixed layout, no mapping** ([manual-schedule.ts](../src/lib/loans/manual-schedule.ts),
+  pure, parsed in the browser). The template is the format: `date, payment,
+  interest, principal, balance`, pre-filled with the loan's current schedule.
+  Only the first three are read back; principal and balance are reference.
+  The parser tolerates what a spreadsheet does on save (BOM, CRLF, quotes,
+  thousands separators, currency symbols, blank lines, reordered columns) and
+  reports every bad line with its number. **Dates:** ISO is taken as is. A
+  spreadsheet-reformatted column (9/7/2026) is read as a whole, and a reading
+  must be real dates at least 6 days apart, which is what tells day-first from
+  month-first on a monthly schedule. If both readings pass, the upload is
+  refused and asks for YYYY-MM-DD; it never guesses.
+- **MCP HTTP** — `manage_loans(op:"set_schedule", loan_id, rows, merge?)`
+  (replace, or lay rows over the current schedule by date),
+  `op:"set_interest", loan_id, overrides:[{date, interest|null}]`,
+  `op:"reset_schedule", loan_id`.
+
+The rate suggestion on the Interest entries tab is not offered for a manual
+schedule, since its interest is not derived from the rate.
+
+Known limit: a manual schedule built from a calculated one can end a few cents
+away from zero, because the rows carry amounts to the cent while the
+calculation keeps fractions of a cent.
+
+## Interest entries (2026-10-12)
+
+How a payment with an interest component is recorded:
+
+- **The payment is a plain transfer** from the paying account into the loan's
+  linked account. It is never split.
+- **The interest is a separate expense transaction on the loan account**
+  (negative amount, an expense category). It adds to what is owed; the payment
+  then takes the full amount off, so the balance falls by the principal only,
+  and the interest shows in the income statement.
+
+**"Booked" is read from the ledger, not tracked separately.** Every transaction
+on the linked account in the loan's interest category
+(`loans.interest_category_id`) counts, whether it was typed in by hand,
+recorded by an assistant with `manage_transactions`, or generated from the
+schedule. Transfer legs are excluded (`link_id IS NULL`), so a payment
+mis-filed under the interest category is not read as negative interest. The
+pure `matchInterestToSchedule` ([interest-plan.ts](../src/lib/loans/interest-plan.ts))
+credits each transaction to the schedule period whose payment date is
+**nearest** (a tie goes to the earlier period), sums several in one period,
+nets refunds, and returns anything more than one payment interval outside the
+schedule's date range as `unmatched`. The web panel, the server and the MCP
+tool all call that one function, so they cannot disagree about which periods
+are booked.
+
+Surfaces:
+
+- **UI** — the schedule panel's **Interest entries** tab
+  ([_components/interest-entries.tsx](<../src/app/(app)/loans/_components/interest-entries.tsx>)):
+  every payment date that has come due (plus the next upcoming one) with the
+  calculated interest beside what is booked, the difference when they disagree,
+  an editable amount and a Generate button for unbooked periods, and a
+  "Generate N due entries" button. Picking a category saves it on the loan.
+- **REST** `/api/loans/interest` (`apiHandler`, enveloped) — `GET ?loanId=[&categoryId=]`
+  returns the ledger entries (`categoryId` previews another category without
+  saving), `PUT { loanId, categoryId }` saves the category,
+  `POST { loanId, categoryId, entries: [{ periodDate, amount, date? }] }` generates.
+- **MCP HTTP** — `manage_loans(op:"post_interest", loan_id, period_date?, amount?,
+  category_id? | category?, date?)`. With no `period_date` it takes the oldest
+  due period with nothing booked; with no `amount` it uses the schedule's
+  figure; with no category it uses the loan's saved one, else the single
+  expense category with "interest" in its name, and refuses if there are none
+  or several.
+
+Generation rules live in `postLoanInterest`
+([src/lib/loans/interest-entries.ts](../src/lib/loans/interest-entries.ts)),
+the one chokepoint both surfaces call. It refuses, before writing anything: a
+loan with no linked account, an investment account, a `periodDate` that is not
+on the loan's current schedule, and a period the ledger already holds interest
+for (checked under the requested category AND the loan's saved one, so
+switching category cannot double-charge a period). Inside one
+`withDbTransaction` it locks the loan row (`FOR UPDATE`), checks the ledger
+again (two racing requests both pass the first check), creates the
+transactions through `createTransaction`, and saves the category on the loan.
+Reporting amounts are resolved before the transaction opens, because the FX
+lookup can reach the network.
+
+Known limits:
+
+- Interest cannot be the FIRST entry on an empty linked account. A linked
+  account with no entries leaves the loan on its projected balance; with one
+  entry its balance becomes the loan's, so `postLoanInterest` refuses and asks
+  for the account's opening balance first.
+- Nothing posts automatically on the due date; generation is one click.
+
+### Booked versus calculated (2026-10-12)
+
+The Interest entries tab compares what the lender charged with what the
+schedule calculates and says whether the loan's rate looks wrong. The pure
+`assessBookedInterest` ([interest-plan.ts](../src/lib/loans/interest-plan.ts))
+returns one of: `insufficient` (fewer than two recent booked payments, nothing
+is shown), `in_line`, `over`, `under` (charged more or less by a steady
+factor), or `inconsistent` (it differs, but not by a steady factor).
+
+The owner's rules, which the function and the panel both honour:
+
+- **Judge on recent payments only.** At most the `ASSESSMENT_MAX_PERIODS` (3)
+  most recent booked payments, never older than `ASSESSMENT_LOOKBACK_DAYS`
+  (365), and never one that has not come due. An extra payment or a change to
+  the loan's terms shifts every later period, so an older payment can
+  legitimately differ from today's schedule and must not drive the verdict.
+- **Say so where it is shown.** The panel names the window (count and dates)
+  and states why older payments are left out.
+- **A suggestion is accepted, never applied silently.** `suggestedRate` is
+  offered only when the factor is steady (each payment within 5% of the
+  median): if the lender charged k times the calculated figure, the rate that
+  explains it is k times the loan's. "Use N%" goes through a confirm dialog
+  and `PUT /api/loans`, then the schedule is rebuilt. Booked entries are never
+  touched.
+
+Within 2% (or a cent per payment) is treated as rounding and reads as in line.
+`fixedAmount` is set when every payment in the window was charged the same
+figure while the schedule's figures differ, which points at a fixed charge
+rather than a rate.
+
+Where the verdict is shown, each time with its window:
+
+- **Loans page** — the Interest entries tab (the callout above the table).
+- **Dashboard Action Center** — `getLoanInterestMismatches` in
+  [spotlight.ts](../src/lib/spotlight.ts) raises a card for `over` (warning),
+  `under` and `inconsistent` (info); `in_line` and `insufficient` raise
+  nothing. Amounts are converted to the display currency. The card links to
+  `/loans?loan=<id>&tab=entries`, which opens that loan's panel on the Interest
+  entries tab.
+- **MCP** — `get_loan_amortization` returns `interestCheck` (the verdict plus
+  `window`) and `scheduleMode`; `finlynq_help(topic:"loans")` tells an
+  assistant how payments, interest and schedules are recorded and to relay the
+  window with any verdict. The dashboard card also reaches `get_spotlight_items`.
+
+The read side lives in [interest-check.ts](../src/lib/loans/interest-check.ts),
+apart from the transaction-writing `interest-entries.ts`, so the Action Center
+does not pull the writer onto the dashboard's hot path. Only loans with a
+linked account AND an interest category are read at all.
+
 ## Deferred (Phase 4 — tracked on FINLYNQ-136)
 
-- Posting the principal/interest split into `transactions` (principal =
-  balance movement, interest = expense), auto-generate (recurring-style) vs
+- Interest posting shipped 2026-10-12 as one-click entries (see "Interest
+  entries" above). Still deferred: auto-generate (recurring-style) vs
   import-and-reconcile modes, FI-sync duplicate matching, balance
   reconciliation surface (warn-but-allow), and the posting-trigger /
   categorization decisions that come with it.
 - Variable / floating rates (schema designed so a rate-schedule table can slot
   in additively — do NOT widen `annual_rate` semantics).
-- GA gating: the page stays behind `DevModeGuard`.

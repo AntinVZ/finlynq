@@ -57,6 +57,7 @@ import {
   type DebtServiceLoan,
   type UntrackedLiabilityAccount,
 } from "./health/debt-service";
+import { loanScheduleExtras } from "./loan-calculator";
 
 /**
  * Transaction `kind`s that are NEVER debt service, excluded from the DTI
@@ -310,7 +311,8 @@ export async function calculateFinancialHealth(
   const loanRows = asRows(await db.execute(sql`
     SELECT id, account_id, currency, principal, annual_rate, term_months,
            start_date, payment_amount, payment_frequency, extra_payment,
-           residual_value
+           residual_value, manual_schedule, interest_overrides,
+           interest_method, interest_amount
     FROM loans
     WHERE user_id = ${userId}
   `)) as Array<Record<string, unknown>>;
@@ -327,6 +329,7 @@ export async function calculateFinancialHealth(
     paymentFrequency: (r.payment_frequency as string | null) ?? null,
     extraPayment: r.extra_payment == null ? null : Number(r.extra_payment),
     residualValue: r.residual_value == null ? null : Number(r.residual_value),
+    ...loanScheduleExtras(r),
   }));
 
   // Built from the exported const so the rule has ONE definition (the test

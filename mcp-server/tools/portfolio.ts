@@ -24,6 +24,8 @@ import {
   type PgToolContext,
 } from "./_shared";
 import { aggregateHoldings } from "../../src/lib/portfolio/aggregate-holdings";
+import { combineLotCost, costMetrics, type CostBasisMethod } from "../../src/lib/portfolio/cost-metrics";
+import { loadLotCostByHolding } from "../../src/lib/portfolio/lots/cost-basis";
 import { resolveTickerInput } from "../../src/lib/securities/isin-resolve";
 import { rememberSecurityIsin } from "../../src/lib/securities/isin-store";
 import { valuePortfolio, weightBasis } from "../../src/lib/portfolio/valuation";
@@ -1357,6 +1359,10 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       // null if they have no such category) into the aggregator.
       const dividendsCategoryId = await resolveDividendsCategoryId(db, userId, dek);
       const metrics = await aggregateHoldings(db, userId, dek, { dividendsCategoryId });
+      // The user's cost-basis method: null on the simple average, else each
+      // holding's lot figures. One lookup for the whole list.
+      const lotCost = await loadLotCostByHolding(userId, dek);
+      const costBasisMethod: CostBasisMethod = lotCost ? "advanced_lot_allocation" : "simple_average";
 
       // Issue #86: SELECT ph.id so we can build an id-keyed phMap. Two
       // holdings sharing a display name (TFSA + RRSP) collide in a
@@ -1479,9 +1485,10 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         // get_portfolio_performance_v2 + holdings-value.ts. avgCost/realizedGain
         // stay on the skip-aware buy/sell tallies.
         const remainingQty = Number(m.net_quantity ?? (buyQty - sellQty));
-        const avgCost = buyQty > 0 ? buyAmt / buyQty : null;
-        const costBasis = avgCost !== null && remainingQty > 0 ? remainingQty * avgCost : null;
-        const realizedGain = avgCost !== null ? sellAmt - (sellQty * avgCost) : 0;
+        const { avgCost, costBasis, realizedGain } = costMetrics(
+          { buyQty, buyAmt, sellQty, sellAmt, remainingQty },
+          m.holding_id != null ? lotCost?.get(Number(m.holding_id)) : undefined,
+        );
         const totalReturn = realizedGain + divs; // unrealized excluded (no live prices in MCP)
         const fpDate = m.first_purchase ?? null;
         const daysHeld = fpDate ? Math.floor((today.getTime() - new Date(String(fpDate)).getTime()) / 86400000) : null;
@@ -1642,6 +1649,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         // realized/dividend flows — per-holding market value is intentionally
         // NOT surfaced here (see `note`); label the basis truthfully.
         basis: "lifetime_cost",
+        costBasisMethod,
         // FINLYNQ-276: label the FX-conversion method for the realizedGain/
         // dividend *Reporting figures. This tool converts native → reporting at
         // TODAY's spot rate (`realizedGain × fxFor(ccy)`), NOT per-lot historical
@@ -1690,6 +1698,10 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
       // Issue #84: dividends classified by category_id (see aggregateHoldings).
       const dividendsCategoryId = await resolveDividendsCategoryId(db, userId, dek);
       const perf = await aggregateHoldings(db, userId, dek, { since, dividendsCategoryId });
+      // Lot figures are all-time, so they only stand in for the tallies when
+      // no `since` window narrows them; a windowed view keeps the simple math.
+      const lotCost = since ? null : await loadLotCostByHolding(userId, dek);
+      const costBasisMethod: CostBasisMethod = lotCost ? "advanced_lot_allocation" : "simple_average";
 
       // Issue #209 — load portfolio_holdings.symbol_ct so we can detect cash
       // sleeves (`name='Cash', symbol=NULL/empty`) and suppress percentage
@@ -1757,10 +1769,11 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         const sellQty = Number(p.sell_qty ?? 0);
         const sellAmt = Number(p.sell_amount ?? 0);
         const divs = Number(p.dividends ?? 0);
-        const avgCost = buyQty > 0 ? buyAmt / buyQty : null;
         const remainingQty = Number(p.net_quantity ?? 0);
-        const costBasis = avgCost !== null && remainingQty > 0 ? remainingQty * avgCost : null;
-        const realizedGain = avgCost !== null ? sellAmt - (sellQty * avgCost) : 0;
+        const { avgCost, costBasis, realizedGain } = costMetrics(
+          { buyQty, buyAmt, sellQty, sellAmt, remainingQty },
+          p.holding_id != null ? lotCost?.get(Number(p.holding_id)) : undefined,
+        );
         const totalReturn = realizedGain + divs;
         const fpDate = p.first_purchase ?? null;
         const daysHeld = fpDate ? Math.floor((today.getTime() - new Date(String(fpDate)).getTime()) / 86400000) : null;
@@ -1880,6 +1893,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         // labelled active_cost. Lifetime totals belong only to insights'
         // labelled `totalInvested`, not here.
         basis: "active_cost",
+        costBasisMethod,
         // FINLYNQ-276: *Reporting figures use TODAY's spot rate, not per-lot
         // historical FX — label it + point at get_realized_gains for tax basis.
         fxConversion: "spot_at_query" as const,
@@ -2178,12 +2192,25 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         }
       }
 
-      const avgCost = buyQty > 0 ? buyAmt / buyQty : null;
       // Position qty = UNSKIPPED net Σ(quantity) — see netQty declaration above.
-      // avgCost / realizedGain stay on the skip-aware buy/sell tallies.
+      // The simple figures stay on the skip-aware buy/sell tallies.
       const remainingQty = netQty;
-      const costBasis = avgCost !== null && remainingQty > 0 ? remainingQty * avgCost : null;
-      const realizedGain = avgCost !== null ? sellAmt - (sellQty * avgCost) : 0;
+      // A name can match position rows in several accounts; lot figures are used
+      // only when every one of those rows has them.
+      const lotCost = await loadLotCostByHolding(userId, dek);
+      const analyzedHoldingIds = [
+        ...new Set(
+          txns
+            .map((t) => (t.portfolio_holding_id == null ? NaN : Number(t.portfolio_holding_id)))
+            .filter((n) => Number.isFinite(n)),
+        ),
+      ];
+      const analyzedLot = combineLotCost(lotCost, analyzedHoldingIds);
+      const costBasisMethod: CostBasisMethod = analyzedLot ? "advanced_lot_allocation" : "simple_average";
+      const { avgCost, costBasis, realizedGain } = costMetrics(
+        { buyQty, buyAmt, sellQty, sellAmt, remainingQty },
+        analyzedLot,
+      );
       const totalReturn = realizedGain + divAmt; // no live price = no unrealized
       const firstDate = txns[0].date;
       const daysHeld = firstDate
@@ -2240,6 +2267,7 @@ export function registerPortfolioTools(server: McpServer, ctx: PgToolContext) {
         // is surfaced separately. Per-holding market value is not computed
         // here (see `note`), so the basis is active_cost, not market.
         basis: "active_cost",
+        costBasisMethod,
         // FINLYNQ-276: `realizedGainReporting` uses TODAY's spot rate; the
         // tax-relevant `realizedGainReportingHistoricalFx` (per-lot historical
         // FX, matches get_realized_gains) is surfaced alongside it.

@@ -81,7 +81,7 @@
  * FX converter.
  */
 
-import { buildLoanSchedule } from "@/lib/loan-calculator";
+import { buildLoanSchedule, loanScheduleExtras, type LoanScheduleOptions } from "@/lib/loan-calculator";
 
 /** The plaintext `loans` columns this needs — no `name_ct`, so no DEK. */
 export type DebtServiceLoan = {
@@ -96,6 +96,9 @@ export type DebtServiceLoan = {
   paymentFrequency: string | null;
   extraPayment: number | null;
   residualValue: number | null;
+  // The loan's own schedule, when it has one (see `loanScheduleExtras`).
+  manualSchedule?: LoanScheduleOptions["manualSchedule"];
+  interestOverrides?: LoanScheduleOptions["interestOverrides"];
 };
 
 /**
@@ -197,6 +200,7 @@ export function scheduledServiceForLoan(
       paymentFrequency: loan.paymentFrequency,
       extraPayment: loan.extraPayment,
       residualValue: loan.residualValue,
+      ...loanScheduleExtras(loan),
     });
     monthly = summary.monthlyEquivalentPayment;
     payoffDate = summary.payoffDate;

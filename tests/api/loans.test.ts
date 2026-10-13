@@ -28,12 +28,6 @@ vi.mock("@/lib/auth/require-auth", () => ({
   requireAuth: vi.fn(async () => ({ authenticated: true, context: { userId: "default", method: "passphrase" as const, mfaVerified: false, dek: Buffer.alloc(32, 0xaa), sessionId: "test-session-jti" } })),
 }));
 
-// The loans surface is DevModeGuard-gated; without this mock every request
-// 404s before reaching the handler (the mocked settings query returns []).
-vi.mock("@/lib/require-dev-mode", () => ({
-  requireDevMode: vi.fn(async () => null),
-  isDevModeEnabled: vi.fn(async () => true),
-}));
 
 const mockGenerateAmortization = vi.fn();
 const mockExtraPaymentImpact = vi.fn();
@@ -47,6 +41,10 @@ vi.mock("@/lib/loan-calculator", () => ({
   calculateDebtPayoff: (...a: unknown[]) => mockDebtPayoff(...a),
   LoanValidationError: class LoanValidationError extends Error {},
   PAYMENT_FREQUENCIES: ["weekly", "biweekly", "semi_monthly", "monthly", "quarterly", "annual"],
+  INTEREST_METHODS: ["rate", "flat", "total"],
+  // The route spreads a loan's stored schedule rows into the builder; these
+  // fixtures have none, so every loan is "calculated".
+  loanScheduleExtras: () => ({ manualSchedule: null, interestOverrides: null }),
 }));
 
 vi.mock("drizzle-orm", () => ({

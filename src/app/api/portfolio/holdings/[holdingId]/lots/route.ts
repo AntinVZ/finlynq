@@ -12,6 +12,9 @@
  * returns the closures and is shaped for the inspector. Kept as a separate
  * endpoint so the picker's byte-stable contract is untouched.
  *
+ * The query lives in `loadHoldingLotsAndClosures` (lots/inspect.ts), shared
+ * with MCP `manage_lots(op:"list")` so an assistant sees what this screen shows.
+ *
  * Auth: requireAuth — no DEK needed (lot + closure rows carry no encrypted
  * fields). Cross-tenant scoping enforced via the userId predicate.
  *
@@ -20,15 +23,14 @@
  *                 qtyOriginal, qtyRemaining, costPerShare, currency }>,
  *   closures: Array<{ id, lotId, closeTxId, closeDate, qtyClosed,
  *                     proceedsPerShare, costPerShare, realizedGain,
- *                     currency, closeKind }>,
+ *                     currency, closeKind, openAfterClose }>,
  * }
  */
 
 import { NextRequest, NextResponse } from "next/server";
-import { and, asc, eq, inArray } from "drizzle-orm";
-import { db, schema } from "@/db";
 import { requireAuth } from "@/lib/auth/require-auth";
 import { logApiError, safeErrorMessage } from "@/lib/validate";
+import { loadHoldingLotsAndClosures } from "@/lib/portfolio/lots/inspect";
 
 export const dynamic = "force-dynamic";
 
@@ -54,80 +56,7 @@ export async function GET(
         ? parseInt(accountIdRaw, 10)
         : null;
 
-    const lotConditions = [
-      eq(schema.holdingLots.userId, userId),
-      eq(schema.holdingLots.holdingId, holdingId),
-    ];
-    if (accountId != null) {
-      lotConditions.push(eq(schema.holdingLots.accountId, accountId));
-    }
-
-    const lotRows = await db
-      .select()
-      .from(schema.holdingLots)
-      .where(and(...lotConditions))
-      .orderBy(asc(schema.holdingLots.openDate), asc(schema.holdingLots.id));
-
-    const lots = lotRows.map((r) => ({
-      id: r.id,
-      accountId: r.accountId,
-      openTxId: r.openTxId,
-      openDate: r.openDate,
-      side: ((r as { side?: string | null }).side ?? "long") as "long" | "short",
-      origin: r.origin,
-      status: r.status,
-      qtyOriginal: Number(r.qtyOriginal),
-      qtyRemaining: Number(r.qtyRemaining),
-      costPerShare: Number(r.costPerShare),
-      currency: r.currency,
-    }));
-
-    // Closures for these lots only (scoped to the holding's lots).
-    const lotIds = lots.map((l) => l.id);
-    const closureRows =
-      lotIds.length > 0
-        ? await db
-            .select()
-            .from(schema.holdingLotClosures)
-            .where(
-              and(
-                eq(schema.holdingLotClosures.userId, userId),
-                inArray(schema.holdingLotClosures.lotId, lotIds),
-              ),
-            )
-            .orderBy(
-              asc(schema.holdingLotClosures.closeDate),
-              asc(schema.holdingLotClosures.id),
-            )
-        : [];
-
-    // Lot open-date lookup for the temporal-consistency warning below.
-    const lotOpenDateById = new Map(lots.map((l) => [l.id, l.openDate]));
-
-    const closures = closureRows.map((r) => {
-      const lotOpenDate = lotOpenDateById.get(r.lotId) ?? null;
-      // Temporal warning (warn-but-allow): a closure must not consume a lot
-      // that opened AFTER the close date — that's the fingerprint of an
-      // out-of-order import (a sell recorded before its buy). Surface it so
-      // the user knows which transaction to rebuild.
-      const openAfterClose =
-        lotOpenDate != null && lotOpenDate > r.closeDate;
-      return {
-        id: r.id,
-        lotId: r.lotId,
-        closeTxId: r.closeTxId,
-        closeDate: r.closeDate,
-        qtyClosed: Number(r.qtyClosed),
-        proceedsPerShare: Number(r.proceedsPerShare),
-        costPerShare: Number(r.costPerShare),
-        realizedGain: Number(r.realizedGain),
-        currency: r.currency,
-        closeKind: r.closeKind,
-        openAfterClose,
-      };
-    });
-
-    return NextResponse.json({ lots, closures });
+    return NextResponse.json(await loadHoldingLotsAndClosures(userId, holdingId, accountId));
   } catch (error) {
     await logApiError(
       "GET",

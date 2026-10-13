@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { formatCurrency } from "@/lib/currency";
+import { loanHref, useLinkedLoans } from "@/lib/hooks/useLinkedLoans";
 import {
   ArrowLeft,
   Wallet,
@@ -22,6 +23,7 @@ import {
   Receipt,
   TrendingUp,
   ChevronDown,
+  Landmark,
 } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AccountDialog } from "../_components/account-dialog";
@@ -104,6 +106,8 @@ export default function AccountDetailPage() {
   const { id } = useParams();
   const router = useRouter();
   const [account, setAccount] = useState<Account | null>(null);
+  // Loans that track this account, so the account can link straight to them.
+  const linkedLoans = useLinkedLoans().get(Number(id)) ?? [];
   const [accounts, setAccounts] = useState<Account[]>([]);
   /** The account lookup finished and produced nothing (missing id, not yours,
    *  or the request failed) — as opposed to "still in flight". */
@@ -409,13 +413,14 @@ export default function AccountDetailPage() {
     (o) => o.op === "deposit" || o.op === "withdrawal",
   );
 
-  const dialogAccount: DialogAccount = {
-    id: account.id,
-    name: account.name,
-    currency: account.currency,
-    type: account.type,
-    isInvestment: account.isInvestment,
-  };
+  // EVERY account goes to the dialog, with this one pre-selected. It used to
+  // get this account alone, which left the Transfer tab with no destination to
+  // offer ("No matches"): a transfer needs a second account. The viewed account
+  // is passed as not archived so it stays selectable on its own page, as it
+  // always was; the dialog hides other archived accounts when creating.
+  const dialogAccounts: DialogAccount[] = accounts.map((a) =>
+    a.id === account.id ? { ...a, archived: false } : a,
+  );
 
   return (
     <div className="space-y-6">
@@ -440,6 +445,9 @@ export default function AccountDetailPage() {
               )}
               {account.archived === true && (
                 <Badge variant="secondary" className="text-[10px]">Archived</Badge>
+              )}
+              {linkedLoans.length > 0 && (
+                <Badge variant="secondary" className="text-[10px]">Loan</Badge>
               )}
             </div>
           </div>
@@ -480,6 +488,18 @@ export default function AccountDetailPage() {
               </DropdownMenuGroup>
             </DropdownMenuContent>
           </DropdownMenu>
+          {linkedLoans.map((l) => (
+            <Button
+              key={l.id}
+              variant="outline"
+              size="sm"
+              render={<Link href={loanHref(l.id)} />}
+              title={`Open the loan "${l.name}" and its schedule`}
+            >
+              <Landmark className="h-3.5 w-3.5 mr-1.5" />
+              {linkedLoans.length === 1 ? "View loan" : l.name}
+            </Button>
+          ))}
           <Button variant="outline" size="sm" onClick={() => openEdit("details")}>
             <Pencil className="h-3.5 w-3.5 mr-1.5" /> Edit
           </Button>
@@ -574,12 +594,14 @@ export default function AccountDetailPage() {
       <TransactionDialog
         open={txDialogOpen}
         onOpenChange={setTxDialogOpen}
-        accounts={[dialogAccount]}
+        accounts={dialogAccounts}
         categories={dialogCategories}
         holdings={dialogHoldings}
         initialState={{
           kind: "transaction-prefill",
           values: { accountId: String(account.id), currency: account.currency },
+          // Transfer tab: money leaves this account unless the user says otherwise.
+          transferSeed: { fromAccountId: String(account.id) },
         }}
         onSaved={() => {
           setTxDialogOpen(false);

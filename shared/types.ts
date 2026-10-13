@@ -869,7 +869,8 @@ export interface TransactionFormData {
 // income-statement + balance-sheet routes; the trends + yoy routes do NOT
 // convert (they SUM raw amounts), matching the web /reports behavior exactly.
 
-export type ReportPeriod = "daily" | "weekly" | "monthly" | "quarterly";
+// Mirrors REPORT_PERIODS in src/lib/reports/period.ts — keep in sync.
+export type ReportPeriod = "daily" | "weekly" | "monthly" | "quarterly" | "yearly";
 export type ReportGroupBy = "category" | "group";
 
 export interface IncomeStatementRow {

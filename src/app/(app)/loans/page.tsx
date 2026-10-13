@@ -1,8 +1,8 @@
 "use client";
 
-import { DevModeGuard } from "@/components/dev-mode-guard";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,8 @@ import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { parseSaveError } from "@/lib/save-error";
 import { CspSafeBar } from "@/components/csp-safe-bar";
 import { isLoanCompleted } from "@/lib/loan-status";
+import { LoanInterestEntries } from "./_components/interest-entries";
+import { LoanScheduleEditor } from "./_components/schedule-editor";
 
 type Loan = {
   id: number; name: string; type: string; principal: number; annualRate: number;
@@ -36,6 +38,12 @@ type Loan = {
   principalPaid: number; interestPaid: number; periodsRemaining: number;
   accountName: string | null;
   accountId: number | null;
+  scheduleMode?: "calculated" | "manual";
+  // How the interest is worked out; see INTEREST_METHODS in loan-calculator.ts.
+  interestMethod?: "rate" | "flat" | "total";
+  interestAmount?: number | null;
+  // The comparable yearly rate on the balance owed (differs from annualRate for flat / total).
+  effectiveAnnualRate?: number | null;
   // FINLYNQ-123 dual basis. Every amount above is in `currency` (the loan's
   // own). The `*Display` companions are the server's current-rate conversion
   // into `displayCurrency` and are the ONLY figures safe to sum across loans.
@@ -44,9 +52,9 @@ type Loan = {
   remainingBalanceDisplay: number | null;
   monthlyEquivalentPaymentDisplay: number | null;
 };
-type AmortRow = { period: number; date: string; payment: number; principal: number; interest: number; balance: number };
+type AmortRow = { period: number; date: string; payment: number; principal: number; interest: number; balance: number; interestOverridden?: boolean };
 type AccrualRow = { month: string; interest: number };
-type AmortResult = { monthlyPayment: number; totalPayments: number; totalInterest: number; payoffDate: string; residualValue: number; schedule: AmortRow[]; monthlyAccrual: AccrualRow[] };
+type AmortResult = { monthlyPayment: number; totalPayments: number; totalInterest: number; payoffDate: string; residualValue: number; schedule: AmortRow[]; monthlyAccrual: AccrualRow[]; scheduleMode?: "calculated" | "manual" };
 
 const FREQUENCY_OPTIONS = [
   { value: "weekly", label: "Weekly" },
@@ -60,6 +68,16 @@ const FREQUENCY_OPTIONS = [
 const FREQUENCY_LABELS: Record<string, string> = Object.fromEntries(
   FREQUENCY_OPTIONS.map((f) => [f.value, f.label])
 );
+
+// How a loan's interest is entered. Mirrors INTEREST_METHODS in loan-calculator.ts.
+const INTEREST_METHOD_OPTIONS = [
+  { value: "rate", label: "Yearly rate" },
+  { value: "flat", label: "Fixed amount each payment" },
+  { value: "total", label: "Total for the whole loan" },
+];
+
+// Tabs of the schedule panel, in display order. A `?tab=` deep link must name one.
+const PANEL_TABS = ["chart", "table", "monthly", "entries", "whatif"];
 
 const PERIODS_PER_YEAR: Record<string, number> = { weekly: 52, biweekly: 26, semi_monthly: 24, monthly: 12, quarterly: 4, annual: 1 };
 
@@ -168,7 +186,7 @@ function LoansPageContent() {
   const [selectedLoan, setSelectedLoan] = useState<Loan | null>(null);
   const [amort, setAmort] = useState<AmortResult | null>(null);
   const [whatIf, setWhatIf] = useState<WhatIf[]>([]);
-  const [form, setForm] = useState({ name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "", termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly", extraPayment: "0", residualValue: "", accountId: "" });
+  const [form, setForm] = useState({ name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "", termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly", extraPayment: "0", residualValue: "", accountId: "", interestMethod: "rate", interestAmount: "" });
   const [errors, setErrors] = useState<Record<string, string>>({});
   // Built-in fiat UNION the user's active currencies (#291).
   const currencyOptions = useActiveCurrencies(form.currency);
@@ -177,8 +195,12 @@ function LoansPageContent() {
     const e: Record<string, string> = {};
     if (!form.name.trim()) e.name = "Name is required";
     if (!form.principal || parseFloat(form.principal) <= 0) e.principal = "Principal must be greater than 0";
-    if (!form.annualRate || parseFloat(form.annualRate) < 0) e.annualRate = "Rate must be 0 or more";
-    if (form.annualRate && parseFloat(form.annualRate) > 100) e.annualRate = "Rate must be 100 or less";
+    if (form.interestMethod === "rate") {
+      if (!form.annualRate || parseFloat(form.annualRate) < 0) e.annualRate = "Rate must be 0 or more";
+      if (form.annualRate && parseFloat(form.annualRate) > 100) e.annualRate = "Rate must be 100 or less";
+    } else if (form.interestAmount === "" || !(parseFloat(form.interestAmount) >= 0)) {
+      e.annualRate = "Enter the interest amount (0 or more)";
+    }
     // FINLYNQ-136: term OR payment — payment-driven loans solve for the term.
     if (!form.termMonths && !form.paymentAmount) e.termMonths = "Enter a term or a payment amount";
     if (form.termMonths && parseInt(form.termMonths) <= 0) e.termMonths = "Term must be greater than 0";
@@ -189,12 +211,13 @@ function LoansPageContent() {
     return Object.keys(e).length === 0;
   }
 
-  const isFormValid = form.name.trim() !== "" && form.principal !== "" && parseFloat(form.principal) > 0 && form.annualRate !== "" && parseFloat(form.annualRate) >= 0 && parseFloat(form.annualRate) <= 100 && (form.termMonths !== "" ? parseInt(form.termMonths) > 0 : form.paymentAmount !== "" && parseFloat(form.paymentAmount) > 0) && form.startDate !== "";
+  const isFormValid = form.name.trim() !== "" && form.principal !== "" && parseFloat(form.principal) > 0 && (form.interestMethod === "rate" ? form.annualRate !== "" && parseFloat(form.annualRate) >= 0 && parseFloat(form.annualRate) <= 100 : form.interestAmount !== "" && parseFloat(form.interestAmount) >= 0) && (form.termMonths !== "" ? parseInt(form.termMonths) > 0 : form.paymentAmount !== "" && parseFloat(form.paymentAmount) > 0) && form.startDate !== "";
 
   const BLANK_FORM = {
     name: "", type: "mortgage", principal: "", currency: displayCurrency, annualRate: "",
     termMonths: "", startDate: "", paymentAmount: "", paymentFrequency: "monthly",
     extraPayment: "0", residualValue: "", accountId: "",
+    interestMethod: "rate", interestAmount: "",
   };
 
   function openCreate() {
@@ -215,6 +238,8 @@ function LoansPageContent() {
       principal: String(loan.principal),
       currency: loan.currency,
       annualRate: String(loan.annualRate),
+      interestMethod: loan.interestMethod ?? "rate",
+      interestAmount: loan.interestAmount == null ? "" : String(loan.interestAmount),
       termMonths: loan.termMonths == null ? "" : String(loan.termMonths),
       startDate: loan.startDate,
       paymentAmount: loan.paymentAmount == null ? "" : String(loan.paymentAmount),
@@ -244,10 +269,38 @@ function LoansPageContent() {
 
   const sortAccount = useDropdownOrder("account");
 
+  // Schedule panel tab. Controlled so a deep link can open a specific one.
+  const [panelTab, setPanelTab] = useState("chart");
+  // `/loans?loan=<id>&tab=<tab>` opens that loan's schedule panel on that tab
+  // (the dashboard's loan-interest card links here). Read once, after the
+  // loans have loaded; later clicks own the panel from then on.
+  const deepLinkDone = useRef(false);
+  // Set by the deep link; the panel is scrolled to once it has rendered.
+  const scrollToPanel = useRef(false);
+  useEffect(() => {
+    if (!scrollToPanel.current || !amort) return;
+    scrollToPanel.current = false;
+    document.getElementById("loan-schedule")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [amort]);
+  useEffect(() => {
+    if (deepLinkDone.current || loans.length === 0) return;
+    deepLinkDone.current = true;
+    const params = new URLSearchParams(window.location.search);
+    const target = loans.find((l) => String(l.id) === params.get("loan"));
+    // A loan the server could not schedule has no panel to open.
+    if (!target || target.remainingBalance == null) return;
+    const tab = params.get("tab");
+    if (tab && PANEL_TABS.includes(tab)) setPanelTab(tab);
+    scrollToPanel.current = true;
+    void viewAmortization(target);
+    // viewAmortization is recreated every render; this runs once by design.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loans]);
+
   async function viewAmortization(loan: Loan) {
     setSelectedLoan(loan);
     const [amortRes, whatIfRes] = await Promise.all([
-      fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "amortization", principal: loan.principal, annualRate: loan.annualRate, termMonths: loan.termMonths, startDate: loan.startDate, paymentAmount: loan.paymentAmount, extraPayment: loan.extraPayment, paymentFrequency: loan.paymentFrequency, residualValue: loan.residualValue }) }).then((r) => r.json()),
+      fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "amortization", loanId: loan.id, principal: loan.principal, annualRate: loan.annualRate, termMonths: loan.termMonths, startDate: loan.startDate, paymentAmount: loan.paymentAmount, extraPayment: loan.extraPayment, paymentFrequency: loan.paymentFrequency, residualValue: loan.residualValue }) }).then((r) => r.json()),
       fetch("/api/loans", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "what-if", principal: loan.principal, annualRate: loan.annualRate, termMonths: equivalentTermMonths(loan), startDate: loan.startDate, extraAmounts: [100, 200, 500, 1000] }) }).then((r) => r.json()),
     ]);
     setAmort(amortRes);
@@ -262,7 +315,11 @@ function LoansPageContent() {
       type: form.type,
       principal: parseFloat(form.principal),
       currency: form.currency || displayCurrency,
-      annualRate: parseFloat(form.annualRate),
+      // For a fixed-amount or total-interest loan the rate is not what
+      // produces the interest; keep whatever was typed, or 0.
+      annualRate: form.interestMethod === "rate" ? parseFloat(form.annualRate) : parseFloat(form.annualRate) || 0,
+      interestMethod: form.interestMethod,
+      interestAmount: form.interestMethod === "rate" ? null : parseFloat(form.interestAmount),
       termMonths: form.termMonths ? parseInt(form.termMonths) : null,
       startDate: form.startDate,
       paymentAmount: form.paymentAmount ? parseFloat(form.paymentAmount) : null,
@@ -360,6 +417,7 @@ function LoansPageContent() {
                 <div className="flex items-center gap-2">
                   <CardTitle>{loan.name}</CardTitle>
                   <Badge variant="secondary" className={badgeClass}>{loan.type}</Badge>
+                  {loan.scheduleMode === "manual" && <Badge variant="outline" className="text-xs">Manual schedule</Badge>}
                   {loan.currency !== displayCurrency && (
                     <Badge variant="outline" className="font-mono text-xs">{loan.currency}</Badge>
                   )}
@@ -374,14 +432,26 @@ function LoansPageContent() {
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-4">
                 <div>
-                  <p className="text-xs text-muted-foreground">Remaining{loan.balanceSource === "account" && <span className="ml-1 text-emerald-600" title={`Live balance from ${loan.accountName ?? "linked account"}`}>· from account</span>}</p>
+                  <p className="text-xs text-muted-foreground">
+                    Remaining
+                    {loan.balanceSource === "account" && loan.accountId != null && (
+                      <Link href={`/accounts/${loan.accountId}`} className="ml-1 text-emerald-600 hover:underline" title={`Live balance from ${loan.accountName ?? "the linked account"}. Open the account.`}>
+                        · from account
+                      </Link>
+                    )}
+                  </p>
                   <p className="font-mono font-bold text-rose-600">{formatCurrency(loan.remainingBalance, loan.currency)}</p>
                   {loan.currency !== displayCurrency && loan.remainingBalanceDisplay != null && (
                     <p className="text-xs text-muted-foreground font-mono">≈ {formatCurrency(loan.remainingBalanceDisplay, displayCurrency)}</p>
                   )}
                 </div>
                 <div><p className="text-xs text-muted-foreground">{FREQUENCY_LABELS[loan.paymentFrequency] ?? "Payment"}</p><p className="font-mono">{formatCurrency(loan.paymentPerPeriod ?? loan.monthlyPayment, loan.currency)}</p></div>
-                <div><p className="text-xs text-muted-foreground">Rate</p><p className="font-mono">{loan.annualRate}%</p></div>
+                <div>
+                  <p className="text-xs text-muted-foreground">{(loan.interestMethod ?? "rate") === "rate" ? "Rate" : "Effective rate"}</p>
+                  <p className="font-mono" title={(loan.interestMethod ?? "rate") === "rate" ? undefined : "The yearly rate, on the balance still owed, that this loan works out to"}>
+                    {(loan.interestMethod ?? "rate") === "rate" ? loan.annualRate : loan.effectiveAnnualRate ?? loan.annualRate}%
+                  </p>
+                </div>
                 <div><p className="text-xs text-muted-foreground">Total Interest</p><p className="font-mono">{formatCurrency(loan.totalInterest, loan.currency)}</p></div>
                 <div>
                   <p className="text-xs text-muted-foreground">{loan.type === "lease" ? "Term end" : "Payoff"}</p>
@@ -461,10 +531,36 @@ function LoansPageContent() {
                   {errors.principal && <p className="text-xs text-destructive mt-1">{errors.principal}</p>}
                 </div>
                 <div>
-                  <Label>Annual Rate (%)</Label>
-                  <Input type="number" step="0.01" value={form.annualRate} onChange={(e) => { setForm({ ...form, annualRate: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                  <Label>Interest</Label>
+                  <Select value={form.interestMethod} onValueChange={(v) => { setForm({ ...form, interestMethod: v ?? "rate" }); setErrors({ ...errors, annualRate: "" }); }}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    {/* Wider than its narrow trigger, so the longer labels are not clipped. */}
+                    <SelectContent className="min-w-60">
+                      {INTEREST_METHOD_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  {form.interestMethod === "rate" ? (
+                    <>
+                      <Label>Annual Rate (%)</Label>
+                      <Input type="number" step="0.01" value={form.annualRate} onChange={(e) => { setForm({ ...form, annualRate: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                    </>
+                  ) : (
+                    <>
+                      <Label>{form.interestMethod === "flat" ? "Interest each payment" : "Total interest"}</Label>
+                      <Input type="number" step="0.01" min="0" value={form.interestAmount} onChange={(e) => { setForm({ ...form, interestAmount: e.target.value }); setErrors({ ...errors, annualRate: "" }); }} />
+                    </>
+                  )}
                   {errors.annualRate && <p className="text-xs text-destructive mt-1">{errors.annualRate}</p>}
                 </div>
+                {form.interestMethod !== "rate" && (
+                  <p className="col-span-2 text-xs text-muted-foreground">
+                    {form.interestMethod === "flat"
+                      ? "Every payment carries this same interest, the way such loans are advertised. Interest really accrues on what is still owed, so the loan card also shows the yearly rate this works out to."
+                      : "The whole loan's interest, spread the standard way: the payment stays level, with more interest in the early payments and less in the later ones."}
+                  </p>
+                )}
                 <div>
                   <Label>Term (months)</Label>
                   <Input type="number" placeholder="From payment" value={form.termMonths} onChange={(e) => { setForm({ ...form, termMonths: e.target.value }); setErrors({ ...errors, termMonths: "" }); }} />
@@ -608,13 +704,13 @@ function LoansPageContent() {
 
       {/* Amortization detail modal */}
       {selectedLoan && amort && (
-        <Card>
+        <Card id="loan-schedule">
           {/* Every figure in this panel comes from the schedule the server
               computed in the loan's OWN currency — never the display one. */}
           <CardHeader><CardTitle>Amortization: {selectedLoan.name} <span className="text-sm font-normal text-muted-foreground font-mono">({selectedLoan.currency})</span></CardTitle></CardHeader>
           <CardContent>
-            <Tabs defaultValue="chart">
-              <TabsList><TabsTrigger value="chart">Chart</TabsTrigger><TabsTrigger value="table">Table</TabsTrigger><TabsTrigger value="monthly">Monthly Interest</TabsTrigger><TabsTrigger value="whatif">What-If</TabsTrigger></TabsList>
+            <Tabs value={panelTab} onValueChange={(v) => setPanelTab(String(v ?? "chart"))}>
+              <TabsList><TabsTrigger value="chart">Chart</TabsTrigger><TabsTrigger value="table">Table</TabsTrigger><TabsTrigger value="monthly">Monthly Interest</TabsTrigger><TabsTrigger value="entries">Interest entries</TabsTrigger><TabsTrigger value="whatif">What-If</TabsTrigger></TabsList>
               <TabsContent value="chart">
                 <ResponsiveContainer width="100%" height={300}>
                   <BarChart data={amort.schedule.filter((_, i) => i % Math.max(1, Math.floor(amort.schedule.length / 60)) === 0)}>
@@ -631,16 +727,13 @@ function LoansPageContent() {
                 </ResponsiveContainer>
               </TabsContent>
               <TabsContent value="table">
-                <div className="max-h-96 overflow-auto">
-                  <Table>
-                    <TableHeader><TableRow><TableHead>#</TableHead><TableHead>Date</TableHead><TableHead>Payment</TableHead><TableHead>Principal</TableHead><TableHead>Interest</TableHead><TableHead>Balance</TableHead></TableRow></TableHeader>
-                    <TableBody>
-                      {amort.schedule.map((r) => (
-                        <TableRow key={r.period}><TableCell>{r.period}</TableCell><TableCell>{r.date}</TableCell><TableCell>{formatCurrency(r.payment, selectedLoan.currency)}</TableCell><TableCell className="text-emerald-600">{formatCurrency(r.principal, selectedLoan.currency)}</TableCell><TableCell className="text-rose-600">{formatCurrency(r.interest, selectedLoan.currency)}</TableCell><TableCell className="font-mono">{formatCurrency(r.balance, selectedLoan.currency)}</TableCell></TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
+                <LoanScheduleEditor
+                  loan={selectedLoan}
+                  schedule={amort.schedule}
+                  mode={amort.scheduleMode ?? "calculated"}
+                  // Rebuild this panel from the saved schedule, and the cards above it.
+                  onChanged={() => { void viewAmortization(selectedLoan); void load(); }}
+                />
               </TabsContent>
               <TabsContent value="monthly">
                 <p className="text-sm text-muted-foreground mb-4">Interest accrued per calendar month — the reportable figure, day-weighted when payments straddle month boundaries.</p>
@@ -654,6 +747,17 @@ function LoansPageContent() {
                     </TableBody>
                   </Table>
                 </div>
+              </TabsContent>
+              <TabsContent value="entries">
+                <LoanInterestEntries
+                  loan={selectedLoan}
+                  schedule={amort.schedule}
+                  // No rate is suggested unless the rate is what produces the interest.
+                  rateDriven={amort.scheduleMode !== "manual" && (selectedLoan.interestMethod ?? "rate") === "rate"}
+                  onPosted={load}
+                  // Rebuild this panel's schedule at the new rate, and the cards above it.
+                  onRateChanged={(annualRate) => { void viewAmortization({ ...selectedLoan, annualRate }); void load(); }}
+                />
               </TabsContent>
               <TabsContent value="whatif">
                 <p className="text-sm text-muted-foreground mb-4">What if you added extra monthly payments? Amounts are in {selectedLoan.currency}.</p>
@@ -705,4 +809,4 @@ function LoansPageContent() {
   );
 }
 
-export default function LoansPage() { return <DevModeGuard><LoansPageContent /></DevModeGuard>; }
+export default function LoansPage() { return <LoansPageContent />; }
