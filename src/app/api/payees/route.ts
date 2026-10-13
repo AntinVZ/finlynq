@@ -1,5 +1,5 @@
 /**
- * /api/payees — Payee Studio overview (Settings → Payees).
+ * /api/payees — Payee Studio overview (Merchants).
  *
  * GET ?limit=N (default 5000)
  *   → { groups, clusters, currency, scanned, truncated, undecryptable, totalGroups }

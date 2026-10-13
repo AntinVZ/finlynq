@@ -101,7 +101,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                 {data.unrenamed.map((u) => (
                   <li key={u.entityId} className="flex flex-wrap items-center gap-2 p-2 text-sm">
                     <span className="break-all">
-                      {u.spellings.map((s) => `“${s.spelling}” × ${s.count}`).join(", ")} → <Link href={`/settings/payees/${u.entityId}`} className="font-medium hover:underline">{u.entityName}</Link>
+                      {u.spellings.map((s) => `“${s.spelling}” × ${s.count}`).join(", ")} → <Link href={`/merchants/${u.entityId}`} className="font-medium hover:underline">{u.entityName}</Link>
                     </span>
                     <ActionButton
                       intent="confirm"
@@ -128,7 +128,7 @@ export function LookalikesPanel({ onChanged }: { onChanged: () => void }) {
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium break-all">{c.name}</span>
                       <span className="text-muted-foreground">{t("lookalikes.looksLike")}</span>
-                      <Link href={`/settings/payees/${c.entity.id}`} className="font-medium hover:underline break-all">{c.entity.name}</Link>
+                      <Link href={`/merchants/${c.entity.id}`} className="font-medium hover:underline break-all">{c.entity.name}</Link>
                       <PayeeTypeLabel className="text-xs text-muted-foreground" merchantType={c.entity.merchantType} type={c.entity.type} />
                       {confidenceBadge(c.confidence, t)}
                       {c.needsDecision && needsDecisionBadge(c.decisionReason, t)}

@@ -40,6 +40,7 @@ import type { PayeeOverview } from "./service";
 import type { PayeeGroup } from "./overview";
 import type { PayeeExecutor } from "./scan";
 import { st } from "@/lib/i18n/current";
+import { invalidatePayeeQueue } from "./queue-cache";
 
 export const MAX_PROPOSALS_PER_CALL = 100;
 
@@ -157,6 +158,7 @@ export async function saveProposals(opts: {
     );
     saved.push({ id: Number(rows[0].id), canonical: p.canonical, needsDecision: norm.needsDecision, notes: p.notes });
   }
+  if (saved.length) invalidatePayeeQueue(userId);
   return { saved, rejected };
 }
 
@@ -261,6 +263,7 @@ export async function rejectProposals(executor: PayeeExecutor, userId: string, i
       WHERE user_id = ${userId} AND status = 'draft' AND id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
       RETURNING id`),
   );
+  if (rows.length) invalidatePayeeQueue(userId);
   return rows.length;
 }
 

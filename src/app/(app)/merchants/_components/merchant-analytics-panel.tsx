@@ -47,7 +47,7 @@ type Analytics = {
 
 const who = (r: Ref) =>
   r.entityId != null ? (
-    <Link href={`/settings/payees/${r.entityId}`} className="hover:underline break-all">{r.name}</Link>
+    <Link href={`/merchants/${r.entityId}`} className="hover:underline break-all">{r.name}</Link>
   ) : (
     <span className="break-all">{r.name}</span>
   );

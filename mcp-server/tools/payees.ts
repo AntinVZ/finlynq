@@ -3,7 +3,7 @@
  *
  * Payees are per-row encrypted free text in transactions, recurring, staged,
  * SimpleFIN pending and the bank ledger, so every op reads and decrypts them
- * (src/lib/payees — the same code Settings → Payees uses) and works in
+ * (src/lib/payees — the same code the Merchants section uses) and works in
  * memory. The server never calls an LLM: the AI client looks at the compact
  * structured answers and proposes; the human approves.
  *
@@ -1072,7 +1072,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               return dataResponse({
                 saved: res.saved.map((x) => ({ proposal_id: x.id, canonical: x.canonical, ...(x.needsDecision ? { needsDecision: true } : {}), ...(x.notes.length ? { notes: x.notes } : {}) })),
                 ...(res.rejected.length ? { rejected: res.rejected } : {}),
-                note: "Saved as drafts — nothing changed. The user reviews them in Settings → Payees → AI review, or approve with op=approve (two-step) once they agree.",
+                note: "Saved as drafts — nothing changed. The user reviews them in Merchants → AI review (/merchants/review), or approve with op=approve (two-step) once they agree.",
               });
             } catch (e) {
               if (e instanceof PayeeDirectoryError) return err(e.message);

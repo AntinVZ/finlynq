@@ -1,10 +1,9 @@
 "use client";
 
 /**
- * Payee Studio settings (the gear at the top of Settings → Payees): advanced
- * mode, auto-replace known spellings on import (the import hint), auto-merge
- * close new spellings (the autopilot) with its threshold, and the dictionary
- * file. Every switch saves at once through PUT /api/payees/settings.
+ * Merchants settings (the gear at the top of Merchants): language, advanced
+ * mode, auto-replace known spellings on import (the import hint) and
+ * auto-merge close new spellings (the autopilot) with its threshold. Every switch saves at once through PUT /api/payees/settings.
  */
 
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -35,16 +34,41 @@ function WordListField({ label, value, disabled, onSave, placeholder }: { label:
   );
 }
 
+/**
+ * P8: the type words, bank-operation patterns and the dictionary file — on
+ * Merchants → Dictionaries & packs (they were in this dialog).
+ */
+export function WordListsSection({ settings, onSave, onImported }: { settings: PayeeSettings | null; onSave: (patch: Partial<PayeeSettings>) => void; onImported: () => void }) {
+  const t = useStudioT();
+  const disabled = !settings;
+  return (
+    <div className="space-y-6 text-sm">
+      <section className="space-y-3" aria-label={t("settings.wordsTitle")}>
+        <h3 className="font-medium">{t("settings.wordsTitle")}</h3>
+        <p className="text-xs text-muted-foreground">{t("settings.wordsNote")}</p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <WordListField label={t("settings.typeWordsExtra")} value={settings?.typeWordsExtra} disabled={disabled} onSave={(v) => onSave({ typeWordsExtra: v })} placeholder={t("settings.typeWordsExtraPh")} />
+          <WordListField label={t("settings.typeWordsOff")} value={settings?.typeWordsOff} disabled={disabled} onSave={(v) => onSave({ typeWordsOff: v })} placeholder={t("settings.typeWordsOffPh")} />
+          <WordListField label={t("settings.bankOpsExtra")} value={settings?.bankOpsExtra} disabled={disabled} onSave={(v) => onSave({ bankOpsExtra: v })} placeholder={t("settings.bankOpsExtraPh")} />
+          <WordListField label={t("settings.bankOpsOff")} value={settings?.bankOpsOff} disabled={disabled} onSave={(v) => onSave({ bankOpsOff: v })} placeholder={t("settings.bankOpsOffPh")} />
+        </div>
+      </section>
+      <section className="border-t pt-3" aria-label={t("dictionary.file")}>
+        <h3 className="font-medium mb-2">{t("dictionary.file")}</h3>
+        <DictionaryCard onImported={onImported} />
+      </section>
+    </div>
+  );
+}
+
 export function StudioSettingsDialog({
   settings,
   onSave,
   onClose,
-  onImported,
 }: {
   settings: PayeeSettings | null;
   onSave: (patch: Partial<PayeeSettings>) => void;
   onClose: () => void;
-  onImported: () => void;
 }) {
   const t = useStudioT();
   const disabled = !settings;
@@ -100,18 +124,7 @@ export function StudioSettingsDialog({
               <span className="block text-xs text-muted-foreground">{t("settings.advancedNote")}</span>
             </span>
           </label>
-          <div className="border-t pt-3 space-y-3">
-            <h3 className="font-medium">{t("settings.wordsTitle")}</h3>
-            <p className="text-xs text-muted-foreground">{t("settings.wordsNote")}</p>
-            <WordListField label={t("settings.typeWordsExtra")} value={settings?.typeWordsExtra} disabled={disabled} onSave={(v) => onSave({ typeWordsExtra: v })} placeholder={t("settings.typeWordsExtraPh")} />
-            <WordListField label={t("settings.typeWordsOff")} value={settings?.typeWordsOff} disabled={disabled} onSave={(v) => onSave({ typeWordsOff: v })} placeholder={t("settings.typeWordsOffPh")} />
-            <WordListField label={t("settings.bankOpsExtra")} value={settings?.bankOpsExtra} disabled={disabled} onSave={(v) => onSave({ bankOpsExtra: v })} placeholder={t("settings.bankOpsExtraPh")} />
-            <WordListField label={t("settings.bankOpsOff")} value={settings?.bankOpsOff} disabled={disabled} onSave={(v) => onSave({ bankOpsOff: v })} placeholder={t("settings.bankOpsOffPh")} />
-          </div>
-          <div className="border-t pt-3">
-            <h3 className="font-medium mb-2">{t("dictionary.file")}</h3>
-            <DictionaryCard onImported={onImported} />
-          </div>
+          <p className="border-t pt-3 text-xs text-muted-foreground">{t("settings.movedToDictionaries")}</p>
         </div>
       </DialogContent>
     </Dialog>

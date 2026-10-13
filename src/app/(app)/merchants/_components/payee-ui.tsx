@@ -60,7 +60,7 @@ export type EntityRow = {
   website?: string | null;
   hasLogo?: boolean;
   /** P6: the entry's merchant type, and a suggestion when it has none. */
-  merchantType?: { id: number; group: string; name: string } | null;
+  merchantType?: { id: number; group: string; name: string; code?: string | null } | null;
   /** P6.2: `strength` weak = found through an alias; `merchantTypeMixed` = name and aliases disagree. */
   merchantTypeHint?: { group: string; name: string; reason: string; strength?: "strong" | "weak"; field?: "name" | "alias"; matched?: string } | null;
   merchantTypeMixed?: string | null;
@@ -102,7 +102,7 @@ export type PayeesResponse = {
   lookalikeCount?: number;
   unrenamedRows?: number;
   entities: EntityRow[];
-  merchantTypes?: Array<{ id: number | null; group: string; name: string; sort?: number; defaultCategoryId?: number | null }>;
+  merchantTypes?: Array<{ id: number | null; group: string; name: string; code?: string | null; sort?: number; defaultCategoryId?: number | null }>;
   batches: BatchRow[];
   settings: PayeeSettings;
   groups: PayeeGroupRow[];

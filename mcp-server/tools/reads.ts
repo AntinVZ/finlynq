@@ -1877,7 +1877,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           ai_workflow: [
             "A. op=review → a compact pack: unrecognized payees (spellings, counts, totals, period, categories, 3 example rows) and clusters (confidence, reasons, needsDecision), plus the directory (entity_id, name, type).",
             "B. op=propose proposals=[{canonical, type, aliases: [exact spellings from the pack], identifiers?, reason, confidence 0–1, entity_id? to extend an existing entry}] → stored as DRAFTS; nothing changes. People / ФОП proposals are flagged needsDecision.",
-            "C. The user reviews drafts in Settings → Payees → AI review (accept / reject / accept all above a threshold), or you call op=approve proposal_ids=[…] — two-step: preview rows per table, then the same call with confirmationToken. All approved drafts become ONE batch; undoing it returns them to draft.",
+            "C. The user reviews drafts in Merchants → AI review (/merchants/review) (accept / reject / accept all above a threshold), or you call op=approve proposal_ids=[…] — two-step: preview rows per table, then the same call with confirmationToken. All approved drafts become ONE batch; undoing it returns them to draft.",
           ],
           workflow: [
             "1. Look: op=clusters (look-alike spellings with confidence + reasons) and op=list view=unrecognized (payees not in the directory yet).",
@@ -1899,7 +1899,7 @@ export function registerReadsTools(server: McpServer, ctx: PgToolContext) {
           diagnose: "op=explain a=<payee> b=<payee> → both matching keys, cores, the 4-letter block clustering compares within, type guesses, the score and the rule that joined or kept them apart (e.g. a person never pairs with a merchant).",
           matching: "Alias mode exact = same matching key: letter case, apostrophes, Latin/Cyrillic transliteration and card-terminal noise (store codes, city, long numbers) are ignored. contains / regex are for families of spellings.",
           never_changed: "bank_transactions (the bank statement journal), import_hash, staged rows' encryption tier.",
-          import_assist: "Optional, OFF by default (Settings → Payees): the import hint gives new staged rows / manual transactions the canonical name when their payee matches an alias; the autopilot renames a NEW payee that is close to exactly one directory entry above a threshold and adds the spelling as an alias — never for people, always as an undoable batch.",
+          import_assist: "Optional, OFF by default (Merchants settings): the import hint gives new staged rows / manual transactions the canonical name when their payee matches an alias; the autopilot renames a NEW payee that is close to exactly one directory entry above a threshold and adds the spelling as an alias — never for people, always as an undoable batch.",
           privacy: "Identifiers (IBAN, tax id, card last 4) are masked in answers; full card numbers are never stored.",
         });
       }

@@ -433,7 +433,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       // keys) we fall back to plaintext; the row will still be readable via
       // the legacy passthrough in decryptField.
       // Payee Studio import hint (B14): the canonical name when the payee
-      // matches a directory alias and the hint is on (Settings → Payees).
+      // matches a directory alias and the hint is on (Merchants settings).
       const storedPayee = (await makePayeeHinter(db, userId, dek))(payee);
       const encPayee = dek ? encryptField(dek, storedPayee) : storedPayee;
       const encNote = dek ? encryptField(dek, note ?? "") : (note ?? "");

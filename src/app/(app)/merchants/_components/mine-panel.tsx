@@ -102,7 +102,7 @@ export function MinePanel({ onSaved }: { onSaved?: () => void }) {
       </div>
       {status && (
         <p className="text-sm">
-          {status} {saved && <Link href="/settings/payees/review" className="underline">{t("mine.openReview")}</Link>}
+          {status} {saved && <Link href="/merchants/review" className="underline">{t("mine.openReview")}</Link>}
         </p>
       )}
       {report && (
@@ -118,7 +118,7 @@ export function MinePanel({ onSaved }: { onSaved?: () => void }) {
                 {report.links.map((l) => (
                   <li key={l.ref} className="flex flex-wrap items-center gap-2 p-2 text-sm">
                     <input type="checkbox" aria-label={t("mine.pickLink", { name: l.payee })} checked={picked.has(l.ref)} onChange={() => toggle(l.ref)} />
-                    <span className="break-all">“{l.payee}”</span> → <Link href={`/settings/payees/${l.entity.id}`} className="font-medium hover:underline">{l.entity.name}</Link>
+                    <span className="break-all">“{l.payee}”</span> → <Link href={`/merchants/${l.entity.id}`} className="font-medium hover:underline">{l.entity.name}</Link>
                     <span className="text-xs text-muted-foreground">{t("mine.via", { via: l.via })} · {t("common.rows", { n: l.rows })}</span>
                   </li>
                 ))}
@@ -138,7 +138,7 @@ export function MinePanel({ onSaved }: { onSaved?: () => void }) {
                   {s.kind === "card_last4" && <span className="text-xs text-muted-foreground">{t("mine.weak")}</span>}
                   <span className="text-muted-foreground">{t("mine.for")}</span>
                   {s.counterparty.entityId != null ? (
-                    <Link href={`/settings/payees/${s.counterparty.entityId}`} className="font-medium hover:underline break-all">{s.counterparty.name}</Link>
+                    <Link href={`/merchants/${s.counterparty.entityId}`} className="font-medium hover:underline break-all">{s.counterparty.name}</Link>
                   ) : (
                     <span className="font-medium break-all">{s.counterparty.name}</span>
                   )}

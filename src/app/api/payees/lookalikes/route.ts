@@ -1,6 +1,6 @@
 /**
  * /api/payees/lookalikes — new spellings that look like a directory entry
- * (Payee Studio P5b; Settings → Payees → Look-alikes, "Check for new
+ * (Payee Studio P5b; Merchants → Queue → Other spellings, "Check for new
  * look-alikes").
  *
  * GET ?limit=N (default 500)

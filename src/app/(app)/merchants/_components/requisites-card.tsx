@@ -59,7 +59,15 @@ export function codeTypeHint(kind: string, value: string, type: string, t: Studi
   return null;
 }
 
-const shown = (r: Requisite) => (r.kind === "card_last4" ? `•••• ${r.value}` : r.value);
+/** P8: requisites are masked until the person confirms "Show" (an ЄДРПОУ is a public company code). */
+export function maskRequisite(r: Pick<Requisite, "kind" | "value">): string {
+  const v = r.value;
+  if (r.kind === "card_last4") return `•••• ${v.slice(-4)}`;
+  if (r.kind === "edrpou") return v;
+  if (r.kind === "tax_id") return v.length > 2 ? `••••••••${v.slice(-2)}` : "••••";
+  return v.length > 8 ? `${v.slice(0, 4)}…${v.slice(-4)}` : "••••";
+}
+const shown = (r: Requisite, revealed: boolean) => (r.kind === "card_last4" ? `•••• ${r.value}` : revealed ? r.value : maskRequisite(r));
 
 type Action = { title: string; body: Record<string, unknown>; confirm: string };
 
@@ -69,7 +77,10 @@ export function RequisitesCard({
   requisites,
   allowedKinds,
   onAction,
+  readOnly = false,
 }: {
+  /** P8: view only (advanced mode off): requisites are shown, not edited. */
+  readOnly?: boolean;
   entityId: number;
   entityType: string;
   requisites: Requisite[];
@@ -81,6 +92,9 @@ export function RequisitesCard({
   const kinds = kindsForType(entityType).filter((k) => allowedKinds.includes(k));
   const [draft, setDraft] = useState({ kind: kinds[0] ?? "iban", value: "", label: "", bank: "", currency: "", isPrimary: false });
   const [editing, setEditing] = useState<{ id: number; label: string; bank: string; currency: string } | null>(null);
+  const [revealed, setRevealed] = useState(false);
+  const [confirmReveal, setConfirmReveal] = useState(false);
+  const maskable = requisites.some((r) => maskRequisite(r) !== r.value && r.kind !== "card_last4");
   const hint = codeTypeHint(draft.kind, draft.value, entityType, t);
   // P6.2: a full card number is refused here, so it never reaches the server.
   const fullCard = draft.kind === "card_last4" && isFullCardNumber(draft.value, { strict: true });
@@ -92,6 +106,29 @@ export function RequisitesCard({
         <CardTitle className="text-base">{t("requisites.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
+        {maskable && (
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            {revealed ? (
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setRevealed(false)}>
+                {t("requisites.hide")}
+              </Button>
+            ) : confirmReveal ? (
+              <>
+                <span>{t("requisites.revealConfirm")}</span>
+                <Button size="sm" className="h-7 text-xs" onClick={() => { setRevealed(true); setConfirmReveal(false); }}>
+                  {t("requisites.show")}
+                </Button>
+                <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setConfirmReveal(false)}>
+                  {t("common.cancel")}
+                </Button>
+              </>
+            ) : (
+              <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setConfirmReveal(true)}>
+                {t("requisites.showEllipsis")}
+              </Button>
+            )}
+          </div>
+        )}
         {groups.length === 0 && <p className="text-xs text-muted-foreground">{t("requisites.empty")}</p>}
         {groups.map((k) => (
           <section key={k} aria-label={kindLabel(k, t)}>
@@ -102,13 +139,13 @@ export function RequisitesCard({
                 .sort((a, b) => Number(b.isActive) - Number(a.isActive) || Number(b.isPrimary) - Number(a.isPrimary))
                 .map((r) => (
                   <li key={r.id} className={`flex flex-wrap items-center gap-2 p-2 ${r.isActive ? "" : "opacity-60"}`}>
-                    <span className="font-mono break-all">{shown(r)}</span>
+                    <span className="font-mono break-all">{shown(r, revealed)}</span>
                     {r.label && <span>{r.label}</span>}
                     {r.bank && <span className="text-xs text-muted-foreground">{r.bank}</span>}
                     {r.currency && <Badge variant="outline">{r.currency}</Badge>}
                     {r.isPrimary && <Badge variant="secondary">{t("requisites.primary")}</Badge>}
                     {!r.isActive && <Badge variant="outline">{t("requisites.inactive")}</Badge>}
-                    {editing?.id === r.id ? (
+                    {readOnly ? null : editing?.id === r.id ? (
                       <span className="flex w-full flex-wrap items-center gap-1">
                         <Input className="h-7 w-36 text-xs" aria-label={t("requisites.label")} placeholder={t("requisites.label")} value={editing.label} onChange={(e) => setEditing({ ...editing, label: e.target.value })} />
                         <Input className="h-7 w-28 text-xs" aria-label={t("requisites.bank")} placeholder={t("requisites.bank")} value={editing.bank} onChange={(e) => setEditing({ ...editing, bank: e.target.value })} />
@@ -154,6 +191,9 @@ export function RequisitesCard({
             </ul>
           </section>
         ))}
+        {readOnly ? (
+          <p className="text-xs text-muted-foreground">{t("requisites.readOnly")}</p>
+        ) : (
         <div className="space-y-2 rounded-md border p-2">
           <div className="flex flex-wrap gap-2">
             <select aria-label={t("requisites.kindAria")} className="h-9 rounded-md border bg-background px-2 text-sm" value={draft.kind} onChange={(e) => setDraft({ ...draft, kind: e.target.value })}>
@@ -199,6 +239,7 @@ export function RequisitesCard({
           {hint && <p className="text-xs text-amber-700 dark:text-amber-300">{hint}</p>}
           <p className="text-xs text-muted-foreground">{t("requisites.footer")}</p>
         </div>
+        )}
       </CardContent>
     </Card>
   );

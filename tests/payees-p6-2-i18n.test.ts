@@ -49,7 +49,7 @@ describe("Payee Studio dictionary", () => {
 });
 
 describe("Payee Studio screens have no hardcoded UI text", () => {
-  const root = path.join(__dirname, "..", "src", "app", "(app)", "settings", "payees");
+  const root = path.join(__dirname, "..", "src", "app", "(app)", "merchants");
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

@@ -369,7 +369,7 @@ export function RuleEditorDialog({
                 <input type="checkbox" className="mt-0.5" checked={saveAsAlias} onChange={(e) => setSaveAsAlias(e.target.checked)} />
                 <span>
                   Also save as alias of “{aliasTarget.name}” (directory)
-                  <span className="block text-muted-foreground">The rule&apos;s payee conditions become aliases of that payee entry, so imports and Payee Studio recognise them too. Undoable in Settings → Payees → Changes.</span>
+                  <span className="block text-muted-foreground">The rule&apos;s payee conditions become aliases of that payee entry, so imports and Payee Studio recognise them too. Undoable in Merchants → Changes.</span>
                 </span>
               </label>
             )}

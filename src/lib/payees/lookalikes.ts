@@ -36,6 +36,7 @@ import type { PayeeVocabulary } from "./type-words";
 import type { PayeeEntity } from "./directory";
 import type { PayeeExecutor } from "./scan";
 import { st } from "@/lib/i18n/current";
+import { invalidatePayeeQueue } from "./queue-cache";
 
 const PERSON_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 
@@ -239,7 +240,10 @@ export async function rejectLookalike(executor: PayeeExecutor, userId: string, d
       ON CONFLICT (user_id, key_hash, entity_id) DO NOTHING
       RETURNING id`),
   );
-  if (rows.length) return true;
+  if (rows.length) {
+    invalidatePayeeQueue(userId);
+    return true;
+  }
   const exists = normalizeDbRows(await executor.execute(sql`SELECT 1 FROM payee_entities WHERE id = ${entityId} AND user_id = ${userId}`));
   return exists.length > 0;
 }
@@ -260,6 +264,7 @@ export async function cancelRejection(
             WHERE user_id = ${userId} AND entity_id = ${by.entityId} AND key_hash = ${rejectionKeyHash(dek, payeeMatchKey(by.payee))}
             RETURNING id`),
         );
+  if (rows.length) invalidatePayeeQueue(userId);
   return rows.length;
 }
 

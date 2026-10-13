@@ -54,7 +54,7 @@ export function SuspiciousPanel({ rows, entities, onDone }: { rows: SuspiciousRo
           {rows.map((r) => (
             <li key={r.id} className="p-3 space-y-1.5">
               <div className="flex flex-wrap items-baseline gap-2">
-                <Link href={`/settings/payees/${r.id}`} className="font-medium hover:underline break-all">
+                <Link href={`/merchants/${r.id}`} className="font-medium hover:underline break-all">
                   {r.name}
                 </Link>
                 <span className="text-xs text-action-caution-text">{r.reasons.map((x) => x.reason).join("; ")}</span>
@@ -66,7 +66,7 @@ export function SuspiciousPanel({ rows, entities, onDone }: { rows: SuspiciousRo
                 </p>
               )}
               <div className="flex flex-wrap gap-1.5">
-                <ActionButton intent="open" soft className="h-7 text-xs" render={<Link href={`/settings/payees/${r.id}`} />}>
+                <ActionButton intent="open" soft className="h-7 text-xs" render={<Link href={`/merchants/${r.id}`} />}>
                   {t("suspicious.rows")}
                 </ActionButton>
                 <ActionButton intent="neutral" soft className="h-7 text-xs" onClick={() => open("rename", r)}>

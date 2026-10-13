@@ -1,6 +1,6 @@
 /**
  * Payee Studio on import (P3): the import hint and the autopilot. Both are
- * OFF by default (Settings → Payees → Studio settings).
+ * OFF by default (Merchants settings).
  *
  *   - IMPORT HINT: a newly staged row whose payee matches a directory alias
  *     (any mode, one entity only) gets the entity's canonical name. Also used
@@ -13,7 +13,7 @@
  *
  * Staged rows are re-encrypted at their own tier; `import_hash` is never
  * recomputed. Each kind of change is ONE payee batch (actor `import` /
- * `autopilot`), so Settings → Payees → Changes can undo it for 30 days.
+ * `autopilot`), so Merchants → Changes can undo it for 30 days.
  * Failures never break an import: callers wrap this in try/catch.
  */
 import { sql } from "drizzle-orm";

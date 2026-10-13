@@ -20,6 +20,7 @@
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, transliterateToLatin, type PayeeType } from "./match-key";
 import type { PayeeEntity } from "./directory";
+import { invalidatePayeeQueue } from "./queue-cache";
 
 export type PayeeSuggestion = {
   /** What goes into the payee field. */
@@ -135,4 +136,6 @@ export function setCachedSuggestIndex(userId: string, index: PayeeSuggestIndex):
 /** Drop a user's suggestions (after any directory change / payee rewrite). */
 export function invalidatePayeeSuggest(userId: string): void {
   cache.delete(userId);
+  // P8: the Merchants queue counts (./queue.ts) go stale with the same writes.
+  invalidatePayeeQueue(userId);
 }

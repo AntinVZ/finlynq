@@ -10,7 +10,9 @@
  * undoable); "Show transactions" opens the filtered list.
  */
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+// P8: the global search hands a requisite over here without putting it in the URL.
+import { WHOSE_PENDING_KEY } from "@/components/merchants/merchant-search";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -47,7 +49,14 @@ function valueToStore(kind: string, typed: string): string {
 
 export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
   const t = useStudioT();
-  const [q, setQ] = useState("");
+  const [q, setQ] = useState(() => {
+    try {
+      const pending = typeof window !== "undefined" ? window.sessionStorage.getItem(WHOSE_PENDING_KEY) : null;
+      return pending ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [asked, setAsked] = useState("");
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState("");
@@ -55,8 +64,21 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
   const [add, setAdd] = useState<{ entityId: number; name: string } | null>(null);
   const [status, setStatus] = useState("");
 
-  async function find() {
-    const typed = q.trim();
+  // P8: a requisite handed over by the global search is looked up once, on arrival.
+  useEffect(() => {
+    let pending: string | null = null;
+    try {
+      pending = window.sessionStorage.getItem(WHOSE_PENDING_KEY);
+      window.sessionStorage.removeItem(WHOSE_PENDING_KEY);
+    } catch {
+      /* storage blocked: nothing handed over */
+    }
+    if (pending) void find(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once on mount
+  }, []);
+
+  async function find(given?: string) {
+    const typed = (given ?? q).trim();
     if (!typed) return;
     // P6.2: a full card number is refused here, so it never reaches the server (or a URL).
     if (identifierQueryRefusal(typed)) {
@@ -121,7 +143,7 @@ export function WhosePanel({ onChanged }: { onChanged?: () => void }) {
                 <li key={`${c.entity?.id ?? c.payee}`} className="rounded-lg border p-3 text-sm space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     {c.entity ? (
-                      <Link href={`/settings/payees/${c.entity.id}`} className="font-medium hover:underline break-all">{c.payee}</Link>
+                      <Link href={`/merchants/${c.entity.id}`} className="font-medium hover:underline break-all">{c.payee}</Link>
                     ) : (
                       <span className="font-medium break-all">{c.payee}</span>
                     )}

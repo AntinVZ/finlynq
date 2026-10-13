@@ -44,7 +44,7 @@ const CONCENTRATION: Record<string, StudioTextKey> = { low: "insights.concentrat
 
 const name = (c: Cp) =>
   c.entityId != null ? (
-    <Link href={`/settings/payees/${c.entityId}`} className="hover:underline break-all">{c.name}</Link>
+    <Link href={`/merchants/${c.entityId}`} className="hover:underline break-all">{c.name}</Link>
   ) : (
     <span className="break-all">{c.name}</span>
   );

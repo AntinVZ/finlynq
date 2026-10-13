@@ -21,7 +21,7 @@
  *
  * POST { action: "propose", refs: string[] } → { saved, rejected, missing }
  *   Stores the chosen suggestions / links as DRAFT proposals (encrypted),
- *   which a person approves on Settings → Payees → AI review. Nothing in the
+ *   which a person approves on Merchants → AI review. Nothing in the
  *   directory or the ledger changes here.
  */
 import { NextResponse } from "next/server";

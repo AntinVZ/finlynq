@@ -12,7 +12,7 @@ import { useMemo, useState } from "react";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { extractRequisites } from "@/lib/payees/requisites";
-import { OpDialog } from "@/app/(app)/settings/payees/_components/op-dialog";
+import { OpDialog } from "@/app/(app)/merchants/_components/op-dialog";
 import { useT } from "@/lib/i18n/client";
 import type { MessageKey } from "@/lib/i18n";
 

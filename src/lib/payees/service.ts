@@ -134,7 +134,7 @@ export async function loadPayeeOverview(opts: {
       hasLogo: e.logo != null,
       merchantType: (() => {
         const t = e.merchantTypeId == null ? undefined : typeById.get(e.merchantTypeId);
-        return t ? { id: t.id!, group: t.group, name: t.name } : null;
+        return t ? { id: t.id!, group: t.group, name: t.name, code: t.code ?? null } : null;
       })(),
       ...(() => {
         if (e.merchantTypeId != null) return { merchantTypeHint: null, merchantTypeMixed: null };
