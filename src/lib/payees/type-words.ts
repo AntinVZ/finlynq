@@ -201,6 +201,30 @@ export function typeWordSynonymKeys(word: string, vocab: PayeeVocabulary = defau
   return [...new Set([key, ...vocab.phrases.filter((p) => p.hint && sameHint(p.hint, own.hint!)).map((p) => p.tokens.join(" "))])];
 }
 
+/**
+ * Payment channels (P8 stage 10): the bank or service a payment went through,
+ * not the merchant. A payee that IS only a channel (`OTPC2C`, `P24 12345`,
+ * `MONODirect`) is marked as a channel: it never becomes a merchant
+ * proposal, a cluster or an autopilot rename, and the import summary counts
+ * it apart. A channel in front of a real name (`P24 SILPO`) is dropped from
+ * the matching key like any terminal prefix (./match-key.ts).
+ */
+export const PAYMENT_CHANNELS: readonly string[] = ["OTPC2C", "P24", "MONODirect", "LiqPay", "WFP", "Portmone", "Apple Pay", "Google Pay"];
+const CHANNEL_RE = new RegExp(
+  `^(${PAYMENT_CHANNELS.map((c) => c.toLowerCase().replace(/ /g, "\\s*")).join("|")})(?:[\\s*#:./-]*[\\d\\s*#:./-]*)$`,
+  "i",
+);
+
+/** The channel a payee consists of (no merchant name next to it), or null. */
+export function channelOf(payee: string | null | undefined): string | null {
+  const s = String(payee ?? "").trim();
+  if (!s) return null;
+  const m = s.match(CHANNEL_RE);
+  if (!m) return null;
+  const hit = m[1].replace(/\s+/g, "").toLowerCase();
+  return PAYMENT_CHANNELS.find((c) => c.replace(/\s+/g, "").toLowerCase() === hit) ?? null;
+}
+
 /** The bank-operation pattern a payee matches, or null. */
 export function bankOperationOf(payee: string | null | undefined, vocab: PayeeVocabulary = defaultVocabulary()): string | null {
   const s = normalizeForMatch(payee ?? "");

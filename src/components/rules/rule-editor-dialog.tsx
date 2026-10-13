@@ -55,6 +55,21 @@ import { computePureActionPatch } from "@/lib/rules/execute";
 import type { Condition, Action, ConditionGroup } from "@/lib/rules/schema";
 import { defaultConditionForField, defaultActionForKind } from "@/lib/rules/schema";
 import { PayeePicker, type PayeeSuggestion } from "@/components/payees/payee-picker";
+import useSWR from "swr";
+import { useT } from "@/lib/i18n/client";
+import { merchantTypeLabel } from "@/app/(app)/merchants/_components/merchant-type-ui";
+
+/** P8 stage 10: the directory as pick lists for `merchant` / `merchant_type` conditions. */
+export type MerchantOptions = {
+  merchants: Array<{ id: number; name: string; merchantTypeId: number | null; defaultCategoryId: number | null }>;
+  types: Array<{ id: number; group: string; name: string; code: string | null }>;
+};
+type RuleTest = { scanned: number; matchedCount: number; uncategorizedCount: number; matches: Array<{ id: number; date: string; payee: string; amount: number }>; truncated: boolean };
+const jsonFetcher = async (url: string) => {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(String(r.status));
+  return r.json();
+};
 
 export type Category = { id: number; name: string; type: string; group: string };
 export type Account = { id: number; name: string };
@@ -112,6 +127,9 @@ export const CONDITION_FIELDS: Array<{ value: Condition["field"]; label: string 
   { value: "ticker", label: "Ticker" },
   { value: "security_name", label: "Security name" },
   { value: "quantity", label: "Quantity" },
+  // P8 stage 10 — a Merchants directory entry / merchant type.
+  { value: "merchant", label: "Merchant" },
+  { value: "merchant_type", label: "Merchant type" },
 ];
 
 export const ACTION_KINDS: Array<{ value: Action["kind"]; label: string; sideEffect?: true }> = [
@@ -225,6 +243,27 @@ export function RuleEditorDialog({
   const [aliasTarget, setAliasTarget] = useState<{ entityId: number; name: string } | null>(null);
   const [saveAsAlias, setSaveAsAlias] = useState(false);
 
+  // P8 stage 10: directory lists, loaded once a merchant condition is in play.
+  const needsMerchants = conditions.some((c) => c.field === "merchant" || c.field === "merchant_type");
+  const { data: merchantOptions } = useSWR<MerchantOptions>(needsMerchants ? "/api/payees/options" : null, jsonFetcher);
+  // «Перевірити на моїх операціях» — the same dry run as MCP test_rule.
+  const [test, setTest] = useState<RuleTest | null>(null);
+  const [testing, setTesting] = useState(false);
+  async function runTest() {
+    setTesting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/rules/test", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conditions: { all: conditions } }) });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) setError(data?.error ?? "Failed to test the rule");
+      else setTest(data as RuleTest);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTesting(false);
+    }
+  }
+
   // Live preview state.
   const [samplePayee, setSamplePayee] = useState("Whole Foods");
   const [sampleAmount, setSampleAmount] = useState(100);
@@ -233,6 +272,7 @@ export function RuleEditorDialog({
   }, [actions]);
 
   function updateCondition(i: number, patch: Partial<Condition>) {
+    setTest(null);
     const next = [...conditions];
     next[i] = { ...next[i], ...patch } as Condition;
     setConditions(next);
@@ -336,10 +376,12 @@ export function RuleEditorDialog({
                 key={i}
                 cond={cond}
                 accounts={accounts}
+                merchantOptions={merchantOptions}
                 onChange={(patch) => updateCondition(i, patch)}
-                onRemove={() => setConditions(conditions.filter((_, j) => j !== i))}
+                onRemove={() => { setTest(null); setConditions(conditions.filter((_, j) => j !== i)); }}
               />
             ))}
+            <RuleTestPanel test={test} testing={testing} onTest={runTest} />
           </div>
 
           {/* Actions */}
@@ -404,11 +446,13 @@ export function RuleEditorDialog({
 function ConditionRow({
   cond,
   accounts,
+  merchantOptions,
   onChange,
   onRemove,
 }: {
   cond: Condition;
   accounts: Account[];
+  merchantOptions?: MerchantOptions;
   onChange: (patch: Partial<Condition>) => void;
   onRemove: () => void;
 }) {
@@ -416,8 +460,13 @@ function ConditionRow({
     // When switching field, blank to a fully-typed default for the new shape.
     // The factory map (rules/schema.ts) owns each variant's default, so a wrong
     // field on a variant is a compile error there instead of a silent type hole.
-    onChange(defaultConditionForField(field, accounts[0]?.id ?? 0));
+    const firstId =
+      field === "merchant" ? (merchantOptions?.merchants[0]?.id ?? 0) :
+      field === "merchant_type" ? (merchantOptions?.types[0]?.id ?? 0) :
+      (accounts[0]?.id ?? 0);
+    onChange(defaultConditionForField(field, firstId));
   }
+  const t = useT();
 
   return (
     <div className="flex items-center gap-2">
@@ -520,6 +569,31 @@ function ConditionRow({
             placeholder="Select account"
             searchPlaceholder="Search accounts…"
             emptyMessage="No matches"
+            className="flex-1"
+          />
+        </>
+      )}
+
+      {(cond.field === "merchant" || cond.field === "merchant_type") && (
+        <>
+          <Select value={cond.op} onValueChange={(v) => onChange({ op: (v ?? "is") as "is" | "is_not" } as Partial<Condition>)}>
+            <SelectTrigger className="w-24"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="is">is</SelectItem>
+              <SelectItem value="is_not">is not</SelectItem>
+            </SelectContent>
+          </Select>
+          <Combobox
+            value={String(cond.field === "merchant" ? cond.entityId : cond.typeId)}
+            onValueChange={(v) => onChange((cond.field === "merchant" ? { entityId: parseInt(v ?? "0") } : { typeId: parseInt(v ?? "0") }) as Partial<Condition>)}
+            items={
+              cond.field === "merchant"
+                ? (merchantOptions?.merchants ?? []).map((m): ComboboxItemShape => ({ value: String(m.id), label: m.name }))
+                : (merchantOptions?.types ?? []).map((ty): ComboboxItemShape => ({ value: String(ty.id), label: merchantTypeLabel(ty, t) }))
+            }
+            placeholder={cond.field === "merchant" ? t("rules.pickMerchant") : t("rules.pickType")}
+            searchPlaceholder={t("rules.search")}
+            emptyMessage={cond.field === "merchant" ? t("rules.noMerchants") : t("rules.noTypes")}
             className="flex-1"
           />
         </>
@@ -972,6 +1046,37 @@ function VarBindingRow({
           className="w-28"
           placeholder="value"
         />
+      )}
+    </div>
+  );
+}
+
+/** P8 stage 10: «Перевірити на моїх операціях» — matched rows, how many lack a category, a sample. */
+function RuleTestPanel({ test, testing, onTest }: { test: RuleTest | null; testing: boolean; onTest: () => void }) {
+  const t = useT();
+  return (
+    <div className="rounded-lg border border-dashed p-2 space-y-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" onClick={onTest} disabled={testing}>
+          {testing ? t("common.checking") : t("rules.test")}
+        </Button>
+        {test && (
+          <span className="text-xs" data-testid="rule-test-result">
+            {t("rules.testResult", { n: test.matchedCount, u: test.uncategorizedCount })}
+            {test.truncated ? ` · ${t("rules.testTruncated", { n: test.scanned })}` : ""}
+          </span>
+        )}
+      </div>
+      {test && test.matches.length > 0 && (
+        <ul className="text-xs text-muted-foreground space-y-0.5 max-h-32 overflow-y-auto">
+          {test.matches.slice(0, 8).map((m) => (
+            <li key={m.id} className="flex gap-2">
+              <span className="tabular-nums">{m.date}</span>
+              <span className="truncate flex-1">{m.payee}</span>
+              <span className="tabular-nums">{m.amount}</span>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

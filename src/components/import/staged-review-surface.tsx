@@ -67,6 +67,7 @@ import {
 } from "@/app/(app)/import/pending/_hooks/use-staged";
 import { StagedListView } from "@/app/(app)/import/pending/_components/staged-list-view";
 import { ReconcileHeader } from "@/app/(app)/import/pending/_components/reconcile-header";
+import { PayeeImportSummaryCard } from "@/components/import/payee-import-summary";
 import { BankPane } from "@/app/(app)/import/pending/_components/bank-pane";
 import { StagedPane } from "@/app/(app)/import/pending/_components/staged-pane";
 import { UnboundPickerPane } from "@/app/(app)/import/pending/_components/unbound-picker-pane";
@@ -1166,6 +1167,8 @@ export function StagedReviewSurface({
         reject={reject}
         approve={approve}
       />
+
+      {openId && detail && <PayeeImportSummaryCard stagedImportId={openId} pending={detail.staged.status === "pending"} />}
 
       {toast && (
         <Card

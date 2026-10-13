@@ -40,6 +40,8 @@ import {
   type RuleSeed,
 } from "@/components/rules/rule-editor-dialog";
 import type { Condition, Action } from "@/lib/rules/schema";
+import { useT } from "@/lib/i18n/client";
+import { merchantTypeLabel } from "@/app/(app)/merchants/_components/merchant-type-ui";
 
 type RuleRow = {
   id: number;
@@ -48,12 +50,17 @@ type RuleRow = {
   actions: Action[];
   isActive: boolean;
   priority: number;
+  /** P8 stage 10: rows the rule filled, and when it last did. */
+  hitCount?: number;
+  lastHitAt?: string | null;
   createdAt: string;
   updatedAt: string | null;
   actionFKNames?: {
     categories: Record<string, string | null>;
     accounts: Record<string, string | null>;
     holdings: Record<string, string | null>;
+    merchants?: Record<string, string>;
+    merchantTypes?: Record<string, { group: string; name: string; code: string | null }>;
   };
 };
 
@@ -88,6 +95,12 @@ function describeCondition(c: Condition, fkNames?: RuleRow["actionFKNames"]): st
     case "quantity":
       if (c.op === "between") return `quantity between ${c.min}-${c.max}`;
       return `quantity ${c.op} ${c.value}`;
+    case "merchant":
+      return `merchant ${c.op} ${fkNames?.merchants?.[String(c.entityId)] ?? `#${c.entityId}`}`;
+    case "merchant_type": {
+      const ty = fkNames?.merchantTypes?.[String(c.typeId)];
+      return `merchant type ${c.op} ${ty ? merchantTypeLabel(ty) : `#${c.typeId}`}`;
+    }
   }
 }
 
@@ -139,6 +152,7 @@ function describeAction(a: Action, fkNames?: RuleRow["actionFKNames"]): string {
 }
 
 export default function RulesSettingsPage() {
+  const t = useT();
   const [rules, setRules] = useState<RuleRow[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -252,7 +266,11 @@ export default function RulesSettingsPage() {
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-medium text-sm truncate">{rule.name}</span>
-                    {rule.priority > 0 && <Badge variant="secondary" className="text-[10px]">P{rule.priority}</Badge>}
+                    <Badge variant="secondary" className="text-[10px]" title={t("rules.priorityTitle")}>{t("rules.priority", { n: rule.priority })}</Badge>
+                    <span className="text-[11px] text-muted-foreground" data-testid="rule-hits">
+                      {t("rules.hits", { n: rule.hitCount ?? 0 })}
+                      {rule.lastHitAt ? ` · ${t("rules.lastHit", { date: rule.lastHitAt.slice(0, 10) })}` : ""}
+                    </span>
                     {!rule.isActive && <Badge variant="outline" className="text-[10px]">disabled</Badge>}
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">

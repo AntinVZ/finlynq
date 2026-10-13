@@ -37,7 +37,7 @@ import {
   spellingDifferenceReason,
   type TypeGuess,
 } from "./match-key";
-import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
+import { bankOperationOf, channelOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
 import { scoreKeys, type KeyScore } from "./score-keys";
 import { describeOwnAccount, type OwnMatcher } from "./own-accounts";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
@@ -79,6 +79,8 @@ export type PayeeGroup = {
   bankOperation: string | null;
   /** P6.2 (76): a transfer between own accounts — the own account / card it mentions (masked description). */
   ownAccount: string | null;
+  /** P8 stage 10: the payee is only a payment channel (`OTPC2C`, `P24`, `MONODirect`…), not a merchant. */
+  channel?: string | null;
   /** Most recent transactions (when the scan kept samples). */
   samples?: Array<{ date: string; amount: number; currency: string | null; category: string | null }>;
 };
@@ -165,6 +167,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
     const vocab = opts.vocab ?? defaultVocabulary();
     const bc = brandCoreOfKey(acc.key, vocab);
     const bankOperation = spellings.map((s) => bankOperationOf(s.spelling, vocab)).find((x) => x != null) ?? null;
+    const channel = spellings.map((x) => channelOf(x.spelling)).find((x) => x != null) ?? null;
     const ownHit = opts.own ? spellings.map((s) => opts.own!.inText(s.spelling)).find((x) => x != null) : null;
     const ownAccount = ownHit ? describeOwnAccount(ownHit) : entity && opts.ownOfEntity ? opts.ownOfEntity(entity.id) : null;
     const samples = spellings.some((s) => s.samples)
@@ -195,6 +198,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       brand: { core: bc.core, removed: bc.removed, typeOnly: bc.typeOnly, hint: bc.hint },
       bankOperation,
       ownAccount,
+      channel,
       ...(samples ? { samples } : {}),
     });
   }
@@ -215,7 +219,7 @@ export { scoreKeys, type KeyScore };
 
 /** Groups that never take part in merchant clustering: no brand (only type words), a bank service row or an own transfer. */
 export function clusterable(g: PayeeGroup): boolean {
-  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
+  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null && !g.channel;
 }
 
 /** Score a pair of groups; null when they should not be clustered. */

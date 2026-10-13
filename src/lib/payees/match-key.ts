@@ -77,7 +77,7 @@ function foldLatin(token: string): string {
 
 /** Leading words that card terminals and banks prepend. Matched repeatedly. */
 const PREFIX_RE =
-  /^(?:pos|purchase|card purchase|payment|pmt|оплата|покупка|покупка товару|оплата товарів|apple pay|google pay|gpay|liqpay|wfp|www\.)[\s:*#.-]+/;
+  /^(?:pos|purchase|card purchase|payment|pmt|оплата|покупка|покупка товару|оплата товарів|apple pay|google pay|gpay|liqpay|wfp|otpc2c|p24|monodirect|www\.)[\s:*#.-]+/;
 
 /** Cities / countries banks append to a merchant name. Dropped only after the first token. */
 const PLACE_WORDS = new Set([

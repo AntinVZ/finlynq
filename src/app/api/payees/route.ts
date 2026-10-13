@@ -158,6 +158,7 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("split"), entityId: id, aliasIds: z.array(id).min(1).max(200), name, type, apply, dryRun }),
   z.object({ op: z.literal("apply"), entityIds: z.array(id).max(5000).optional(), dryRun }),
   z.object({ op: z.literal("delete"), entityId: id, dryRun }),
+  z.object({ op: z.literal("apply_default_category"), entityId: id, categoryId: id.optional(), dryRun }),
   z.object({ op: z.literal("move_remainder"), entityId: id, payees: z.array(z.string().min(1).max(500)).min(1).max(100), remainder: z.string().min(1).max(200), target: z.enum(["tag", "note"]).optional(), dryRun }),
   z.object({ op: z.literal("mark_reviewed"), entityIds: z.array(id).min(1).max(500), reviewed: z.boolean().optional(), dryRun }),
   z.object({

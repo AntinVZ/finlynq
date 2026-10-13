@@ -25,6 +25,8 @@ export type MerchantKpis = {
   /** One value per month of the window, oldest first (signed, display currency). */
   months: Array<{ month: string; total: number }>;
   recent: Array<{ id: number; date: string; amount: number; currency: string | null; account: string | null; category: string | null; payee: string }>;
+  /** P8 stage 10: rows of this entry with no category yet (any date) — «apply the default category to N». */
+  uncategorized: number;
   /** Stopped at the scan limit. */
   truncated: boolean;
 };
@@ -75,6 +77,7 @@ export async function loadMerchantKpis(opts: {
   let after = 0;
   let scanned = 0;
   let truncated = false;
+  let uncategorized = 0;
   if (opts.keys.size) {
     for (;;) {
       const page = normalizeDbRows<Record<string, unknown>>(
@@ -92,6 +95,7 @@ export async function loadMerchantKpis(opts: {
         const amount = Number(r.amount ?? 0);
         const currency = r.currency == null ? null : String(r.currency);
         if (!lastDate || date > lastDate) lastDate = date;
+        if (r.category_id == null) uncategorized++;
         const rec: Recent = {
           id: Number(r.id),
           date,
@@ -137,6 +141,7 @@ export async function loadMerchantKpis(opts: {
     lastDate,
     months,
     recent,
+    uncategorized,
     truncated,
   };
 }

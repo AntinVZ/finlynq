@@ -248,13 +248,17 @@ export async function POST(request: NextRequest) {
           ;
         break;
 
-      case "update_payee":
+      case "update_payee": {
+        // P8 stage 10 (B33): the import hint applies to a bulk payee edit too.
+        const { canonicalPayeeHint } = await import("@/lib/payees/import-assist");
+        const payee = (parsed.data.payee && (await canonicalPayeeHint(db, userId, dek!, parsed.data.payee).catch(() => null))) || parsed.data.payee;
         await db
           .update(transactions)
-          .set({ payee: encryptField(dek!, parsed.data.payee), ...AUDIT_BUMP })
+          .set({ payee: encryptField(dek!, payee), ...AUDIT_BUMP })
           .where(and(inArray(transactions.id, ids), eq(transactions.userId, userId)))
           ;
         break;
+      }
 
       case "update_tags":
         await db

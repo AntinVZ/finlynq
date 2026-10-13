@@ -38,6 +38,7 @@ import { OpDialog, describeRows, type OpPreview } from "../_components/op-dialog
 import { RequisitesCard, type Requisite } from "../_components/requisites-card";
 import { MerchantTypeSelect, merchantTypeLabel, PayeeTypeLabel, type MerchantTypeOption, type MerchantTypeRef } from "../_components/merchant-type-ui";
 import { useStudioT } from "../_components/i18n";
+import { MerchantRulesCard } from "../_components/merchant-rules-card";
 import type { StudioTextKey } from "@/lib/payees/i18n";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
@@ -62,6 +63,7 @@ type EntityResponse = {
     lastDate: string | null;
     months: Array<{ month: string; total: number }>;
     recent: Array<{ id: number; date: string; amount: number; currency: string | null; account: string | null; category: string | null; payee: string }>;
+    uncategorized?: number;
     truncated: boolean;
   };
 };
@@ -510,6 +512,14 @@ export default function PayeeEntityPage() {
           )}
         </CardContent>
       </Card>
+
+      <MerchantRulesCard
+        entity={{ id: e.id, name: e.name }}
+        merchantTypeId={e.merchantTypeId ?? null}
+        defaultCategoryId={e.defaultCategoryId ?? currentType?.defaultCategoryId ?? null}
+        uncategorized={data.kpis?.uncategorized ?? null}
+        onApplyCategory={() => setAction({ title: t("merchantRules.applyTitle", { name: e.name }), body: { op: "apply_default_category", entityId: e.id }, confirm: t("common.apply") })}
+      />
 
       {(advanced || e.identifiers.length > 0) && (
         <RequisitesCard

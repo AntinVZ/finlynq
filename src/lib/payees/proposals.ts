@@ -303,7 +303,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
   }
   const fmt = (n: number) => Math.round(n * 100) / 100;
   // P6: no brand (only type words) or the bank's own rows → never proposed as a merchant.
-  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
+  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null && !g.channel;
   const unrecognized = o.groups
     .filter(proposable)
     .slice(0, limit)
@@ -342,6 +342,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
       unrecognized: o.groups.filter((g) => g.key && g.entityId == null).length,
       noBrand: o.groups.filter((g) => g.key && g.entityId == null && g.brand.typeOnly).length,
       bankOperations: o.groups.filter((g) => g.key && g.bankOperation != null).length,
+      channels: o.groups.filter((g) => g.key && g.channel).length,
       clusters: o.clusters.length,
       directory: o.directory.length,
       pendingDrafts: drafts.length,

@@ -33,7 +33,7 @@ export type QueueCounts = {
 /** Pure: counts from an overview, a look-alike count and a draft count. */
 export function queueCountsOf(o: Pick<PayeeOverview, "groups" | "clusters">, lookalikes: number, drafts: number, suspicious: number): QueueCounts {
   const clusters = o.clusters.length;
-  const unrecognized = o.groups.filter((g) => g.key && g.entityId == null && !g.bankOperation && !g.ownAccount).length;
+  const unrecognized = o.groups.filter((g) => g.key && g.entityId == null && !g.bankOperation && !g.ownAccount && !g.channel).length;
   return {
     clusters,
     needsDecision: o.clusters.filter((c) => c.needsDecision).length,

@@ -922,6 +922,9 @@ export const transactionRules = pgTable("transaction_rules", {
   actions: jsonb("actions").notNull(),
   isActive: boolean("is_active").notNull().default(true),
   priority: integer("priority").notNull().default(0),
+  // P8 stage 10: how often the rule filled a row, and when it last did.
+  hitCount: integer("hit_count").notNull().default(0),
+  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
   createdAt: text("created_at").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [

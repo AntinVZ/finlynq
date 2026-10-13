@@ -30,6 +30,8 @@ export type PayeeGroupRow = {
   brand?: { core: string; removed: string[]; typeOnly: boolean; hint?: { group: string; name: string } | null };
   /** P6: the bank's own service row (matched pattern). */
   bankOperation?: string | null;
+  /** P8 stage 10: only a payment channel (OTPC2C, P24, MONODirect…). */
+  channel?: string | null;
   /** P6.2: a transfer between own accounts (masked description of the account). */
   ownAccount?: string | null;
 };

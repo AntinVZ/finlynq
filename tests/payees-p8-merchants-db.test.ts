@@ -128,4 +128,87 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     expect((await getPayeeSettings(db, seed.userId)).requireDirectoryPayee).toBe(false);
     expect((await savePayeeSettings(db, seed.userId, { requireDirectoryPayee: true })).requireDirectoryPayee).toBe(true);
   });
+
+  it("stage 10: merchant / merchant-type rule conditions, test_rule counts, the hit counter", async () => {
+    const { db } = await import("@/db");
+    const { createCategory } = await import("./helpers/portfolio-fixtures");
+    const created = await op({ op: "create", name: "Епіцентр", apply: false, merchantType: { group: "Ремонт і будівництво", name: "Ремонт і будівництво" }, aliases: [{ pattern: "EPITCENTR K10", mode: "exact" }] });
+    const entityId = created.entity!.id;
+    const [{ merchant_type_id: typeId }] = (await db.execute(sql`SELECT merchant_type_id FROM payee_entities WHERE id = ${entityId}`) as unknown as { rows: Array<{ merchant_type_id: number }> }).rows;
+    expect(typeId).toBeGreaterThan(0);
+    await addTx("EPITCENTR K10", "2026-09-10", -300);
+    const { testRuleConditions } = await import("@/lib/rules/test-rule");
+    const byMerchant = await testRuleConditions({ executor: db, userId: seed.userId, dek: TEST_DEK, conditions: { all: [{ field: "merchant", op: "is", entityId }] } });
+    expect(byMerchant.matchedCount).toBeGreaterThan(0);
+    expect(byMerchant.uncategorizedCount).toBe(byMerchant.matchedCount);
+    expect(byMerchant.matches.every((m) => /epi|епі/i.test(m.payee))).toBe(true);
+    const byType = await testRuleConditions({ executor: db, userId: seed.userId, dek: TEST_DEK, conditions: { all: [{ field: "merchant_type", op: "is", typeId }] } });
+    expect(byType.matchedCount).toBe(byMerchant.matchedCount);
+    const notIt = await testRuleConditions({ executor: db, userId: seed.userId, dek: TEST_DEK, conditions: { all: [{ field: "merchant", op: "is_not", entityId }] } });
+    // An unresolved payee matches neither `is` nor `is_not`.
+    expect(notIt.matchedCount).toBe(0);
+
+    // The hit counter.
+    const cat = await createCategory({ userId: seed.userId, name: "Дім", type: "E" });
+    const [{ id: ruleId }] = (await db.execute(sql`
+      INSERT INTO transaction_rules (user_id, name, conditions, actions, created_at)
+      VALUES (${seed.userId}, 'r', ${JSON.stringify({ all: [{ field: "merchant", op: "is", entityId }] })}::jsonb, ${JSON.stringify([{ kind: "set_category", categoryId: cat }])}::jsonb, '2026-10-13')
+      RETURNING id`) as unknown as { rows: Array<{ id: number }> }).rows;
+    const { recordRuleHits } = await import("@/lib/rules/merchant-context");
+    await recordRuleHits(db, seed.userId, [ruleId, ruleId, ruleId]);
+    const [hits] = (await db.execute(sql`SELECT hit_count, last_hit_at FROM transaction_rules WHERE id = ${ruleId}`) as unknown as { rows: Array<{ hit_count: number; last_hit_at: unknown }> }).rows;
+    expect(hits.hit_count).toBe(3);
+    expect(hits.last_hit_at).not.toBeNull();
+  });
+
+  it("stage 10: «default category to N uncategorized» — preview, commit, 30-day undo; signs that don't fit are left alone", async () => {
+    const { db } = await import("@/db");
+    const { createCategory } = await import("./helpers/portfolio-fixtures");
+    const cat = await createCategory({ userId: seed.userId, name: "Дім", type: "E" });
+    const created = await op({ op: "create", name: "Епіцентр", apply: false, defaultCategoryId: cat, aliases: [{ pattern: "EPITCENTR K10", mode: "exact" }] });
+    const entityId = created.entity!.id;
+    await addTx("EPITCENTR K10", "2026-09-10", -300);
+    await addTx("EPITCENTR K10", "2026-09-11", 120);
+    const { executePayeeOp } = await import("@/lib/payees/ops");
+    const preview = await executePayeeOp({ executor: db, userId: seed.userId, dek: TEST_DEK, op: { op: "apply_default_category", entityId }, actor: "web", dryRun: true });
+    expect(preview.categorized).toMatchObject({ categoryId: cat, category: "Дім", skippedSign: 1 });
+    const n = preview.categorized!.count;
+    expect(n).toBeGreaterThan(0);
+    const count = async () => Number(((await db.execute(sql`SELECT count(*)::int AS n FROM transactions WHERE user_id = ${seed.userId} AND category_id = ${cat}`)) as unknown as { rows: Array<{ n: number }> }).rows[0].n);
+    expect(await count()).toBe(0);
+    const done = await op({ op: "apply_default_category", entityId });
+    expect(done.batchId).not.toBeNull();
+    expect(await count()).toBe(n);
+    await op({ op: "undo", batchId: done.batchId });
+    expect(await count()).toBe(0);
+  });
+
+  it("stage 10: import order requisite → exact alias → type → queue; channels and own transfers apart", async () => {
+    const { db } = await import("@/db");
+    const { encryptStaged } = await import("@/lib/crypto/staging-envelope");
+    const { randomUUID } = await import("crypto");
+    await op({ op: "create", name: "ТОВ Будмайстер", type: "company", apply: false, identifiers: [{ kind: "iban", value: IBAN }] });
+    await op({ op: "own_accounts", add: [{ iban: "UA903052992990004149123456789", bank: "privat", owner: "me" }] });
+    let i = 10;
+    for (const p of [`Оплата за рахунком ${IBAN}`, "OTPC2C", "P24 777", "UA903052992990004149123456789", "Аптека Здоров'я", "NEW SHOP 1"]) {
+      await db.execute(sql`
+        INSERT INTO staged_transactions (id, staged_import_id, user_id, date, amount, currency, payee, row_index, import_hash, encryption_tier)
+        VALUES (${randomUUID()}, ${seed.stagedImportId}, ${seed.userId}, '2026-10-02', -10, 'UAH', ${encryptStaged(p)}, ${i++}, ${"sh-" + randomUUID()}, 'service')`);
+    }
+    await op({ op: "create", name: "Епіцентр", apply: false, aliases: [{ pattern: "EPITCENTR K10 KYIV 360616", mode: "exact" }] });
+    const { applyPayeeImportAssist } = await import("@/lib/payees/import-assist");
+    const r = await applyPayeeImportAssist({ executor: db, userId: seed.userId, dek: TEST_DEK, stagedImportId: seed.stagedImportId, readOnly: true });
+    expect(r.summary).toMatchObject({ byRequisite: 1, byAlias: 1, channels: 2, own: 1, hinted: 0 });
+    expect(r.summary.toQueue).toBe(3);
+    expect(r.summary.byType).toBeGreaterThanOrEqual(1);
+    expect(r.batchIds).toEqual([]);
+    // With the import hint ON the requisite row gets the entry's name; import_hash stays.
+    const { savePayeeSettings } = await import("@/lib/payees/settings");
+    await savePayeeSettings(db, seed.userId, { importHint: true });
+    const before = (await db.execute(sql`SELECT import_hash FROM staged_transactions WHERE staged_import_id = ${seed.stagedImportId} ORDER BY row_index`) as unknown as { rows: Array<{ import_hash: string }> }).rows;
+    const w = await applyPayeeImportAssist({ executor: db, userId: seed.userId, dek: TEST_DEK, stagedImportId: seed.stagedImportId });
+    expect(w.hinted).toBe(2);
+    const after = (await db.execute(sql`SELECT import_hash FROM staged_transactions WHERE staged_import_id = ${seed.stagedImportId} ORDER BY row_index`) as unknown as { rows: Array<{ import_hash: string }> }).rows;
+    expect(after).toEqual(before);
+  });
 });

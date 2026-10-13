@@ -282,7 +282,7 @@ function MerchantsSection() {
   const listingSpellings = (section === "queue" && queueView === "unrecognized") || (section === "directory" && directoryView === "spellings");
   const rows = useMemo(() => {
     let list = (data?.groups ?? []).filter((g) => g.key);
-    if (section === "queue") list = list.filter((g) => g.entityId == null && !g.bankOperation && !g.ownAccount);
+    if (section === "queue") list = list.filter((g) => g.entityId == null && !g.bankOperation && !g.ownAccount && !g.channel);
     if (query.trim()) list = list.filter((g) => g.spellings.some((s) => containsNormalized(s.spelling, query)) || (g.entityName != null && containsNormalized(g.entityName, query)));
     const dir = sort.dir === "asc" ? 1 : -1;
     return [...list].sort((a, b) => {
@@ -317,9 +317,9 @@ function MerchantsSection() {
   }, [entities, query, typeFilter, chip, filters, suspiciousIds]);
   const merchantTypes = useMemo(() => data?.merchantTypes ?? [], [data]);
 
-  const unrecognizedCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key && g.entityId == null && !g.bankOperation && !g.ownAccount).length, [data]);
+  const unrecognizedCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key && g.entityId == null && !g.bankOperation && !g.ownAccount && !g.channel).length, [data]);
   const payeeCount = useMemo(() => (data?.groups ?? []).filter((g) => g.key).length, [data]);
-  const serviceGroups = useMemo(() => (data?.groups ?? []).filter((g) => g.key && (g.bankOperation || g.ownAccount)), [data]);
+  const serviceGroups = useMemo(() => (data?.groups ?? []).filter((g) => g.key && (g.bankOperation || g.ownAccount || g.channel)), [data]);
   const pageRows = useMemo(() => rows.slice(page * pageSize, (page + 1) * pageSize), [rows, page, pageSize]);
   const pageEntities = useMemo(() => entityRows.slice(page * pageSize, (page + 1) * pageSize), [entityRows, page, pageSize]);
   const blank = data?.groups.find((g) => !g.key);
@@ -440,6 +440,11 @@ function MerchantsSection() {
       {g.bankOperation && (
         <Badge variant="outline" className="text-[10px]" title={t("page.bankOpTitle", { op: g.bankOperation })}>
           {t("page.bankOp")}
+        </Badge>
+      )}
+      {g.channel && (
+        <Badge variant="outline" className="text-[10px]" title={t("page.channelTitle", { channel: g.channel })}>
+          {t("page.channel")}
         </Badge>
       )}
       {g.ownAccount && (

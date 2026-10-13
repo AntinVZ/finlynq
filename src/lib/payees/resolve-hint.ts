@@ -13,7 +13,7 @@ export type PayeeRecommendation =
   | { kind: "ambiguous"; names: string[] }
   | { kind: "none" };
 
-async function matcherFor(opts: { executor: PayeeExecutor; userId: string; dek: Buffer }): Promise<PayeeMatcher> {
+export async function matcherFor(opts: { executor: PayeeExecutor; userId: string; dek: Buffer }): Promise<PayeeMatcher> {
   let matcher = getCachedPayeeMatcher(opts.userId);
   if (!matcher) {
     matcher = buildPayeeMatcher(await loadDirectory(opts.executor, opts.userId, opts.dek));

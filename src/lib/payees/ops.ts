@@ -113,6 +113,13 @@ export type PayeeOp =
    */
   | { op: "move_remainder"; entityId: number; payees: string[]; remainder: string; target?: "tag" | "note" }
   | { op: "delete"; entityId: number }
+  /**
+   * P8 stage 10: give the entry's default category (or `categoryId`) to its
+   * transactions that have NO category yet. Rows whose sign contradicts the
+   * category (an expense category on a refund, and the reverse) are left
+   * alone. Journaled (`category_id`) for the 30-day undo; payees unchanged.
+   */
+  | { op: "apply_default_category"; entityId: number; categoryId?: number }
   /** P6: edit the merchant-type dictionary (the starting set is written on the first edit). */
   | { op: "merchant_types"; add?: MerchantTypeEdit[]; update?: Array<{ id: number } & Partial<MerchantTypeEdit>>; remove?: number[] }
   /**
@@ -168,6 +175,8 @@ export type PayeeOpResult = {
   ownAccounts: { added: string[]; updated: string[]; removed: string[] };
   /** P6 (B26): dictionary changes. */
   merchantTypes: { added: string[]; updated: string[]; removed: string[] };
+  /** P8 stage 10 (`apply_default_category`): the category given and to how many rows; `skippedSign` = rows left alone (sign vs category type). */
+  categorized?: { categoryId: number; category: string; count: number; skippedSign: number };
   /** Binds an MCP confirmation token to exactly these rows. */
   fingerprint: string;
 };
@@ -917,6 +926,56 @@ async function runOp(
             }
             const changed = out.ownAccounts.added.length + out.ownAccounts.updated.length + out.ownAccounts.removed.length;
             if (!changed) out.warnings.push(st("srv.ops.nothingChanges"));
+            break;
+          }
+          case "apply_default_category": {
+            const e = entityOf(entities, op.entityId);
+            let categoryId = op.categoryId ?? e.defaultCategoryId ?? null;
+            if (categoryId == null && e.merchantTypeId != null) categoryId = (await storedTypes()).find((x) => x.id === e.merchantTypeId)?.defaultCategoryId ?? null;
+            if (categoryId == null) throw new PayeeDirectoryError(st("srv.ops.noDefaultCategory", { name: e.name }));
+            const [cat] = normalizeDbRows<{ type: unknown; name_ct: unknown }>(
+              await btx.execute(sql`SELECT type, name_ct FROM categories WHERE id = ${categoryId} AND user_id = ${userId}`),
+            );
+            if (!cat) throw new PayeeDirectoryError(st("srv.ops.categoryNotFound"), "not_found");
+            const catType = cat.type == null ? null : String(cat.type);
+            const catName = (cat.name_ct == null ? null : decodeStoredPayee(cat.name_ct, null, dek)) || `#${categoryId}`;
+            const matcher = buildPayeeMatcher(entities, new Set([e.id]));
+            await journal.willModify([e.id]);
+            const writes: Array<{ id: string; value: string | null }> = [];
+            let skippedSign = 0;
+            let after = 0;
+            for (;;) {
+              const page = normalizeDbRows<Record<string, unknown>>(
+                await btx.execute(sql`SELECT id, payee, amount FROM transactions WHERE user_id = ${userId} AND category_id IS NULL AND id > ${after} ORDER BY id LIMIT 2000`),
+              );
+              for (const r of page) {
+                after = Number(r.id);
+                const plain = decodeStoredPayee(r.payee, null, dek);
+                if (plain === undefined) continue;
+                const m = matcher.match(spellingOf(plain));
+                if (m.kind !== "match" || m.entityId !== e.id) continue;
+                const amount = Number(r.amount ?? 0);
+                if ((catType === "E" && amount > 0) || (catType === "I" && amount < 0)) {
+                  skippedSign++;
+                  continue;
+                }
+                writes.push({ id: String(r.id), value: String(categoryId) });
+                journal.rowChanged({ t: "transactions", id: String(r.id), old: r.payee == null ? null : String(r.payee), new: r.payee == null ? null : String(r.payee), cols: { category_id: { old: null, new: String(categoryId) } } });
+              }
+              if (page.length < 2000) break;
+            }
+            if (writes.length > PAYEE_APPLY_MAX_ROWS) {
+              out.blocked = st("srv.ops.tooLargeChange", { n: writes.length, max: PAYEE_APPLY_MAX_ROWS });
+              break;
+            }
+            await writeTransactionColumn(btx, userId, "category_id", writes);
+            journal.count("categorized", writes.length);
+            out.rows = { total: writes.length, byTable: { transactions: writes.length, recurring: 0, staged: 0 }, changes: [], conflicts: [], truncated: false };
+            out.categorized = { categoryId, category: catName, count: writes.length, skippedSign };
+            out.fingerprint = createHash("sha256").update(`apply_default_category:${e.id}:${categoryId}:${writes.map((w) => w.id).join(",")}`).digest("hex").slice(0, 32);
+            out.entity = { id: e.id, name: e.name, type: e.type };
+            if (skippedSign) out.warnings.push(st("srv.ops.categorySignSkipped", { n: skippedSign }));
+            if (!writes.length) out.emptyReason = st("srv.ops.nothingUncategorized");
             break;
           }
           case "delete": {

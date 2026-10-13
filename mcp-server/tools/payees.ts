@@ -415,7 +415,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, apply_default_category, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -590,6 +590,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       z.object({
         op: z.literal("lookalikes"),
         limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 50)."),
+      }),
+      z.object({
+        op: z.literal("apply_default_category"),
+        entity_id: z.number().int().positive().describe("The directory entry."),
+        category_id: z.number().int().positive().optional().describe("Default: the entry's default category, else its merchant type's."),
+        confirmation_token: tokenArg,
       }),
       z.object({
         op: z.literal("move_remainder"),
@@ -1031,6 +1037,8 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               { op: "update", entityId: input.entity_id, website: input.website, logo: input.logo, type: input.type, note: input.note, merchantType: input.merchant_type, apply: false },
               input.confirmation_token,
             );
+          case "apply_default_category":
+            return await writeOp({ op: "apply_default_category", entityId: input.entity_id, categoryId: input.category_id }, input.confirmation_token);
           case "move_remainder":
             return await writeOp(
               { op: "move_remainder", entityId: input.entity_id, payees: input.payees, remainder: input.remainder, target: input.target },

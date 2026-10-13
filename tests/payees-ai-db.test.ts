@@ -151,7 +151,7 @@ describeDb("Payee Studio P3 AI layer (seeded DB)", () => {
     const before = await staged();
 
     const off = await applyPayeeImportAssist({ executor: db, userId: seed.userId, dek: TEST_DEK, stagedImportId: seed.stagedImportId });
-    expect(off).toEqual({ hinted: 0, autopilot: 0, aliasesAdded: 0, batchIds: [] });
+    expect(off).toMatchObject({ hinted: 0, autopilot: 0, aliasesAdded: 0, batchIds: [] });
     expect(await canonicalPayeeHint(db, seed.userId, TEST_DEK, "EPICENTR")).toBeNull();
 
     await savePayeeSettings(db, seed.userId, { importHint: true, autopilotEnabled: true, autopilotThreshold: 0.9 });

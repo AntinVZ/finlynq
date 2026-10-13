@@ -38,6 +38,8 @@ export type OpPreview = {
   blocked: string | null;
   /** Why an apply renames nothing (P6). */
   emptyReason?: string | null;
+  /** P8 stage 10: `apply_default_category` — the category and how many rows get it. */
+  categorized?: { categoryId: number; category: string; count: number; skippedSign: number };
   /** P6: entries whose merchant type changes, and dictionary changes. */
   typed?: Array<{ id: number; name: string; from: string | null; to: string | null; via?: string }>;
   /** P6.2: entries a type word reached but left alone (alias-only match, mixed hints). */
@@ -174,6 +176,9 @@ export function OpDialog({
                     </li>
                   ))}
                 </ul>
+              )}
+              {preview.categorized && (
+                <p className="text-xs" data-testid="op-categorized">{t("op.categorized", { category: preview.categorized.category, n: preview.categorized.count })}</p>
               )}
               {(preview.typed ?? []).length > 0 && (
                 <div className="text-xs space-y-0.5">

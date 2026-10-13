@@ -54,7 +54,8 @@ export type RowChange = {
   new: string | null;
   cols?: Partial<Record<ExtraColumn, { old: string | null; new: string | null }>>;
 };
-export type ExtraColumn = "tags" | "note";
+/** P8 stage 10: `category_id` (stored as text of the id; null = uncategorized). */
+export type ExtraColumn = "tags" | "note" | "category_id";
 type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[]; types?: { before: StoredRow[]; created: number[] }; own?: { before: StoredRow[]; created: number[] } };
 
 export class PayeeBatchError extends Error {
@@ -309,17 +310,20 @@ export async function readStoredPayees(
   return out;
 }
 
-/** Write a transactions text column (`tags` / `note`) by id (CASE update, user-scoped, chunks of 500, bumps updated_at). */
+/** Write a transactions column (`tags` / `note` text, P8: `category_id`) by id (CASE update, user-scoped, chunks of 500, bumps updated_at). */
 export async function writeTransactionColumn(
   tx: PayeeExecutor,
   userId: string,
   col: ExtraColumn,
   writes: Array<{ id: string; value: string | null }>,
 ): Promise<void> {
-  const column = col === "tags" ? sql`tags` : sql`note`;
+  const column = col === "tags" ? sql`tags` : col === "note" ? sql`note` : sql`category_id`;
   for (let i = 0; i < writes.length; i += 500) {
     const chunk = writes.slice(i, i + 500);
-    const cases = sql.join(chunk.map((w) => sql`WHEN ${Number(w.id)}::int THEN ${w.value}::text`), sql` `);
+    const cases = sql.join(
+      chunk.map((w) => (col === "category_id" ? sql`WHEN ${Number(w.id)}::int THEN ${w.value == null ? null : Number(w.value)}::int` : sql`WHEN ${Number(w.id)}::int THEN ${w.value}::text`)),
+      sql` `,
+    );
     const ids = sql.join(chunk.map((w) => sql`${Number(w.id)}::int`), sql`, `);
     await tx.execute(sql`
       UPDATE transactions SET ${column} = CASE id ${cases} END, updated_at = NOW()
@@ -332,18 +336,19 @@ export async function readTransactionColumns(
   tx: PayeeExecutor,
   userId: string,
   ids: readonly string[],
-): Promise<Map<string, { payee: string | null; tags: string | null; note: string | null }>> {
-  const out = new Map<string, { payee: string | null; tags: string | null; note: string | null }>();
+): Promise<Map<string, { payee: string | null; tags: string | null; note: string | null; category_id: string | null }>> {
+  const out = new Map<string, { payee: string | null; tags: string | null; note: string | null; category_id: string | null }>();
   for (let i = 0; i < ids.length; i += 1000) {
     const list = sql.join(ids.slice(i, i + 1000).map((id) => sql`${Number(id)}::int`), sql`, `);
     const rows = normalizeDbRows<StoredRow>(
-      await tx.execute(sql`SELECT id::text AS id, payee, tags, note FROM transactions WHERE user_id = ${userId} AND id IN (${list}) FOR UPDATE`),
+      await tx.execute(sql`SELECT id::text AS id, payee, tags, note, category_id FROM transactions WHERE user_id = ${userId} AND id IN (${list}) FOR UPDATE`),
     );
     for (const r of rows) {
       out.set(String(r.id), {
         payee: r.payee == null ? null : String(r.payee),
         tags: r.tags == null ? null : String(r.tags),
         note: r.note == null ? null : String(r.note),
+        category_id: r.category_id == null ? null : String(r.category_id),
       });
     }
   }
@@ -402,7 +407,7 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
     const withCols = undo.rows.filter((r) => r.t === "transactions" && r.cols);
     if (withCols.length) {
       const current = await readTransactionColumns(tx, userId, withCols.map((c) => c.id));
-      for (const col of ["tags", "note"] as ExtraColumn[]) {
+      for (const col of ["tags", "note", "category_id"] as ExtraColumn[]) {
         const writes: Array<{ id: string; value: string | null }> = [];
         for (const c of withCols) {
           const ch = c.cols?.[col];

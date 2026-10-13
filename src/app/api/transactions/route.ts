@@ -940,6 +940,11 @@ export async function PUT(request: NextRequest) {
     } catch {
       /* best-effort — never block the edit */
     }
+    // P8 stage 10 (B33): the import hint applies to an edited payee too.
+    if (typeof data.payee === "string" && data.payee && auth.dek) {
+      const { canonicalPayeeHint } = await import("@/lib/payees/import-assist");
+      data.payee = (await canonicalPayeeHint(db, auth.userId, auth.dek, data.payee).catch(() => null)) ?? data.payee;
+    }
     const encrypted = encryptTxWrite(auth.dek, data);
     const tx = await updateTransaction(id, auth.userId, encrypted, auth.dek);
     invalidateUserTxCache(auth.userId);
