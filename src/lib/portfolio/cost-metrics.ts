@@ -63,6 +63,17 @@ export function costMetrics(t: TradeTallies, lot?: LotCost): CostMetrics {
 }
 
 /**
+ * Lot figures carried into another currency at one rate. Lots are kept in the
+ * position row's own currency, so a caller that sets them against a market
+ * value quoted in a different currency (a Toronto-listed fund held on a USD
+ * row) converts them first. Share counts have no currency and stay as they are.
+ */
+export function lotCostInCurrency(lot: LotCost, rate: number): LotCost {
+  if (rate === 1) return lot;
+  return { qty: lot.qty, costBasis: lot.costBasis * rate, realizedGain: lot.realizedGain * rate };
+}
+
+/**
  * Lot figures for a holding that spans several position rows (one name held in
  * two accounts). Undefined unless EVERY row has lot figures: mixing a lot-based
  * row with a simple one would give a number that is neither.

@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { reassignErrorMessage } from "@/lib/portfolio/lots/reassign-errors";
 import { MCP_TOOL_COUNTS } from "@/lib/mcp/tool-counts";
-import { combineLotCost, costMetrics, simpleCostMetrics } from "@/lib/portfolio/cost-metrics";
+import { combineLotCost, costMetrics, lotCostInCurrency, simpleCostMetrics } from "@/lib/portfolio/cost-metrics";
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 /** Strip comments so a rule quoted in prose can't satisfy a code assertion. */
@@ -146,9 +146,48 @@ describe("combineLotCost", () => {
   });
 });
 
+// Found on the prod demo 2026-10-13: a Toronto-listed fund bought on a USD row
+// for 750. Its market value is quoted in CAD (670.50), its lots are kept in USD.
+describe("lotCostInCurrency", () => {
+  const lot = { qty: 30, costBasis: 750, realizedGain: 40 };
+
+  it("carries cost and realized gain across, and leaves the share count alone", () => {
+    expect(lotCostInCurrency(lot, 1.5)).toEqual({ qty: 30, costBasis: 1125, realizedGain: 60 });
+  });
+
+  it("is a no-op when the two currencies are the same", () => {
+    expect(lotCostInCurrency(lot, 1)).toBe(lot);
+  });
+
+  // Subtracting the unconverted 750 from 670.50 gave a loss of 79.50 (10.6%);
+  // the position was really down 37.4%.
+  it("gives the same unrealized % as the simple method for a position with no sales", () => {
+    const usdToCad = 1070.97 / 750;
+    const marketValueCad = 670.5;
+    const { costBasis } = costMetrics(
+      { buyQty: 30, buyAmt: 1070.97, sellQty: 0, sellAmt: 0, remainingQty: 30 },
+      lotCostInCurrency({ qty: 30, costBasis: 750, realizedGain: 0 }, usdToCad),
+    );
+    expect(costBasis).toBeCloseTo(1070.97, 2);
+    expect(((marketValueCad - costBasis!) / costBasis!) * 100).toBeCloseTo(-37.39, 2);
+  });
+});
+
 describe("the figures follow the setting wherever cost basis is shown", () => {
   it("the Portfolio page asks which method the user is on", () => {
     expect(code("src/app/api/portfolio/overview/route.ts")).toContain("isLotsEnabledForUser(userId)");
+  });
+
+  // The page prices a holding in its QUOTE currency; lots are kept in the
+  // position row's currency. The raw lot figures must never reach `m`.
+  it("the Portfolio page converts lot figures into the quote currency first", () => {
+    const route = code("src/app/api/portfolio/overview/route.ts");
+    const start = route.indexOf("for (const lm of lotMetrics) {");
+    const block = route.slice(start, route.indexOf("const rgBase", start));
+    expect(start).toBeGreaterThan(-1);
+    expect(block).toContain("quoteCurrencyById.get(lm.holdingId)");
+    expect(block).toContain("lotCostInCurrency(");
+    expect(block).not.toMatch(/m\.(totalCostBasis|avgCostPerShare|realizedGain) = [^;]*\blm\.(costBasis|realizedGainAllTime)\b/);
   });
 
   it("the shared valuation and the three MCP portfolio tools use one loader", () => {

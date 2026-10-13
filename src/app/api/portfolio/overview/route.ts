@@ -16,6 +16,7 @@ import { aggregateMovers } from "@/lib/portfolio/top-movers";
 import { effectivePriceAtDate, loadCustomPriceMap } from "@/lib/securities/custom-prices";
 import { todayISO } from "@/lib/utils/date";
 import { isLotsEnabledForUser, loadMetricsForUser } from "@/lib/portfolio/lots/read";
+import { lotCostInCurrency } from "@/lib/portfolio/cost-metrics";
 import { listRealizedGainClosures, augmentWithBaseCurrency } from "@/lib/portfolio/realized-gains";
 import { round2 } from "@/lib/utils/number";
 import { withOp } from "@/lib/diagnostics/op-context";
@@ -638,24 +639,39 @@ async function handleGet(request: NextRequest) {
       prices: new Map(),
       reportingCurrency: displayCurrency,
     });
+    const rowCurrencyById = new Map(holdings.map((h) => [h.id, h.currency]));
     for (const lm of lotMetrics) {
       const m = metricsByHoldingId.get(lm.holdingId);
       if (!m) continue;
+      // Lot figures come back in the position row's own currency, while every
+      // other figure in `m` is in the QUOTE currency (quoteCurrencyById) that
+      // the market value is priced in. Carry them across at today's rate, the
+      // same hop aggInHoldingCurrency gives the simple figures. Without it a
+      // Toronto-listed fund on a USD row had a USD cost subtracted from a CAD
+      // market value, so its holding-currency cost, unrealized gain and % were
+      // wrong whenever lot allocation was on (the display-currency figures use
+      // costBasisReporting and were never affected).
+      const rowCcy = rowCurrencyById.get(lm.holdingId);
+      const toQuote = rowCcy ? await getCrossRate(rowCcy, quoteCurrencyById.get(lm.holdingId) ?? rowCcy) : 1;
+      const lot = lotCostInCurrency(
+        { qty: lm.qty, costBasis: lm.costBasis, realizedGain: lm.realizedGainAllTime },
+        toQuote,
+      );
       if (cashHoldingIdSet.has(lm.holdingId)) {
         // Reconciled iff the lot signed net qty matches the ledger balance.
         const ledgerQty = m.qty;
         const reconciled = Math.abs(lm.qty - ledgerQty) <= Math.max(0.01, Math.abs(ledgerQty) * 1e-4);
         if (reconciled && Math.abs(ledgerQty) > 1e-9) {
-          m.totalCostBasis = lm.costBasis;
-          m.avgCostPerShare = lm.costBasis / ledgerQty;
+          m.totalCostBasis = lot.costBasis;
+          m.avgCostPerShare = lot.costBasis / ledgerQty;
           reportingCostBasisByHolding.set(lm.holdingId, lm.costBasisReporting);
         }
         // else: leave m as-is → the fiat-cash peg (FINLYNQ-277) applies.
         continue;
       }
-      m.totalCostBasis = lm.qty > 1e-9 ? lm.costBasis : null;
-      m.avgCostPerShare = lm.qty > 1e-9 ? lm.costBasis / lm.qty : null;
-      m.realizedGain = lm.realizedGainAllTime;
+      m.totalCostBasis = lm.qty > 1e-9 ? lot.costBasis : null;
+      m.avgCostPerShare = lm.qty > 1e-9 ? lot.costBasis / lm.qty : null;
+      m.realizedGain = lot.realizedGain;
       if (lm.qty > 1e-9) reportingCostBasisByHolding.set(lm.holdingId, lm.costBasisReporting);
     }
     const rgBase = await augmentWithBaseCurrency(
