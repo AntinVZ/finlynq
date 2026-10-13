@@ -20,7 +20,7 @@ import { isMetalCurrency, isCryptoSymbol, isCurrencyCodeSymbol } from "@/lib/fx/
 import { decryptNamedRows } from "@/lib/crypto/encrypted-columns";
 import { cashLegSkipSql } from "@/lib/portfolio/aggregation-predicates";
 import { todayISO } from "@/lib/utils/date";
-import { isLotsEnabledForUser, loadMetricsForUser } from "@/lib/portfolio/lots/read";
+import { loadLotCostByHolding } from "@/lib/portfolio/lots/cost-basis";
 import { effectivePriceAtDate, loadCustomPriceMap } from "@/lib/securities/custom-prices";
 
 export type AccountHoldingsValue = {
@@ -103,16 +103,11 @@ async function valueHoldingsAtDate(
   // `.value`, and reloading every lot per date would cost a great deal for a
   // figure they never use. Holding id -> cost in the holding's currency.
   const lotCostBasisByHolding = new Map<number, number>();
-  if (isToday && (await isLotsEnabledForUser(userId))) {
-    const lotMetrics = await loadMetricsForUser({
-      userId,
-      dek: dek ?? null,
-      asOfDate,
-      // Cost basis is price-independent; an empty price map skips the quotes.
-      prices: new Map(),
-    });
-    for (const lm of lotMetrics) {
-      if (lm.qty > 1e-9) lotCostBasisByHolding.set(lm.holdingId, lm.costBasis);
+  if (isToday) {
+    // Null on the simple method; cash sleeves are already left out.
+    const lotCost = await loadLotCostByHolding(userId, dek ?? null);
+    for (const [holdingId, lot] of lotCost ?? []) {
+      if (lot.qty > 1e-9) lotCostBasisByHolding.set(holdingId, lot.costBasis);
     }
   }
   // Stream D Phase 4 — plaintext name/symbol dropped; ciphertext only.

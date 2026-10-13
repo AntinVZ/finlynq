@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { reassignErrorMessage } from "@/lib/portfolio/lots/reassign-errors";
 import { MCP_TOOL_COUNTS } from "@/lib/mcp/tool-counts";
+import { combineLotCost, costMetrics, simpleCostMetrics } from "@/lib/portfolio/cost-metrics";
 
 const read = (p: string) => readFileSync(join(process.cwd(), p), "utf8");
 /** Strip comments so a rule quoted in prose can't satisfy a code assertion. */
@@ -85,21 +86,107 @@ describe("the cost-basis switch", () => {
   });
 });
 
+// Buy 100 at 10, buy 100 at 20, sell 100 for 2,500, buy 100 at 30. 200 held.
+const tallies = { buyQty: 300, buyAmt: 6000, sellQty: 100, sellAmt: 2500, remainingQty: 200 };
+
+describe("costMetrics", () => {
+  it("simple: the average of every purchase, sold shares included", () => {
+    expect(simpleCostMetrics(tallies)).toEqual({ avgCost: 20, costBasis: 4000, realizedGain: 500 });
+    expect(costMetrics(tallies)).toEqual(simpleCostMetrics(tallies));
+  });
+
+  // First in, first out: the sale used the 100 bought at 10.
+  it("lot allocation: the cost of the lots still held, and what the sale really closed", () => {
+    const lot = { qty: 200, costBasis: 5000, realizedGain: 1500 };
+    expect(costMetrics(tallies, lot)).toEqual({ avgCost: 25, costBasis: 5000, realizedGain: 1500 });
+  });
+
+  // The two methods split the same money differently: cost + realized is the
+  // total paid less the proceeds either way.
+  it("both methods account for the same money", () => {
+    const simple = simpleCostMetrics(tallies);
+    const lot = costMetrics(tallies, { qty: 200, costBasis: 5000, realizedGain: 1500 });
+    const check = (m: { costBasis: number | null; realizedGain: number }) =>
+      tallies.buyAmt - (m.costBasis ?? 0) + m.realizedGain;
+    expect(check(simple)).toBe(tallies.sellAmt);
+    expect(check(lot)).toBe(tallies.sellAmt);
+  });
+
+  it("a position with no shares left has no cost basis but keeps its realized gain", () => {
+    const sold = { buyQty: 100, buyAmt: 1000, sellQty: 100, sellAmt: 2500, remainingQty: 0 };
+    expect(costMetrics(sold, { qty: 0, costBasis: 0, realizedGain: 1500 })).toEqual({
+      avgCost: null,
+      costBasis: null,
+      realizedGain: 1500,
+    });
+    expect(simpleCostMetrics(sold)).toEqual({ avgCost: 10, costBasis: null, realizedGain: 1500 });
+  });
+
+  it("nothing bought yet has no figures", () => {
+    const none = { buyQty: 0, buyAmt: 0, sellQty: 0, sellAmt: 0, remainingQty: 0 };
+    expect(simpleCostMetrics(none)).toEqual({ avgCost: null, costBasis: null, realizedGain: 0 });
+  });
+});
+
+describe("combineLotCost", () => {
+  const map = new Map([
+    [1, { qty: 100, costBasis: 2000, realizedGain: 300 }],
+    [2, { qty: 50, costBasis: 1500, realizedGain: 0 }],
+  ]);
+
+  it("adds up a name held in two accounts", () => {
+    expect(combineLotCost(map, [1, 2])).toEqual({ qty: 150, costBasis: 3500, realizedGain: 300 });
+  });
+
+  // A lot-based row added to a simple one would be a figure under neither method.
+  it("gives nothing unless every row has lot figures", () => {
+    expect(combineLotCost(map, [1, 3])).toBeUndefined();
+    expect(combineLotCost(map, [])).toBeUndefined();
+    expect(combineLotCost(null, [1])).toBeUndefined();
+  });
+});
+
 describe("the figures follow the setting wherever cost basis is shown", () => {
-  it("the Portfolio page and the shared valuation both ask the same question", () => {
+  it("the Portfolio page asks which method the user is on", () => {
     expect(code("src/app/api/portfolio/overview/route.ts")).toContain("isLotsEnabledForUser(userId)");
-    expect(code("src/lib/holdings-value.ts")).toContain("isLotsEnabledForUser(userId)");
+  });
+
+  it("the shared valuation and the three MCP portfolio tools use one loader", () => {
+    expect(code("src/lib/holdings-value.ts")).toContain("loadLotCostByHolding(");
+    const mcp = code("mcp-server/tools/portfolio.ts");
+    expect((mcp.match(/loadLotCostByHolding\(/g) ?? []).length).toBe(3);
+    expect((mcp.match(/costMetrics\(/g) ?? []).length).toBe(3);
+  });
+
+  // Each tool used to carry its own copy of the simple formula, which is how
+  // an assistant kept reporting 4,000 after the page had moved to 5,000.
+  it("no MCP tool computes the simple formula on its own any more", () => {
+    expect(code("mcp-server/tools/portfolio.ts")).not.toMatch(/sellAmt - \(sellQty \* avgCost\)/);
+  });
+
+  it("each of those tools says which method its figures use", () => {
+    expect((code("mcp-server/tools/portfolio.ts").match(/^\s+costBasisMethod,$/gm) ?? []).length).toBe(3);
   });
 
   // Net-worth history values many past dates and only reads market value.
   // Loading every lot for each of them would be wasted work.
   it("the shared valuation loads lots for a current valuation only", () => {
-    expect(code("src/lib/holdings-value.ts")).toMatch(/if \(isToday && \(await isLotsEnabledForUser\(userId\)\)\)/);
+    const hv = code("src/lib/holdings-value.ts");
+    const gate = hv.indexOf("if (isToday) {");
+    expect(gate).toBeGreaterThan(-1);
+    expect(hv.indexOf("loadLotCostByHolding(", gate) - gate).toBeLessThan(200);
   });
 
-  it("cash sleeves keep the ledger path in the shared valuation", () => {
+  it("cash sleeves keep the ledger path", () => {
+    expect(code("src/lib/portfolio/lots/cost-basis.ts")).toContain("if (cash.has(lm.holdingId)) continue;");
     expect(code("src/lib/holdings-value.ts")).toContain(
       "h.isCash === true ? undefined : lotCostBasisByHolding.get(h.id)",
+    );
+  });
+
+  it("on the simple method the loader returns nothing, so callers fall through", () => {
+    expect(code("src/lib/portfolio/lots/cost-basis.ts")).toContain(
+      "if (!(await isLotsEnabledForUser(userId))) return null;",
     );
   });
 });
