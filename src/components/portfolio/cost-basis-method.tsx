@@ -85,14 +85,14 @@ export function CostBasisExplainer() {
         <table className="mt-2 w-full text-left">
           <tbody>
             <tr>
-              <td className="py-1">Simple</td>
-              <td className="py-1 font-mono">4,000</td>
-              <td className="py-1 text-muted-foreground">average of all three purchases (20) × 200</td>
+              <td className="py-1 pr-4 align-top">Simple</td>
+              <td className="py-1 pr-4 align-top font-mono whitespace-nowrap">4,000</td>
+              <td className="py-1 align-top text-muted-foreground">average of all three purchases (20) × 200</td>
             </tr>
             <tr>
-              <td className="py-1">Advanced lot allocation</td>
-              <td className="py-1 font-mono">5,000</td>
-              <td className="py-1 text-muted-foreground">the sale used the first lot; 100 at 20 and 100 at 30 remain</td>
+              <td className="py-1 pr-4 align-top">Advanced lot allocation</td>
+              <td className="py-1 pr-4 align-top font-mono whitespace-nowrap">5,000</td>
+              <td className="py-1 align-top text-muted-foreground">the sale used the first lot; 100 at 20 and 100 at 30 remain</td>
             </tr>
           </tbody>
         </table>
