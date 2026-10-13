@@ -3,7 +3,8 @@
  *
  * GET → PayeeStudioSettings. PUT { advancedMode?, identifierKinds?,
  * importHint?, autopilotEnabled?, autopilotThreshold?, typeWordsExtra?,
- * typeWordsOff?, bankOpsExtra?, bankOpsOff?, language? ("uk" | "en") } → the saved settings.
+ * typeWordsOff?, bankOpsExtra?, bankOpsOff?, language? ("uk" | "en"),
+ * requireDirectoryPayee? (P8, default OFF) } → the saved settings.
  * Every field optional; unknown values fall back to defaults (import hint and
  * autopilot are OFF unless switched on here).
  */
@@ -29,6 +30,7 @@ const putSchema = z.object({
   bankOpsExtra: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
   bankOpsOff: z.array(z.string().max(60)).max(VOCAB_LIST_MAX).optional(),
   language: z.enum(STUDIO_LANGUAGES).optional(),
+  requireDirectoryPayee: z.boolean().optional(),
 });
 
 export const PUT = apiHandler({ auth: "auth", locale: true, raw: true, body: putSchema, fallbackMessage: "Failed to save settings" }, async ({ userId, body }) =>

@@ -978,4 +978,13 @@ export const messages = {
   "quick.makeMain": "Make main",
   "quick.makeMainTitle": "Use this spelling as the entry's name",
   "quick.makeMainConfirmTitle": "Rename the entry to “{name}”",
+  "payeePicker.add": "Add “{name}” to the directory",
+  "payeePicker.textOnly": "Text only",
+  "payeePicker.added": "Added to the directory: {name}",
+  "payeePicker.addFailed": "Couldn't add it to the directory.",
+  "payeePicker.recommended": "Recommended: {name}",
+  "payeePicker.recommendedTitle": "From the directory (matched by {via}). Click to use this name.",
+  "payeePicker.required": "Pick a payee from the directory or add this one: your Merchants settings require it.",
+  "settings.requireDirectory": "Require a payee from the directory",
+  "settings.requireDirectoryNote": "Payee fields accept only a directory entry (or one added on the spot), not free text.",
 } as const;

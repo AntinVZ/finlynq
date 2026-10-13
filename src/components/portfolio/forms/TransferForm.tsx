@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PayeePicker } from "@/components/payees/payee-picker";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -385,11 +386,7 @@ export default function TransferForm() {
               Payee{" "}
               <span className="text-muted-foreground text-xs">(optional)</span>
             </Label>
-            <Input
-              value={payee}
-              onChange={(e) => setPayee(e.target.value)}
-              placeholder="e.g. ACATS transfer"
-            />
+            <PayeePicker value={payee} onChange={setPayee} placeholder="e.g. ACATS transfer" />
           </div>
 
           <div className="space-y-1.5">

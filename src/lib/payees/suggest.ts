@@ -19,7 +19,7 @@
  */
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, transliterateToLatin, type PayeeType } from "./match-key";
-import type { PayeeEntity } from "./directory";
+import type { PayeeEntity, PayeeMatcher } from "./directory";
 import { invalidatePayeeQueue } from "./queue-cache";
 
 export type PayeeSuggestion = {
@@ -133,9 +133,28 @@ export function setCachedSuggestIndex(userId: string, index: PayeeSuggestIndex):
   cache.set(userId, index);
 }
 
+// P8 stage 4: the directory matcher behind the payee picker's «Рекомендовано: X»,
+// cached with the same lifetime and dropped with the suggestions.
+const gm = globalThis as unknown as { __pfPayeeMatcher?: Map<string, { builtAt: number; matcher: PayeeMatcher }> };
+const matcherCache = (gm.__pfPayeeMatcher ??= new Map());
+
+export function getCachedPayeeMatcher(userId: string, now = Date.now()): PayeeMatcher | null {
+  const hit = matcherCache.get(userId);
+  return hit && now - hit.builtAt <= SUGGEST_TTL_MS ? hit.matcher : null;
+}
+
+export function setCachedPayeeMatcher(userId: string, matcher: PayeeMatcher, now = Date.now()): void {
+  if (matcherCache.size >= MAX_USERS && !matcherCache.has(userId)) {
+    const oldest = [...matcherCache.entries()].sort((a, b) => a[1].builtAt - b[1].builtAt)[0];
+    if (oldest) matcherCache.delete(oldest[0]);
+  }
+  matcherCache.set(userId, { builtAt: now, matcher });
+}
+
 /** Drop a user's suggestions (after any directory change / payee rewrite). */
 export function invalidatePayeeSuggest(userId: string): void {
   cache.delete(userId);
+  matcherCache.delete(userId);
   // P8: the Merchants queue counts (./queue.ts) go stale with the same writes.
   invalidatePayeeQueue(userId);
 }

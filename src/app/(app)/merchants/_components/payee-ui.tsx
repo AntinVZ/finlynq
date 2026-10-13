@@ -93,6 +93,8 @@ export type PayeeSettings = {
   bankOpsOff?: string[];
   /** P6.2: the Studio interface language. */
   language?: "uk" | "en";
+  /** P8: payee fields accept only a directory entry (default OFF). */
+  requireDirectoryPayee?: boolean;
 };
 
 export type PayeesResponse = {

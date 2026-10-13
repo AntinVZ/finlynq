@@ -16,6 +16,7 @@
  * mounts this with a `key` (rule id / email id) so each open gets a fresh form.
  */
 
+import { PayeePicker } from "@/components/payees/payee-picker";
 import { useMemo, useState } from "react";
 import {
   Dialog,
@@ -597,11 +598,12 @@ export function EmailRuleDialog({
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <label className="text-xs text-muted-foreground w-20">Payee</label>
-              <input
-                className="flex-1 min-w-[160px] rounded-md border bg-background px-2 py-1.5 text-sm"
+              <PayeePicker
+                className="flex-1 min-w-[160px]"
+                ariaLabel="Payee"
                 placeholder="(optional) always use this payee"
                 value={payeeOverride}
-                onChange={(e) => setPayeeOverride(e.target.value)}
+                onChange={setPayeeOverride}
               />
             </div>
             <div className="flex flex-wrap items-center gap-2 text-sm">

@@ -115,4 +115,17 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     expect(k.months.find((m) => m.month === "2026-09")?.total).toBe(-300);
     expect(k.recent.map((x) => x.date)).toEqual(["2026-09-10", "2026-08-10", "2024-01-10"]);
   });
+
+  it("stage 4: «Recommended: X» resolves spellings through the directory; the require setting is OFF by default", async () => {
+    await op({ op: "create", name: "Епіцентр", apply: false, aliases: [{ pattern: "EPITCENTR K10", mode: "exact" }] });
+    const { db } = await import("@/db");
+    const { recommendPayee, recommendPayees } = await import("@/lib/payees/resolve-hint");
+    expect(await recommendPayee({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "EPITCENTR K10" })).toMatchObject({ kind: "match", name: "Епіцентр", same: false });
+    expect(await recommendPayee({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "Епіцентр" })).toMatchObject({ kind: "match", same: true });
+    const many = await recommendPayees({ executor: db, userId: seed.userId, dek: TEST_DEK, payees: ["EPITCENTR K10", "Бабуся"] });
+    expect(Object.keys(many)).toEqual(["EPITCENTR K10"]);
+    const { getPayeeSettings, savePayeeSettings } = await import("@/lib/payees/settings");
+    expect((await getPayeeSettings(db, seed.userId)).requireDirectoryPayee).toBe(false);
+    expect((await savePayeeSettings(db, seed.userId, { requireDirectoryPayee: true })).requireDirectoryPayee).toBe(true);
+  });
 });

@@ -19,6 +19,8 @@
  *   bankOpsOff          (P6) built-in bank-operation patterns switched off
  *   language            (P6.2) the Studio's interface language, "uk" (default) or "en";
  *                       Finlynq has no app-wide language setting yet
+ *   requireDirectoryPayee (P8, default OFF) payee fields accept only a
+ *                       directory entry (or one added on the spot), not free text
  */
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
@@ -39,6 +41,7 @@ export type PayeeStudioSettings = {
   bankOpsExtra: string[];
   bankOpsOff: string[];
   language: StudioLanguage;
+  requireDirectoryPayee: boolean;
 };
 
 export const STUDIO_LANGUAGES = ["uk", "en"] as const;
@@ -61,6 +64,7 @@ export const DEFAULT_PAYEE_SETTINGS: PayeeStudioSettings = {
   bankOpsExtra: [],
   bankOpsOff: [],
   language: "uk",
+  requireDirectoryPayee: false,
 };
 
 /** A list of short words / phrases: trimmed, deduplicated, ≤ 60 chars each, ≤ VOCAB_LIST_MAX. */
@@ -100,6 +104,7 @@ export function coercePayeeSettings(raw: unknown): PayeeStudioSettings {
     bankOpsExtra: wordList(v.bankOpsExtra),
     bankOpsOff: wordList(v.bankOpsOff),
     language: (STUDIO_LANGUAGES as readonly string[]).includes(String(v.language)) ? (v.language as StudioLanguage) : DEFAULT_PAYEE_SETTINGS.language,
+    requireDirectoryPayee: typeof v.requireDirectoryPayee === "boolean" ? v.requireDirectoryPayee : DEFAULT_PAYEE_SETTINGS.requireDirectoryPayee,
   };
 }
 

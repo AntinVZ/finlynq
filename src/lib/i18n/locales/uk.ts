@@ -974,4 +974,13 @@ export const messages: Messages = {
   "quick.makeMain": "Зробити основною",
   "quick.makeMainTitle": "Використати це написання як назву запису",
   "quick.makeMainConfirmTitle": "Перейменувати запис на «{name}»",
+  "payeePicker.add": "Додати «{name}» в довідник",
+  "payeePicker.textOnly": "Тільки текст",
+  "payeePicker.added": "Додано в довідник: {name}",
+  "payeePicker.addFailed": "Не вдалося додати в довідник.",
+  "payeePicker.recommended": "Рекомендовано: {name}",
+  "payeePicker.recommendedTitle": "З довідника (збіг за {via}). Натисніть, щоб узяти цю назву.",
+  "payeePicker.required": "Виберіть платника з довідника або додайте цього: так вимагають налаштування мерчантів.",
+  "settings.requireDirectory": "Вимагати платника з довідника",
+  "settings.requireDirectoryNote": "Поля платника приймають лише запис довідника (або доданий тут же), а не довільний текст.",
 };

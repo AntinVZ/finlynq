@@ -54,7 +54,7 @@ import {
 import { computePureActionPatch } from "@/lib/rules/execute";
 import type { Condition, Action, ConditionGroup } from "@/lib/rules/schema";
 import { defaultConditionForField, defaultActionForKind } from "@/lib/rules/schema";
-import { PayeeCombobox, type PayeeSuggestion } from "@/components/payees/payee-combobox";
+import { PayeePicker, type PayeeSuggestion } from "@/components/payees/payee-picker";
 
 export type Category = { id: number; name: string; type: string; group: string };
 export type Account = { id: number; name: string };
@@ -660,7 +660,7 @@ function ActionRow({
         <Input value={action.tags} onChange={(e) => onChange({ tags: e.target.value } as Partial<Action>)} placeholder="tag1, tag2" className="flex-1" />
       )}
       {action.kind === "rename_payee" && (
-        <PayeeCombobox value={action.to} onChange={(v) => onChange({ to: v } as Partial<Action>)} onPick={onPayeePick} placeholder="Clean payee" ariaLabel="Clean payee" className="flex-1" />
+        <PayeePicker value={action.to} onChange={(v) => onChange({ to: v } as Partial<Action>)} onPick={onPayeePick} placeholder="Clean payee" ariaLabel="Clean payee" className="flex-1" />
       )}
       {action.kind === "set_account" && (
         <Combobox

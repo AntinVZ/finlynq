@@ -118,6 +118,13 @@ export function StudioSettingsDialog({
             </span>
           </div>
           <label className="flex items-start gap-2">
+            <input type="checkbox" className="mt-1" checked={settings?.requireDirectoryPayee ?? false} disabled={disabled} onChange={(e) => onSave({ requireDirectoryPayee: e.target.checked })} />
+            <span>
+              {t("settings.requireDirectory")}
+              <span className="block text-xs text-muted-foreground">{t("settings.requireDirectoryNote")}</span>
+            </span>
+          </label>
+          <label className="flex items-start gap-2">
             <input type="checkbox" className="mt-1" checked={settings?.advancedMode ?? false} disabled={disabled} onChange={(e) => onSave({ advancedMode: e.target.checked })} />
             <span>
               {t("settings.advanced")}
