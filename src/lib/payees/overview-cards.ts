@@ -22,7 +22,7 @@
  */
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
-import { payeeMatchKey } from "./match-key";
+import { guessPayeeType, payeeMatchKey } from "./match-key";
 import { addSlice, decodeStoredPayee, spellingOf, type AmountSlice, type PayeeExecutor } from "./scan";
 import type { PayeeMatcher } from "./directory";
 import { bankOperationOf, channelOf, type PayeeVocabulary } from "./type-words";
@@ -46,6 +46,11 @@ export type OverviewCards = {
   duplicates: { count: number; items: Array<Ref & { date: string; amount: number; txIds: number[] }> };
   silent: Array<Ref & { cadence: string; intervalDays: number; lastDate: string; daysSilent: number }>;
   untyped: number;
+  /**
+   * P8 stage 11 «Потрібні сутності»: private persons (by the name) you pay or
+   * who pay you, with no directory entry yet — all time, most rows first.
+   */
+  needEntities: Array<{ name: string; count: number; total: number; reason: string }>;
   truncated: boolean;
 };
 
@@ -67,6 +72,9 @@ type Cp = Ref & {
   before: number[];
   inCount: number;
   inSpend: number;
+  /** All-time rows and signed sum (display currency). */
+  allCount: number;
+  allTotal: number;
   spellings: Map<string, number>;
 };
 
@@ -114,10 +122,12 @@ export async function computeOverviewCards(opts: {
       if (!id) continue;
       let cp = cps.get(id);
       if (!cp) {
-        cp = { id, name: m.kind === "match" ? m.name : spelling, entityId: m.kind === "match" ? m.entityId : null, firstDate: date, dates: [], before: [], inCount: 0, inSpend: 0, spellings: new Map() };
+        cp = { id, name: m.kind === "match" ? m.name : spelling, entityId: m.kind === "match" ? m.entityId : null, firstDate: date, dates: [], before: [], inCount: 0, inSpend: 0, allCount: 0, allTotal: 0, spellings: new Map() };
         cps.set(id, cp);
       }
       if (date < cp.firstDate) cp.firstDate = date;
+      cp.allCount++;
+      cp.allTotal += amount;
       if (amount < 0) cp.dates.push(date);
       if (m.kind !== "match") cp.spellings.set(spelling, (cp.spellings.get(spelling) ?? 0) + 1);
       if (date < from) {
@@ -206,6 +216,15 @@ export async function computeOverviewCards(opts: {
   }
   silent.sort((a, b) => a.daysSilent - b.daysSilent);
 
+  const needEntities: OverviewCards["needEntities"] = [];
+  for (const cp of cps.values()) {
+    if (cp.entityId != null) continue;
+    const guess = guessPayeeType(cp.name);
+    if (!guess.isPerson) continue;
+    needEntities.push({ name: cp.name, count: cp.allCount, total: round2(cp.allTotal), reason: guess.reason });
+  }
+  needEntities.sort((a, b) => b.count - a.count || Math.abs(b.total) - Math.abs(a.total) || a.name.localeCompare(b.name));
+
   return {
     period: opts.period,
     from,
@@ -218,6 +237,7 @@ export async function computeOverviewCards(opts: {
     duplicates,
     silent: silent.slice(0, 5),
     untyped: opts.matcher.entities.filter((e) => e.merchantTypeId == null).length,
+    needEntities: needEntities.slice(0, 8),
     truncated,
   };
 }

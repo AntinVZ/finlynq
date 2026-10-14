@@ -2166,6 +2166,20 @@ export const payeeRejections = pgTable("payee_rejections", {
   uniqueIndex("payee_rejections_user_key_entity_idx").on(t.userId, t.keyHash, t.entityId),
 ]);
 
+// ─── Payee pair rejections (P8 stage 11) ──────────────────────────────────
+//
+// «Різні» answers in the duplicates-by-amount queue: an HMAC of the two
+// payees' matching keys (never the names), so the pair is not offered again.
+// Migration: scripts/migrations/20261018_colleagues_amount_pairs.sql.
+export const payeePairRejections = pgTable("payee_pair_rejections", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  pairHash: text("pair_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("payee_pair_rejections_user_hash_idx").on(t.userId, t.pairHash),
+]);
+
 // ─── Payee merchant types (P6, B26) ─────────────────────────────────────────
 //
 // The user's editable dictionary of merchant types: group → position, an

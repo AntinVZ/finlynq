@@ -32,7 +32,7 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
   beforeEach(async () => {
     await resetTestDb();
     const { db } = await import("@/db");
-    await db.execute(sql`TRUNCATE payee_entities, payee_aliases, payee_identifiers, payee_batches, payee_proposals, payee_merchant_types, payee_own_accounts RESTART IDENTITY CASCADE`);
+    await db.execute(sql`TRUNCATE payee_entities, payee_aliases, payee_identifiers, payee_batches, payee_proposals, payee_merchant_types, payee_own_accounts, payee_pair_rejections RESTART IDENTITY CASCADE`);
     seed = await seedPayeeLedger();
     const { invalidatePayeeSuggest } = await import("@/lib/payees/suggest");
     invalidatePayeeSuggest(seed.userId);
@@ -308,5 +308,63 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "P24", storedAs: "P24" })).toMatchObject({ status: "channel" });
     expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: null, payee: "X", storedAs: "X" })).toMatchObject({ status: "unavailable" });
     expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "  ", storedAs: "" })).toBeNull();
+  });
+
+  it("stage 11: duplicates by amount, people without an entry, «needs check» reasons, fees", async () => {
+    const { db } = await import("@/db");
+    for (const d of ["2026-07-05", "2026-08-05", "2026-09-05"]) {
+      await addTx("Степаненко", d, -15000);
+      await addTx("Stepanenko O.", d, -15000);
+    }
+    await addTx("Іваненко Петро Олегович", "2026-09-01", -500);
+    const { findAmountDuplicates, rejectAmountPair } = await import("@/lib/payees/amount-duplicates");
+    const { matcherFor } = await import("@/lib/payees/resolve-hint");
+    const { loadOwnMatcher } = await import("@/lib/payees/own-accounts");
+    const ctx = async () => ({ executor: db, userId: seed.userId, dek: TEST_DEK, matcher: await matcherFor({ executor: db, userId: seed.userId, dek: TEST_DEK }), own: await loadOwnMatcher(db, seed.userId, TEST_DEK) });
+    const found = await findAmountDuplicates(await ctx());
+    const pair = found.pairs.find((p) => [p.a.name, p.b.name].sort().join("|") === "Stepanenko O.|Степаненко");
+    expect(pair).toMatchObject({ shared: 3 });
+    expect(pair!.matches[0]).toMatchObject({ date: "2026-09-05", amount: -15000 });
+    expect(await rejectAmountPair(db, seed.userId, TEST_DEK, pair!.id)).toBe(true);
+    expect((await findAmountDuplicates(await ctx())).pairs.some((p) => p.id === pair!.id)).toBe(false);
+    const [stored] = (await db.execute(sql`SELECT pair_hash FROM payee_pair_rejections WHERE user_id = ${seed.userId}`) as unknown as { rows: Array<{ pair_hash: string }> }).rows;
+    expect(stored.pair_hash).not.toMatch(/stepan|степан/i);
+    await rejectAmountPair(db, seed.userId, TEST_DEK, pair!.id, true);
+    expect((await findAmountDuplicates(await ctx())).pairs.some((p) => p.id === pair!.id)).toBe(true);
+    expect(await rejectAmountPair(db, seed.userId, TEST_DEK, "bogus")).toBe(false);
+
+    const { computeOverviewCards } = await import("@/lib/payees/overview-cards");
+    const cards = await computeOverviewCards({ ...(await ctx()), convert: (sl) => sl.reduce((n, x) => n + x.totalAmount, 0), currency: "UAH", period: "90d", today: "2026-10-12" });
+    expect(cards.needEntities.some((p) => p.name === "Іваненко Петро Олегович")).toBe(true);
+    expect(cards.needEntities.every((p) => p.name !== "Rozetka")).toBe(true);
+
+    // «Needs check»: a requisite that is your own account.
+    const own = "UA903052992990004149123456789";
+    await op({ op: "own_accounts", add: [{ iban: own, bank: "privat", owner: "me" }] });
+    await op({ op: "create", name: "Переказ собі", apply: false, identifiers: [{ kind: "iban", value: own }] });
+    const { loadPayeeOverview, suspiciousOf } = await import("@/lib/payees/service");
+    const o = await loadPayeeOverview({ executor: db, userId: seed.userId, dek: TEST_DEK });
+    const flagged = suspiciousOf(o).find((x) => x.name === "Переказ собі");
+    expect(flagged?.reasons.map((r) => r.code)).toContain("own_requisite");
+
+    // Fees apart.
+    const { isFeeRow } = await import("@/lib/payees/merchant-profile");
+    expect(isFeeRow("Комісія за переказ Степаненко", null)).toBe(true);
+    expect(isFeeRow("Степаненко", "Bank fees")).toBe(true);
+    expect(isFeeRow("Feedback Ltd", null)).toBe(false);
+  });
+
+  it("stage 11: «Колеги» is its own people group, never ФОП", async () => {
+    const { db } = await import("@/db");
+    const { payeeTypeForMerchantType, isPersonsMerchantGroup, isColleaguesMerchantGroup } = await import("@/lib/payees/payee-type");
+    expect(payeeTypeForMerchantType("Колеги", "sole_proprietor")).toBe("person");
+    expect(isPersonsMerchantGroup(null, "colleagues")).toBe(true);
+    expect(isColleaguesMerchantGroup("Особи і ФОП", "persons")).toBe(false);
+    const { defaultMerchantTypes, loadMerchantTypes } = await import("@/lib/payees/merchant-types");
+    expect(defaultMerchantTypes().some((t) => t.code === "colleagues" && t.group === "Колеги")).toBe(true);
+    const r = await op({ op: "create", name: "Олена Коваль", apply: false, merchantType: { group: "Колеги", name: "Колеги" } });
+    const [row] = (await db.execute(sql`SELECT type FROM payee_entities WHERE id = ${r.entity!.id}`) as unknown as { rows: Array<{ type: string }> }).rows;
+    expect(row.type).toBe("person");
+    expect((await loadMerchantTypes(db, seed.userId)).some((t) => t.code === "colleagues")).toBe(true);
   });
 });

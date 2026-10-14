@@ -243,16 +243,18 @@ export async function loadMerchantAnalytics(opts: {
 /** P6.2 (83): directory entries with a short / meaningless name, with their rows and spellings. Read only. */
 export function suspiciousOf(o: PayeeOverview, opts: { includeReviewed?: boolean } = {}): SuspiciousEntry[] {
   const counts = new Map(o.entities.map((e) => [e.id, e.count]));
+  const totals = new Map(o.entities.map((e) => [e.id, e.total]));
   return listSuspicious(
     o.directory,
     (id) => ({
       count: counts.get(id) ?? 0,
+      total: totals.get(id) ?? 0,
       spellings: o.groups
         .filter((g) => g.entityId === id)
         .flatMap((g) => g.spellings.map((s) => ({ spelling: s.spelling, count: s.count })))
         .sort((a, b) => b.count - a.count)
         .slice(0, 10),
     }),
-    { includeReviewed: opts.includeReviewed, vocab: o.vocab },
+    { includeReviewed: opts.includeReviewed, vocab: o.vocab, own: o.own },
   );
 }

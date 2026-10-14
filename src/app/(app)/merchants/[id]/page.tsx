@@ -65,6 +65,7 @@ type EntityResponse = {
     months: Array<{ month: string; total: number }>;
     recent: Array<{ id: number; date: string; amount: number; currency: string | null; account: string | null; category: string | null; payee: string }>;
     uncategorized?: number;
+    fees?: { count: number; total: number };
     insights?: { cadence: string | null; intervalDays: number | null; nextExpected: string | null; typicalLow: number; typicalHigh: number; largeCount: number; largeThreshold: number } | null;
     truncated: boolean;
   };
@@ -272,6 +273,11 @@ export default function PayeeEntityPage() {
                     : t("profile.insight.noLarge")}
                 </li>
               </ul>
+            )}
+            {data.kpis.fees && data.kpis.fees.count > 0 && (
+              <p className="text-xs" data-testid="merchant-fees">
+                {t("profile.fees", { n: data.kpis.fees.count, total: formatCurrency(data.kpis.fees.total, data.kpis.currency) })}
+              </p>
             )}
             {data.kpis.truncated && <p className="text-xs text-amber-600 dark:text-amber-400">{t("profile.kpi.truncated")}</p>}
           </CardContent>

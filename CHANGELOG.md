@@ -6,6 +6,14 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+- **feat(merchants): data quality — «Колеги», people without an entry, needs-check reasons, duplicates by amount, fees (P8 stage 11, 2026-10-14).** Additive migration `scripts/migrations/20261018_colleagues_amount_pairs.sql` (the «Колеги» merchant type for users whose dictionary is stored; table `payee_pair_rejections`).
+  - **«Колеги»** — a built-in merchant type (`colleagues`) for private persons you deal with through work, apart from «Особи і ФОП»: an entry typed «Колеги» is always a person (never ФОП), and everything that keeps people apart (no automatic merges, no website, no autopilot) applies. The directory has a «Колеги» chip next to «Люди».
+  - **«Потрібні сутності»** card on the Overview: private persons (by the name) with no directory entry yet, most rows first, with a link to «Особи» in the queue where each one is added by hand.
+  - **«Потребує перевірки»** now also lists an entry with a large sum and no merchant type (above Q3 + 1.5·IQR of the directory's entry sums) and an entry whose requisite is one of your own accounts or cards (B26 / B27), next to the short / meaningless names.
+  - **«Однакові суми»** in the queue: two different payees paid the same amount on the same day at least twice (`GET /api/payees/amount-duplicates`), with the shared payments; «Об'єднати…» opens the usual merge preview, «Різні» hides the pair (an HMAC of the two keys, never the names; undo from the status line). Nothing is merged automatically.
+  - **Fees apart on the merchant page**: rows whose spelling or category says «комісія» / fee are counted and summed separately (they stay in the total).
+  - Logos and websites show in the profile when filled (stored logo only; no external favicons — unchanged).
+  - Tests: two stage-11 cases in `tests/payees-p8-merchants-db.test.ts`.
 - **feat(merchants, mcp): Claude recipes, AI drafts in the queue, MCP coverage / queue / paging, payee_resolution (P8 stage 9, 2026-10-14).** No migration.
   - **«Скопіювати запит для Claude» and five recipes** (the 20 biggest unrecognized payees → one `propose`, duplicates, types, a check after an import, ЄДРПОУ and websites) in the queue and on the Overview. Texts only: the server never calls a model.
   - **AI drafts as a queue tab** («Чернетки AI» in Merchants → Черга; `/merchants/review` shows the same panel, `AiDraftsPanel`). Drafts sent over MCP carry «Запропоновано Claude». «Вибрати ≥ поріг» never picks the exceptions (a person / ФОП, a draft with a warning, a name of type words only, a bare payment channel — `Proposal.exception`) and says how many there are; the accept dialog previews what will change.

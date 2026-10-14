@@ -54,7 +54,7 @@ const nameOf = (x: { name: string; entityId: number | null }) =>
 
 export type StartState = { hasDirectory: boolean; typedAll: boolean; hintOn: boolean };
 
-export function MerchantsOverviewCards({ start, onOpen }: { start: StartState; onOpen: (target: "queue" | "untyped" | "settings" | "suspicious") => void }) {
+export function MerchantsOverviewCards({ start, onOpen }: { start: StartState; onOpen: (target: "queue" | "untyped" | "settings" | "suspicious" | "people") => void }) {
   const t = useT();
   const [period, setPeriod] = useState<OverviewPeriod>("90d");
   const [introSeen, setIntroSeen] = useState(true);
@@ -203,6 +203,22 @@ export function MerchantsOverviewCards({ start, onOpen }: { start: StartState; o
                 ))}
               </ul>
             )}
+          </Card>
+
+          <Card title={t("overview.needEntities")} testId="card-need-entities">
+            {(data.needEntities ?? []).length === 0 ? (
+              <p className="text-xs text-muted-foreground">{t("overview.nothing")}</p>
+            ) : (
+              <ul className="text-sm space-y-0.5">
+                {(data.needEntities ?? []).map((p) => (
+                  <li key={p.name} className="flex gap-2" title={p.reason}>
+                    <span className="truncate flex-1">{p.name}</span>
+                    <span className="text-xs text-muted-foreground tabular-nums">{t("common.rows", { n: p.count })}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <button type="button" className="text-xs underline" onClick={() => onOpen("people")}>{t("overview.needEntitiesOpen")}</button>
           </Card>
 
           <Card title={t("overview.directoryHealth")} testId="card-health">

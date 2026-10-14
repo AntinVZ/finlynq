@@ -19,7 +19,7 @@ describe("merchant types", () => {
   it("ships the starting set with one group of three positions", () => {
     expect(types.filter((t) => t.group === "Кафе, ресторани, бари").map((t) => t.name)).toEqual(["Кафе", "Ресторани", "Бари"]);
     expect(types.find((t) => t.group === "Банківські операції")).toBeTruthy();
-    expect(types).toHaveLength(21);
+    expect(types).toHaveLength(22); // P8 stage 11 added «Колеги»
     expect(types.every((t) => t.id == null)).toBe(true);
   });
 

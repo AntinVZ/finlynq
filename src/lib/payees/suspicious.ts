@@ -18,14 +18,22 @@
  *     The second word of a two-word name starting in lower case
  *     (`Galia baluvana`) reads as a fragment of text, not a brand.
  *
+ * P8 stage 11 adds two checks that are not about the name:
+ *   - large_untyped: no merchant type and a sum above Q3 + 1.5·IQR of the
+ *     directory's entry sums (the existing quartiles, at least 4 entries);
+ *   - own_requisite: one of its requisites is one of your own accounts or
+ *     cards (B26 / B27) — usually a transfer between your accounts.
+ *
  * Pure: works on a loaded directory and its row counts.
  */
 import { payeeMatchKey, payeeTokens } from "./match-key";
 import { brandCoreOfKey, defaultVocabulary, type PayeeVocabulary } from "./type-words";
 import type { PayeeEntity } from "./directory";
 import { st } from "@/lib/i18n/current";
+import { describeOwnAccount, type OwnMatcher } from "./own-accounts";
+import { quantile } from "./merchant-analytics";
 
-export type SuspicionCode = "short" | "no_letters" | "latin_no_brand";
+export type SuspicionCode = "short" | "no_letters" | "latin_no_brand" | "large_untyped" | "own_requisite";
 
 export type Suspicion = { code: SuspicionCode; reason: string };
 
@@ -79,15 +87,21 @@ export function hasBrandSigns(e: PayeeEntity): boolean {
 /** Entries to check, most rows first. Entries marked as checked are left out unless `includeReviewed`. */
 export function listSuspicious(
   directory: readonly PayeeEntity[],
-  rows: (entityId: number) => { count: number; spellings: Array<{ spelling: string; count: number }> },
-  opts: { includeReviewed?: boolean; vocab?: PayeeVocabulary } = {},
+  rows: (entityId: number) => { count: number; spellings: Array<{ spelling: string; count: number }>; total?: number },
+  opts: { includeReviewed?: boolean; vocab?: PayeeVocabulary; own?: OwnMatcher } = {},
 ): SuspiciousEntry[] {
   const out: SuspiciousEntry[] = [];
+  const sums = directory.map((e) => Math.abs(rows(e.id).total ?? 0)).filter((v) => v > 0).sort((a, b) => a - b);
+  const large = sums.length >= 4 ? quantile(sums, 0.75) + 1.5 * (quantile(sums, 0.75) - quantile(sums, 0.25)) : Infinity;
   for (const e of directory) {
     if (e.reviewedAt && !opts.includeReviewed) continue;
     const reasons = suspiciousReasons(e.name, { brandSigns: hasBrandSigns(e), vocab: opts.vocab });
-    if (!reasons.length) continue;
     const r = rows(e.id);
+    const total = Math.abs(r.total ?? 0);
+    if (e.merchantTypeId == null && total > large) reasons.push({ code: "large_untyped", reason: st("srv.suspicious.largeUntyped") });
+    const own = opts.own?.forEntity(e);
+    if (own) reasons.push({ code: "own_requisite", reason: st("srv.suspicious.ownRequisite", { account: describeOwnAccount(own) }) });
+    if (!reasons.length) continue;
     out.push({ id: e.id, name: e.name, reasons, count: r.count, spellings: r.spellings });
   }
   return out.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));

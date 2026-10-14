@@ -50,11 +50,12 @@ import {
   type PayeesResponse,
 } from "./_components/payee-ui";
 import { MergeDialog } from "./_components/merge-dialog";
-import { isPersonsMerchantGroup, PERSONS_MERCHANT_GROUP } from "@/lib/payees/payee-type";
+import { isColleaguesMerchantGroup, isPersonsMerchantGroup, PERSONS_MERCHANT_GROUP } from "@/lib/payees/payee-type";
 import { groupMerchantTypes, localizedType, merchantTypeLabel, MerchantTypesEditor, PayeeTypeLabel, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
 import { AiDraftsPanel, AiRecipes } from "./_components/ai-drafts-panel";
+import { AmountDuplicatesPanel, type AmountPair } from "./_components/amount-duplicates-panel";
 import { MerchantsOverviewCards } from "./_components/overview-cards";
 import { StudioSettingsDialog, WordListsSection } from "./_components/settings-dialog";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
@@ -75,14 +76,14 @@ const PAGE_SIZES = [25, 50] as const;
 
 export type Section = "overview" | "directory" | "queue" | "channels" | "dictionaries" | "changes";
 const SECTIONS: Section[] = ["overview", "directory", "queue", "channels", "dictionaries", "changes"];
-type QueueView = "clusters" | "lookalikes" | "drafts" | "unrecognized" | "suspicious" | "bulk" | "people";
-const QUEUE_VIEWS: QueueView[] = ["clusters", "lookalikes", "drafts", "unrecognized", "suspicious", "bulk", "people"];
+type QueueView = "clusters" | "lookalikes" | "drafts" | "unrecognized" | "suspicious" | "amounts" | "bulk" | "people";
+const QUEUE_VIEWS: QueueView[] = ["clusters", "lookalikes", "drafts", "unrecognized", "suspicious", "amounts", "bulk", "people"];
 type DirectoryView = "entries" | "spellings";
-type Chip = "all" | "merchants" | "people" | "channels";
-const CHIPS: Chip[] = ["all", "merchants", "people", "channels"];
+type Chip = "all" | "merchants" | "people" | "colleagues" | "channels";
+const CHIPS: Chip[] = ["all", "merchants", "people", "colleagues", "channels"];
 type Filter = "untyped" | "noRequisites" | "needsCheck";
 const FILTERS: Filter[] = ["untyped", "noRequisites", "needsCheck"];
-const CHIP_KEY = { all: "merchants.chip.all", merchants: "merchants.chip.merchants", people: "merchants.chip.people", channels: "merchants.chip.channels" } as const;
+const CHIP_KEY = { all: "merchants.chip.all", merchants: "merchants.chip.merchants", people: "merchants.chip.people", colleagues: "merchants.chip.colleagues", channels: "merchants.chip.channels" } as const;
 const FILTER_KEY = { untyped: "merchants.filter.untyped", noRequisites: "merchants.filter.noRequisites", needsCheck: "merchants.filter.needsCheck" } as const;
 type SortKey = "count" | "name" | "total" | "lastDate";
 
@@ -151,10 +152,12 @@ function mergeTypeHint(
   return null;
 }
 
-/** Which chip an entry belongs to: a person (or ФОП), a channel, or a merchant. */
+/** Which chip an entry belongs to: a colleague, a person (or ФОП), a channel, or a merchant. */
 export function entryChip(e: Pick<EntityRow, "type" | "merchantType">): Exclude<Chip, "all"> {
   if (e.merchantType && CHANNEL_TYPE_CODES.has(e.merchantType.code ?? "")) return "channels";
   if (e.merchantType && e.merchantType.group === "Банківські операції") return "channels";
+  // P8 stage 11: colleagues apart from other people and ФОП.
+  if (isColleaguesMerchantGroup(e.merchantType?.group, e.merchantType?.code)) return "colleagues";
   if (e.type === "person" || e.type === "sole_proprietor" || isPersonsMerchantGroup(e.merchantType?.group, e.merchantType?.code)) return "people";
   return "merchants";
 }
@@ -302,7 +305,7 @@ function MerchantsSection() {
   }, [data, query, groupsByKey]);
 
   const chipCounts = useMemo(() => {
-    const out: Record<Chip, number> = { all: entities.length, merchants: 0, people: 0, channels: 0 };
+    const out: Record<Chip, number> = { all: entities.length, merchants: 0, people: 0, colleagues: 0, channels: 0 };
     for (const e of entities) out[entryChip(e)]++;
     return out;
   }, [entities]);
@@ -509,6 +512,7 @@ function MerchantsSection() {
     { id: "drafts", label: `${t("merchants.queue.drafts")}${count(data?.draftCount)}` },
     { id: "unrecognized", label: `${t("page.tab.unrecognized")}${count(unrecognizedCount)}`, help: t("merchants.help.unrecognized") },
     { id: "suspicious", label: `${t("suspicious.tab")}${count(data?.suspicious?.length)}` },
+    { id: "amounts", label: t("amountDup.tab") },
     { id: "bulk", label: t("bulk.tab") },
     { id: "people", label: t("people.tab") },
   ];
@@ -848,6 +852,8 @@ function MerchantsSection() {
                 ? go({ tab: "queue", view: "unrecognized" })
                 : to === "suspicious"
                   ? go({ tab: "queue", view: "suspicious" })
+                  : to === "people"
+                    ? go({ tab: "queue", view: "people" })
                   : go({ tab: "directory", view: "entries", f: "untyped" })
           }
         />
@@ -923,6 +929,15 @@ function MerchantsSection() {
           <AiDraftsPanel onChanged={() => void Promise.all([mutate(), globalMutate("/api/payees/queue")])} />
         ) : queueView === "suspicious" ? (
           <SuspiciousPanel rows={data?.suspicious ?? []} entities={entityOptions} onDone={(r) => done(r, t("suspicious.done"))} />
+        ) : queueView === "amounts" ? (
+          <AmountDuplicatesPanel
+            onMerge={(p) => {
+              const groupsOf = (side: AmountPair["a"]) =>
+                side.entityId != null ? (data?.groups ?? []).filter((g) => g.entityId === side.entityId) : [groupsByKey.get(side.key ?? "")].filter((g): g is PayeeGroupRow => g != null);
+              const groups = [...groupsOf(p.a), ...groupsOf(p.b)];
+              if (groups.length >= 2) mergeGroups(t("amountDup.merge"), groups);
+            }}
+          />
         ) : queueView === "bulk" ? (
           <BulkPanel types={merchantTypes} onDone={() => void mutate()} />
         ) : queueView === "people" ? (

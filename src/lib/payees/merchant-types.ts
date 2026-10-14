@@ -68,6 +68,7 @@ export const DEFAULT_MERCHANT_TYPES: ReadonlyArray<{ group: string; code: string
   { group: "Освіта і медицина", code: "education_health" },
   { group: "Розваги", code: "entertainment" },
   { group: "Особи і ФОП", code: "persons" },
+  { group: "Колеги", code: "colleagues" },
   { group: "Інше", code: "other" },
 ];
 

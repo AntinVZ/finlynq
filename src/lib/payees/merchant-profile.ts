@@ -44,9 +44,22 @@ export type MerchantKpis = {
     largeCount: number;
     largeThreshold: number;
   } | null;
+  /**
+   * P8 stage 11: bank fees around this entry, shown apart — rows whose
+   * spelling or category says «комісія» / fee (e.g. «Комісія за переказ
+   * Степаненко»), over the same window, in the display currency. They are
+   * also in `total`.
+   */
+  fees: { count: number; total: number };
   /** Stopped at the scan limit. */
   truncated: boolean;
 };
+
+const FEE_RE = /(?<![\p{L}\p{N}])(?:коміс\p{L}*|комис\p{L}*|commission\p{L}*|fees?)(?![\p{L}\p{N}])/iu;
+/** A fee row by its spelling or category name. Exported for tests. */
+export function isFeeRow(spelling: string, category: string | null): boolean {
+  return FEE_RE.test(spelling) || (category != null && FEE_RE.test(category));
+}
 
 const PAGE = 5_000;
 const MAX_SCAN = 200_000;
@@ -87,6 +100,8 @@ export async function loadMerchantKpis(opts: {
   const byMonth = new Map<string, Map<string, AmountSlice>>(window.map((m) => [m, new Map()]));
   const perRow: number[] = [];
   const rowDates: string[] = [];
+  const feeSlices = new Map<string, AmountSlice>();
+  let feeCount = 0;
   let count = 0;
   let lastDate: string | null = null;
   type Recent = MerchantKpis["recent"][number];
@@ -138,6 +153,10 @@ export async function loadMerchantKpis(opts: {
         addSlice(one, amount, currency, reporting, reportingCurrency);
         perRow.push(Math.abs(opts.convert([...one.values()])));
         rowDates.push(date);
+        if (isFeeRow(spelling, rec.category)) {
+          addSlice(feeSlices, amount, currency, reporting, reportingCurrency);
+          feeCount++;
+        }
         count++;
       }
       scanned += page.length;
@@ -162,6 +181,7 @@ export async function loadMerchantKpis(opts: {
     recent,
     uncategorized,
     insights: merchantInsights(perRow, rowDates),
+    fees: { count: feeCount, total: round2(opts.convert([...feeSlices.values()])) },
     truncated,
   };
 }
