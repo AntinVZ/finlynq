@@ -24,25 +24,19 @@
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { brandCoreOfKey, type PayeeVocabulary } from "./type-words";
 import { st } from "@/lib/i18n/current";
+import { transliterate } from "./translit";
 
 // ─── transliteration ───────────────────────────────────────────────────────
 
-/** Ukrainian-first Cyrillic → Latin (with the Russian-only letters). */
-const CYR_TO_LAT: Record<string, string> = {
-  а: "a", б: "b", в: "v", г: "h", ґ: "g", д: "d", е: "e", є: "ie", ж: "zh", з: "z",
-  и: "y", і: "i", ї: "i", й: "i", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p",
-  р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh",
-  щ: "shch", ь: "", ю: "iu", я: "ia", ъ: "", ы: "y", э: "e", ё: "e",
-};
-
 const HAS_CYRILLIC = /[Ѐ-ӿ]/;
 
-/** Cyrillic letters → Latin; everything else unchanged. Input is lowercase. */
+/**
+ * Cyrillic letters → Latin; everything else unchanged. Input is lowercase.
+ * P8 stage 7: the table lives in the transliteration plugin (./translit.ts);
+ * the matching key runs its built-in chain.
+ */
 export function transliterateToLatin(s: string): string {
-  if (!HAS_CYRILLIC.test(s)) return s;
-  let out = "";
-  for (const ch of s) out += CYR_TO_LAT[ch] ?? ch;
-  return out;
+  return transliterate(s);
 }
 
 /**

@@ -75,6 +75,9 @@ export type VocabularyOptions = {
   typeWordsOff?: readonly string[];
   bankOpsExtra?: readonly string[];
   bankOpsOff?: readonly string[];
+  /** P8 stage 7: words and bank operations from the country packs turned on beyond UA (./packs). */
+  packTypeWords?: ReadonlyArray<{ word: string; hint: MerchantTypeHint | null }>;
+  packBankOps?: readonly string[];
 };
 
 type TypePhrase = { word: string; tokens: string[]; hint: MerchantTypeHint | null };
@@ -106,7 +109,7 @@ function compileBankOp(pattern: string): BankOp | null {
 
 const cleanList = (l: readonly string[] | undefined) => (l ?? []).map((w) => w.replace(/\s+/g, " ").trim()).filter((w) => w.length > 0 && w.length <= 60);
 
-/** Build a vocabulary: the defaults, minus what the user switched off, plus their own words. */
+/** Build a vocabulary: the defaults (the UA pack), the other packs turned on, minus what the user switched off, plus their own words. */
 export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
   const off = new Set(cleanList(opts.typeWordsOff).map((w) => payeeMatchKey(w)));
   const phrases = new Map<string, TypePhrase>();
@@ -116,6 +119,7 @@ export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
     phrases.set(key, { word, tokens: key.split(" "), hint });
   };
   for (const w of DEFAULT_TYPE_WORDS) add(w.word, w.hint ?? null);
+  for (const w of opts.packTypeWords ?? []) if (w.word.trim() && w.word.length <= 60) add(w.word.trim(), w.hint);
   // P6.2 (B30): a user word may carry a hint — `кальянна = Кафе, ресторани, бари → Бари`.
   for (const w of cleanList(opts.typeWordsExtra)) {
     const m = w.match(/^(.+?)\s*=\s*(.+)$/);
@@ -124,7 +128,7 @@ export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
   const opsOff = new Set(cleanList(opts.bankOpsOff).map((p) => normalizeForMatch(p)));
   const bankOps: BankOp[] = [];
   const seen = new Set<string>();
-  for (const p of [...DEFAULT_BANK_OPERATIONS, ...cleanList(opts.bankOpsExtra)]) {
+  for (const p of [...DEFAULT_BANK_OPERATIONS, ...cleanList(opts.packBankOps), ...cleanList(opts.bankOpsExtra)]) {
     const op = compileBankOp(p);
     if (!op || opsOff.has(op.pattern) || seen.has(op.pattern)) continue;
     seen.add(op.pattern);

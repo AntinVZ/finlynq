@@ -51,7 +51,7 @@ import {
 } from "../../src/lib/payees/proposals";
 import { computePayeeInsights } from "../../src/lib/payees/insights";
 import { explainPayeePair } from "../../src/lib/payees/explain";
-import { getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
+import { dictionaryMetaOf, getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
 import { formatMerchantType, loadMerchantTypes, merchantTypeFilter, type MerchantType } from "../../src/lib/payees/merchant-types";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "../../src/lib/payees/dictionary";
 import { makeSliceConverter } from "../../src/lib/payees/service";
@@ -1051,7 +1051,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           }
           case "dictionary_export": {
             if (!dek) return err("Unlock required: the directory is encrypted. Sign in to Finlynq in the browser, then retry.");
-            const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
+            const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId), dictionaryMetaOf(await getPayeeSettings(db, userId)));
             return dataResponse({
               format: input.format ?? "json",
               content: input.format === "yaml" ? dictionaryToYaml(dict) : dictionaryToJson(dict),

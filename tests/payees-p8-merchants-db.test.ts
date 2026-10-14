@@ -367,4 +367,24 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     expect(row.type).toBe("person");
     expect((await loadMerchantTypes(db, seed.userId)).some((t) => t.code === "colleagues")).toBe(true);
   });
+  it("stage 7: an imported country pack is stored in the settings and changes the vocabulary and ID checks", async () => {
+    const { db } = await import("@/db");
+    const { readFileSync } = await import("node:fs");
+    const { join } = await import("node:path");
+    const { getPayeeSettings, savePayeeSettings, vocabularyOf, dictionaryMetaOf } = await import("@/lib/payees/settings");
+    const { parsePack, activePacks, packIdTypes } = await import("@/lib/payees/packs");
+    const { detectIdTypes } = await import("@/lib/payees/id-registry");
+    const { brandCoreOfKey } = await import("@/lib/payees/type-words");
+    const { payeeMatchKey } = await import("@/lib/payees/match-key");
+    const { pack } = parsePack(readFileSync(join(__dirname, "fixtures", "pack-pl.json"), "utf8"));
+    // Built-in ids and broken packs are dropped by the settings coercion.
+    await savePayeeSettings(db, seed.userId, { packs: ["eu", "ua", "nope"], customPacks: [pack!, { ...pack!, id: "ua" }, { bogus: 1 } as never] });
+    const s = await getPayeeSettings(db, seed.userId);
+    expect(s.packs).toEqual(["eu"]);
+    expect(s.customPacks.map((p) => p.id)).toEqual(["pl-test"]);
+    expect(activePacks(s).map((p) => p.id)).toEqual(["ua", "eu", "pl-test"]);
+    expect(brandCoreOfKey(payeeMatchKey("Stacja paliw Orlen"), vocabularyOf(s)).hint?.code).toBe("fuel");
+    expect(detectIdTypes("5261040828", packIdTypes(activePacks(s))).find((m) => m.id === "pl_nip")?.check.ok).toBe(true);
+    expect(dictionaryMetaOf(s).country).toBe("PL");
+  });
 });

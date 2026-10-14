@@ -3,13 +3,16 @@
  * shared package of merchant names.
  *
  * File format (JSON, or the same structure as YAML):
- *   { format: "finlynq-payee-dictionary", version: 1, exportedAt,
+ *   { format: "finlynq-payee-dictionary", version: 2, exportedAt, locale, country,
  *     entries: [{ name, type, aliases: [{ pattern, mode }],
  *                 identifiers: [{ kind, value }], website? }] }
  * P5c: `website` is exported (merchants only) and imported (set when the
  * matching entry has none); logos are never exported.
  * P6: `merchantType: { group, name }` is exported and imported (set when the
  * matching entry has none; a type missing from the user's list is added).
+ * P8 stage 7 — v2: `locale` (the language the names are in, e.g. "uk") and
+ * `country` (ISO code, "UA") so shared dictionaries can be picked per
+ * country; v1 files still import (no locale / country).
  *
  * EXPORT keeps only what is safe to share: entities, their aliases and types,
  * and public identifiers of legal entities (EDRPOU; an IBAN only for
@@ -35,7 +38,7 @@ import { parseMerchantTypeText, validateMerchantTypeRef, type MerchantType, type
 import { st } from "@/lib/i18n/current";
 
 export const DICTIONARY_FORMAT = "finlynq-payee-dictionary";
-export const DICTIONARY_VERSION = 1;
+export const DICTIONARY_VERSION = 2;
 export const DICTIONARY_MAX_ENTRIES = 5_000;
 
 export type DictionaryEntry = {
@@ -48,7 +51,7 @@ export type DictionaryEntry = {
   /** P6: the merchant type, group → position. */
   merchantType?: MerchantTypeRef;
 };
-export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; entries: DictionaryEntry[] };
+export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; locale?: string; country?: string; entries: DictionaryEntry[] };
 
 const PERSON_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 const IBAN_SHAREABLE_TYPES = new Set<PayeeType>(["company", "bank", "government"]);
@@ -58,6 +61,7 @@ export function buildDictionary(
   entities: PayeeEntity[],
   now = new Date(),
   merchantTypes: readonly MerchantType[] = [],
+  meta: { locale?: string; country?: string } = {},
 ): PayeeDictionary & { skipped: { people: number; aliases: number; identifiers: number } } {
   const skipped = { people: 0, aliases: 0, identifiers: 0 };
   const entries: DictionaryEntry[] = [];
@@ -84,21 +88,21 @@ export function buildDictionary(
     entries.push({ name: e.name, type: e.type, aliases, identifiers, ...(e.website ? { website: e.website } : {}), ...(mt ? { merchantType: { group: mt.group, name: mt.name } } : {}) });
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
-  return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), entries, skipped };
+  return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), locale: meta.locale ?? "uk", country: meta.country ?? "UA", entries, skipped };
 }
 
 // ─── serialization ──────────────────────────────────────────────────────────
 
 export function dictionaryToJson(d: PayeeDictionary): string {
-  const { format, version, exportedAt, entries } = d;
-  return JSON.stringify({ format, version, exportedAt, entries }, null, 2) + "\n";
+  const { format, version, exportedAt, locale, country, entries } = d;
+  return JSON.stringify({ format, version, exportedAt, ...(locale ? { locale } : {}), ...(country ? { country } : {}), entries }, null, 2) + "\n";
 }
 
 const q = (s: string) => JSON.stringify(s);
 
 /** Block-style YAML; every string double-quoted (valid YAML 1.2). */
 export function dictionaryToYaml(d: PayeeDictionary): string {
-  const out = [`format: ${q(d.format)}`, `version: ${d.version}`, `exportedAt: ${q(d.exportedAt)}`, "entries:"];
+  const out = [`format: ${q(d.format)}`, `version: ${d.version}`, `exportedAt: ${q(d.exportedAt)}`, ...(d.locale ? [`locale: ${q(d.locale)}`] : []), ...(d.country ? [`country: ${q(d.country)}`] : []), "entries:"];
   if (!d.entries.length) out[out.length - 1] = "entries: []";
   for (const e of d.entries) {
     out.push(`  - name: ${q(e.name)}`, `    type: ${q(e.type)}`);
@@ -208,6 +212,8 @@ const fileSchema = z.object({
   format: z.literal(DICTIONARY_FORMAT),
   version: z.number().int(),
   exportedAt: z.string().optional(),
+  locale: z.string().max(20).optional(),
+  country: z.string().max(3).optional(),
   entries: z
     .array(
       z.object({
@@ -223,7 +229,7 @@ const fileSchema = z.object({
 });
 
 /** Parse + validate a dictionary file (JSON or YAML). Entry problems come back per entry. */
-export function parseDictionary(text: string): { entries: DictionaryEntry[]; errors: Array<{ index: number; error: string }> } {
+export function parseDictionary(text: string): { entries: DictionaryEntry[]; errors: Array<{ index: number; error: string }>; locale?: string; country?: string } {
   const trimmed = text.trim();
   let raw: unknown;
   try {
@@ -265,7 +271,7 @@ export function parseDictionary(text: string): { entries: DictionaryEntry[]; err
       errors.push({ index, error: err instanceof Error ? err.message : String(err) });
     }
   });
-  return { entries, errors };
+  return { entries, errors, ...(parsed.data.locale ? { locale: parsed.data.locale } : {}), ...(parsed.data.country ? { country: parsed.data.country } : {}) };
 }
 
 // ─── import plan ────────────────────────────────────────────────────────────

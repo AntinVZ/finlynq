@@ -58,6 +58,7 @@ import { AiDraftsPanel, AiRecipes } from "./_components/ai-drafts-panel";
 import { AmountDuplicatesPanel, type AmountPair } from "./_components/amount-duplicates-panel";
 import { MerchantsOverviewCards } from "./_components/overview-cards";
 import { StudioSettingsDialog, WordListsSection } from "./_components/settings-dialog";
+import { PacksCard } from "./_components/packs-card";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
 import { OwnAccountsPanel } from "./_components/own-accounts-panel";
 import { BulkPanel, PeoplePanel } from "./_components/bulk-panel";
@@ -1002,6 +1003,7 @@ function MerchantsSection() {
           </ul>
         </section>
         <WordListsSection settings={data?.settings ?? null} onSave={saveSettings} onImported={() => void mutate()} />
+        <PacksCard onChanged={() => void mutate()} />
       </div>
     );
   else
