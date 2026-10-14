@@ -9,7 +9,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
-import { BulkPanel } from "@/app/(app)/settings/payees/_components/bulk-panel";
+import { BulkPanel } from "@/app/(app)/merchants/_components/bulk-panel";
 
 const row = (rowId: string, name: string, hint: { group: string; name: string; reason: string } | null = null) => ({
   rowId,

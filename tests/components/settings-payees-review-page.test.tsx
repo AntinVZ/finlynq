@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
-import PayeeReviewPage from "@/app/(app)/settings/payees/review/page";
+import PayeeReviewPage from "@/app/(app)/merchants/review/page";
 
 const proposals = [
   { id: 1, canonical: "Епіцентр", type: "retail", entityId: null, aliases: [{ pattern: "Epicentr", mode: "exact" }], identifiers: [], reason: "Same chain", confidence: 0.95, needsDecision: false, notes: [], status: "draft", createdAt: "" },
@@ -58,7 +58,7 @@ describe("Settings → Payees → AI review", () => {
   it("selects only confident non-person drafts and previews before accepting", async () => {
     const calls = setup();
     expect(await screen.findByText("Same chain")).toBeTruthy();
-    expect(screen.getByText("Needs decision")).toBeTruthy();
+    expect(screen.getByText("Needs your decision")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: /Select ≥ 90% \(1\)/ }));
     fireEvent.click(screen.getByRole("button", { name: /Accept selected \(1\)/ }));
     expect(await screen.findByText(/Renames 5 rows: 5 in transactions/)).toBeTruthy();

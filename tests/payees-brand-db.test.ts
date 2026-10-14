@@ -88,7 +88,7 @@ describeDb("Payee Studio P6 brand and bank operations (seeded DB)", () => {
     const call = await tools();
     const key = payeeMatchKey("Шиномонтаж Колесо");
     const before = await call({ op: "explain", a: "Шиномонтаж Колесо", b: "Колесо 12" });
-    expect(before.a.brand).toMatch(/стоп-слів немає/);
+    expect(before.a.brand).toMatch(/no stop words/);
     const { db } = await import("@/db");
     const { savePayeeSettings } = await import("@/lib/payees/settings");
     await savePayeeSettings(db, seed.userId, { typeWordsExtra: ["шиномонтаж"] });

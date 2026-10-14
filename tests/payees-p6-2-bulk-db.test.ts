@@ -149,8 +149,8 @@ describeDb("Payee Studio P6.2 bulk registry (seeded DB)", () => {
     const names = c.rows.map((r) => r.name).join(" | ");
     expect(names).not.toMatch(/Деркач|DERKACH|DAVYDZON/i);
     expect(c.people.map((p) => p.name).join(" | ")).toMatch(/Деркач|DAVYDZON/i);
-    await expect(commit([{ rowId: c.people[0].rowId }])).rejects.toThrow(/Особи/);
-    await expect(commit([{ rowId: c.rows[0].rowId, name: "Іваненко Петро Васильович" }])).rejects.toThrow(/особу/);
+    await expect(commit([{ rowId: c.people[0].rowId }])).rejects.toThrow(/People and sole proprietors/);
+    await expect(commit([{ rowId: c.rows[0].rowId, name: "Іваненко Петро Васильович" }])).rejects.toThrow(/looks like a person/);
   });
 
   it("the threshold and a too-big set", async () => {
@@ -160,8 +160,8 @@ describeDb("Payee Studio P6.2 bulk registry (seeded DB)", () => {
     expect(loose.c.rows.length).toBeGreaterThanOrEqual(strict.c.rows.length);
     const { BULK_MAX } = await import("@/lib/payees/bulk-registry");
     const many = Array.from({ length: BULK_MAX + 1 }, (_, i) => ({ rowId: `g_${i}` }));
-    await expect(commit(many)).rejects.toThrow(/Завеликий пакет/);
-    await expect(commit([{ rowId: "g_gone" }])).rejects.toThrow(/Оновіть таблицю/);
+    await expect(commit(many)).rejects.toThrow(/batch is too large/);
+    await expect(commit([{ rowId: "g_gone" }])).rejects.toThrow(/no longer on the list/);
   });
 
   it("MCP: bulk_review, then bulk_create two-step", async () => {

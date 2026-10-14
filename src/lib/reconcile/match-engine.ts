@@ -47,6 +47,7 @@ import { decryptStaged } from "@/lib/crypto/staging-envelope";
 import { applyRules, type TransactionRule } from "@/lib/auto-categorize";
 import { computePureActionPatch } from "@/lib/rules/execute";
 import { decryptRuleFields } from "@/lib/rules/crypto";
+import { makeMerchantResolver, recordRuleHits, rulesUseMerchant } from "@/lib/rules/merchant-context";
 import type { Action, ConditionGroup, RecordInvestmentOpAction } from "@/lib/rules/schema";
 import { invalidateUser } from "@/lib/mcp/user-tx-cache";
 import { validateSignVsCategoryById } from "@/lib/transactions/sign-category-invariant";
@@ -427,6 +428,8 @@ export async function computeReconcileForAccount(
   };
 
   const bankTransactions: Record<string, ReconcileBankSnapshot> = {};
+  // P8 stage 10: merchant / merchant-type rule conditions (read only).
+  const resolveMerchant = rulesUseMerchant(activeRules) ? await makeMerchantResolver(db, input.userId, input.dek) : null;
   for (const b of bankRows) {
     // Compute the rule-engine suggested category for this bank row's
     // payee. `null` when no rule matches OR the matched rule has no
@@ -443,6 +446,7 @@ export async function computeReconcileForAccount(
         ticker: b.tickerPlain,
         securityName: b.securityNamePlain,
         quantity: b.quantity,
+        ...(resolveMerchant ? (({ entityId, typeId }) => ({ merchantEntityId: entityId, merchantTypeId: typeId }))(resolveMerchant(b.payeePlain)) : {}),
       },
       activeRules,
     );
@@ -1038,6 +1042,8 @@ export async function applyRulesToBankRows(
   // Payee Studio import hint (B13): a materialized transaction gets the
   // canonical payee unless a rule renames it; the bank row keeps its text.
   const payeeHint = autoMaterialize ? await makePayeeHinter(db, userId, dek) : (p: string) => p;
+  const resolveMerchant = rulesUseMerchant(activeRules) ? await makeMerchantResolver(db, userId, dek) : null;
+  const ruleHits: number[] = [];
 
   // Load the bank rows + their account is_investment flag. Cross-tenant
   // 404 guard via `userId` on the SELECT.
@@ -1210,6 +1216,7 @@ export async function applyRulesToBankRows(
         ticker: tickerPlain,
         securityName: securityNamePlain,
         quantity: bank.quantity,
+        ...(resolveMerchant ? (({ entityId, typeId }) => ({ merchantEntityId: entityId, merchantTypeId: typeId }))(resolveMerchant(payeePlain)) : {}),
       },
       activeRules,
     );
@@ -1229,6 +1236,7 @@ export async function applyRulesToBankRows(
       continue;
     }
     rulesFired += 1;
+    if (autoMaterialize) ruleHits.push(match.rule.id);
 
     // Apply the rule's FULL pure-action patch (set_category + set_tags +
     // rename_payee + set_entered_currency), not just the primary action — so a
@@ -1498,6 +1506,7 @@ export async function applyRulesToBankRows(
     invalidateUser(userId);
   }
 
+  if (ruleHits.length) await recordRuleHits(db, userId, ruleHits);
   return { materialized, rulesFired, possibleDuplicates, perRow };
 }
 

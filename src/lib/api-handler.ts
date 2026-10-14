@@ -87,6 +87,11 @@ export interface ApiHandlerOptions<S extends ZodSchema | undefined> {
   fallbackMessage?: string;
   /** Method + path used for `logApiError` (defaults to request method + pathname). */
   logPath?: string;
+  /**
+   * P8: run the handler in the user's interface language, so server messages
+   * built with `st()` (@/lib/i18n/current) come back in that language.
+   */
+  locale?: boolean;
 }
 
 /** Handler return type: a plain value (enveloped/serialized) or a raw NextResponse. */
@@ -151,7 +156,10 @@ export function apiHandler<R, S extends ZodSchema | undefined = undefined>(
       }
 
       // ── 3. handler ──────────────────────────────────────────────────────
-      const result = await handler({ request, userId, dek, sessionId, body });
+      const run = () => Promise.resolve(handler({ request, userId, dek, sessionId, body }));
+      const result = options.locale
+        ? await (await import("@/lib/i18n/server")).runInUserLocale((await import("@/db")).db, userId, request.headers.get("accept-language"), run)
+        : await run();
 
       // A handler that returns its own NextResponse is always passed through
       // verbatim — this is how raw-mode routes emit their bare success body,

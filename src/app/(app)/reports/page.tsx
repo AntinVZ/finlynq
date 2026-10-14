@@ -63,7 +63,7 @@ import {
 
 // ── Types ──
 
-type GroupByOption = "category" | "group";
+type GroupByOption = "category" | "group" | "merchant_type";
 
 type TimeseriesPoint = {
   period: string;
@@ -80,6 +80,9 @@ type BreakdownItem = {
   // group-mode where one label aggregates several categories. Drives the
   // drill-through link into /transactions.
   categoryId?: number | null;
+  // P8 stage 2 — present only when grouped by merchant type (null = no type);
+  // drills into /transactions filtered by that type.
+  merchantTypeId?: number | null;
   total: number;
   count: number;
   periods: Record<string, number>;
@@ -517,6 +520,7 @@ export default function ReportsPage() {
                 <SelectContent>
                   <SelectItem value="category">Category</SelectItem>
                   <SelectItem value="group">Category Group</SelectItem>
+                  <SelectItem value="merchant_type">Merchant type</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -776,7 +780,7 @@ export default function ReportsPage() {
                       <div>
                         <CardTitle className="text-base">Income</CardTitle>
                         <CardDescription>
-                          {trendsData.income.length} {groupBy === "group" ? "groups" : "categories"} &middot; {formatCurrency(trendsData.totalIncome, displayCurrency)}
+                          {trendsData.income.length} {groupBy === "group" ? "groups" : groupBy === "merchant_type" ? "types" : "categories"} &middot; {formatCurrency(trendsData.totalIncome, displayCurrency)}
                         </CardDescription>
                       </div>
                     </div>
@@ -825,7 +829,7 @@ export default function ReportsPage() {
                       <div>
                         <CardTitle className="text-base">Expenses</CardTitle>
                         <CardDescription>
-                          {trendsData.expenses.length} {groupBy === "group" ? "groups" : "categories"} &middot; {formatCurrency(trendsData.totalExpenses, displayCurrency)}
+                          {trendsData.expenses.length} {groupBy === "group" ? "groups" : groupBy === "merchant_type" ? "types" : "categories"} &middot; {formatCurrency(trendsData.totalExpenses, displayCurrency)}
                         </CardDescription>
                       </div>
                     </div>
@@ -1599,6 +1603,14 @@ function FlatTable({
                         </Link>
                         <CategoryInsightsLink categoryId={item.categoryId} name={item.name} />
                       </span>
+                    ) : item.merchantTypeId != null ? (
+                      <Link
+                        href={buildTxDrillUrl({ merchantType: String(item.merchantTypeId), startDate, endDate })}
+                        className="hover:underline"
+                        title={`View ${item.name} transactions for this period`}
+                      >
+                        {item.name}
+                      </Link>
                     ) : (
                       item.name
                     )}

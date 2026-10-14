@@ -26,8 +26,8 @@ describe("suspicious names", () => {
   });
 
   it("the fragment reason for a two-word lower-case tail", () => {
-    expect(suspiciousReasons("Galia baluvana")[0].reason).toContain("уривок");
-    expect(suspiciousReasons("Netflix")[0].reason).toContain("одне слово");
+    expect(suspiciousReasons("Galia baluvana")[0].reason).toContain("fragment");
+    expect(suspiciousReasons("Netflix")[0].reason).toContain("single Latin word");
   });
 
   it("brand signs (type, website, requisites, two confirmed spellings) keep an entry out", () => {

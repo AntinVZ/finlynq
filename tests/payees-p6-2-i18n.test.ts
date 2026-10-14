@@ -3,7 +3,7 @@
  *
  * - every key is in both languages, no value is empty;
  * - both languages use the same `{placeholders}`;
- * - `studioT` fills placeholders and falls back to Ukrainian;
+ * - `studioT` fills placeholders and plurals (falls back to English since P8);
  * - the Studio's .tsx files keep no hardcoded UI words in JSX text nodes or
  *   in aria-label / title / placeholder attributes (sample strings that were
  *   moved into the dictionary).
@@ -36,12 +36,12 @@ describe("Payee Studio dictionary", () => {
   });
 
   it("groups keys by screen prefix", () => {
-    expect(Object.keys(uk).filter((k) => !/^[a-z]+\.[A-Za-z0-9_.]+$/.test(k))).toEqual([]);
+    expect(Object.keys(uk).filter((k) => !/^[a-z][A-Za-z]*\.[A-Za-z0-9_.]+$/.test(k))).toEqual([]);
   });
 
   it("fills placeholders and picks the language", () => {
     expect(studioT("en", "common.rows", { n: 12 })).toBe("12 rows");
-    expect(studioT("uk", "common.rows", { n: 12 })).toBe("12 рядк.");
+    expect(studioT("uk", "common.rows", { n: 12 })).toBe("12 рядків");
     expect(studioT("en", "common.cancel")).toBe("Cancel");
     expect(studioT("uk", "common.cancel")).toBe("Скасувати");
     expect(studioT("uk", "nope.missing" as StudioTextKey)).toBe("nope.missing");
@@ -49,7 +49,7 @@ describe("Payee Studio dictionary", () => {
 });
 
 describe("Payee Studio screens have no hardcoded UI text", () => {
-  const root = path.join(__dirname, "..", "src", "app", "(app)", "settings", "payees");
+  const root = path.join(__dirname, "..", "src", "app", "(app)", "merchants");
   const files: string[] = [];
   const walk = (dir: string) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

@@ -19,12 +19,18 @@
  *   bankOpsOff          (P6) built-in bank-operation patterns switched off
  *   language            (P6.2) the Studio's interface language, "uk" (default) or "en";
  *                       Finlynq has no app-wide language setting yet
+ *   requireDirectoryPayee (P8, default OFF) payee fields accept only a
+ *                       directory entry (or one added on the spot), not free text
+ *   packs               (P8 stage 7) built-in country packs turned on beyond UA ("eu")
+ *   customPacks         (P8 stage 7) country packs the person imported (JSON, no personal data)
  */
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { IDENTIFIER_KINDS, type IdentifierKind } from "./directory";
 import type { PayeeExecutor } from "./scan";
 import { buildVocabulary, type PayeeVocabulary } from "./type-words";
+import { currentLocale } from "@/lib/i18n/current";
+import { activePacks, BUILTIN_PACKS, countryPackSchema, CUSTOM_PACKS_MAX, packVocabulary, type CountryPack } from "./packs";
 
 export const PAYEE_SETTINGS_KEY = "payee_studio";
 
@@ -39,6 +45,9 @@ export type PayeeStudioSettings = {
   bankOpsExtra: string[];
   bankOpsOff: string[];
   language: StudioLanguage;
+  requireDirectoryPayee: boolean;
+  packs: string[];
+  customPacks: CountryPack[];
 };
 
 export const STUDIO_LANGUAGES = ["uk", "en"] as const;
@@ -61,6 +70,9 @@ export const DEFAULT_PAYEE_SETTINGS: PayeeStudioSettings = {
   bankOpsExtra: [],
   bankOpsOff: [],
   language: "uk",
+  requireDirectoryPayee: false,
+  packs: [],
+  customPacks: [],
 };
 
 /** A list of short words / phrases: trimmed, deduplicated, ≤ 60 chars each, ≤ VOCAB_LIST_MAX. */
@@ -78,8 +90,19 @@ function wordList(v: unknown): string[] {
 }
 
 /** The type words and bank-operation patterns these settings describe. */
-export function vocabularyOf(s: Pick<PayeeStudioSettings, "typeWordsExtra" | "typeWordsOff" | "bankOpsExtra" | "bankOpsOff">): PayeeVocabulary {
-  return buildVocabulary(s);
+export function vocabularyOf(s: Pick<PayeeStudioSettings, "typeWordsExtra" | "typeWordsOff" | "bankOpsExtra" | "bankOpsOff"> & Partial<Pick<PayeeStudioSettings, "packs" | "customPacks">>): PayeeVocabulary {
+  const fromPacks = packVocabulary(activePacks({ packs: s.packs, customPacks: s.customPacks }));
+  return buildVocabulary({ ...s, packTypeWords: fromPacks.typeWords, packBankOps: fromPacks.bankOperations });
+}
+
+/**
+ * P8 stage 7: `locale` / `country` of an exported dictionary — the request's
+ * interface language and the country of the last country pack in force
+ * (an imported one wins over UA).
+ */
+export function dictionaryMetaOf(s: Partial<Pick<PayeeStudioSettings, "packs" | "customPacks">>): { locale: string; country: string } {
+  const countries = activePacks({ packs: s.packs, customPacks: s.customPacks }).map((p) => p.country).filter((c) => /^[A-Z]{2}$/.test(c));
+  return { locale: currentLocale(), country: countries[countries.length - 1] ?? "UA" };
 }
 
 /** Merge a partial / untrusted value over the defaults. */
@@ -100,6 +123,16 @@ export function coercePayeeSettings(raw: unknown): PayeeStudioSettings {
     bankOpsExtra: wordList(v.bankOpsExtra),
     bankOpsOff: wordList(v.bankOpsOff),
     language: (STUDIO_LANGUAGES as readonly string[]).includes(String(v.language)) ? (v.language as StudioLanguage) : DEFAULT_PAYEE_SETTINGS.language,
+    requireDirectoryPayee: typeof v.requireDirectoryPayee === "boolean" ? v.requireDirectoryPayee : DEFAULT_PAYEE_SETTINGS.requireDirectoryPayee,
+    packs: Array.isArray(v.packs) ? [...new Set(v.packs.map(String))].filter((id) => id !== "ua" && BUILTIN_PACKS.some((p) => p.id === id)) : [],
+    customPacks: Array.isArray(v.customPacks)
+      ? v.customPacks
+          .map((p) => countryPackSchema.safeParse(p))
+          .filter((r) => r.success)
+          .map((r) => r.data!)
+          .filter((p, i, all) => !BUILTIN_PACKS.some((b) => b.id === p.id) && all.findIndex((x) => x.id === p.id) === i)
+          .slice(0, CUSTOM_PACKS_MAX)
+      : [],
   };
 }
 

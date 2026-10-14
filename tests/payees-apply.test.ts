@@ -122,7 +122,7 @@ describe("planPayeeApply (B23)", () => {
     expect(plan.total).toBe(0);
     expect(plan.diagnostics.nearMisses).toEqual([{ payee: "McDonalds Drive 12", entityId: 17, count: 10 }]);
     const why = explainEmptyApply(plan, () => "McDonald's");
-    expect(why).toContain("Немає aliases для 1 написань (10 рядків)");
+    expect(why).toContain("No aliases for 1 spelling (10 rows)");
     expect(why).toContain("«McDonalds Drive 12»");
   });
 
@@ -131,13 +131,13 @@ describe("planPayeeApply (B23)", () => {
     const matcher = buildPayeeMatcher([entity(17, "McDonald's")]);
     const p1 = await planPayeeApply({ executor: canonical, userId: "u", dek: null, matcher, tables: ["transactions"] });
     expect(p1.total).toBe(0);
-    expect(explainEmptyApply(p1, () => undefined)).toContain("19 рядків уже мають канонічну назву");
+    expect(explainEmptyApply(p1, () => undefined)).toContain("19 rows already have the canonical name");
 
     const dek = randomBytes(32);
     const locked = fakeLedger(ledger((id) => encryptField(dek, mcd(id))));
     const p2 = await planPayeeApply({ executor: locked, userId: "u", dek: null, matcher, tables: ["transactions"] });
     expect(p2.total).toBe(0);
     expect(p2.diagnostics.undecryptable).toBe(5000);
-    expect(explainEmptyApply(p2, () => undefined)).toContain("не вдалося розшифрувати");
+    expect(explainEmptyApply(p2, () => undefined)).toContain("couldn't be decrypted");
   });
 });

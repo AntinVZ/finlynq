@@ -83,7 +83,7 @@ describeDb("Payee Studio P6.2 type hints (seeded DB)", () => {
     const preview = await op(body, true);
     const names = preview.typed.map((t: { name: string }) => t.name).sort();
     expect(names).toEqual(["Pharmacy Plus", "Аптека Доброго Дня"]);
-    expect(preview.typed.find((t: { name: string }) => t.name === "Аптека Доброго Дня")?.via).toBe("назва «Аптека Доброго Дня»");
+    expect(preview.typed.find((t: { name: string }) => t.name === "Аптека Доброго Дня")?.via).toBe("name “Аптека Доброго Дня”");
     expect(preview.skipped).toEqual([expect.objectContaining({ name: "Епіцентр", reason: expect.stringContaining("alias “Apteka Epitsentr”") })]);
     const done = await op(body);
     const d = await dir();
@@ -99,7 +99,7 @@ describeDb("Payee Studio P6.2 type hints (seeded DB)", () => {
     expect(fuel.typed.map((t: { name: string }) => t.name)).toEqual(["AZS OKKO 51 KYIV"]);
     const cafe = await op({ op: "set_merchant_type", merchantType: "Кафе", typeWord: "кафе" }, true);
     expect(cafe.typed).toEqual([]);
-    expect(cafe.skipped[0]).toMatchObject({ name: "Кафе Дача", reason: expect.stringContaining("змішаний") });
+    expect(cafe.skipped[0]).toMatchObject({ name: "Кафе Дача", reason: expect.stringContaining("mixed:") });
   });
 
   it("the overview and MCP show a weak hint for an alias match and mark mixed entries", async () => {
@@ -110,14 +110,14 @@ describeDb("Payee Studio P6.2 type hints (seeded DB)", () => {
     const by = (n: string) => o.entities.find((e) => e.name === n)!;
     expect(by("Епіцентр").merchantTypeHint).toMatchObject({ name: "Аптеки", strength: "weak", field: "alias" });
     expect(by("AZS OKKO 51 KYIV").merchantTypeHint).toMatchObject({ name: "Пальне (АЗС)", strength: "strong" });
-    expect(by("Кафе Дача").merchantTypeMixed).toContain("змішаний");
+    expect(by("Кафе Дача").merchantTypeMixed).toContain("mixed:");
     const call = await tools();
     const list = await call("manage_payees", { op: "list", view: "entities" });
     const e = list.entities.find((x: { name: string }) => x.name === "Епіцентр");
     expect(e.merchant_type_hint).toContain("WEAK");
     expect(e.merchant_type_hint).toContain("Apteka Epitsentr");
     const p = await call("manage_payees", { op: "set_merchant_type", merchant_type: "Аптеки", type_word: "аптека" });
-    expect(p.merchantTypeChanges.map((c: { matched_by: string }) => c.matched_by)).toContain("назва «Аптека Доброго Дня»");
+    expect(p.merchantTypeChanges.map((c: { matched_by: string }) => c.matched_by)).toContain("name “Аптека Доброго Дня”");
     expect(p.merchantTypeSkipped[0].name).toBe("Епіцентр");
   });
 

@@ -49,6 +49,21 @@ const AccountCondition = z.object({
   accountId: z.number().int().positive(),
 });
 
+// P8 stage 10: a directory entry (merchant) or a merchant type. The matcher
+// resolves the row's payee through the Merchants directory (the same aliases
+// the import hint uses); an unresolved payee matches neither `is` nor `is_not`.
+const MerchantCondition = z.object({
+  field: z.literal("merchant"),
+  op: SetOp,
+  entityId: z.number().int().positive(),
+});
+
+const MerchantTypeCondition = z.object({
+  field: z.literal("merchant_type"),
+  op: SetOp,
+  typeId: z.number().int().positive(),
+});
+
 const CurrencyCondition = z.object({
   field: z.literal("currency"),
   op: SetOp,
@@ -126,6 +141,8 @@ export const Condition = z.union([
   SecurityNameCondition,
   QuantityConditionSingle,
   QuantityConditionBetween,
+  MerchantCondition,
+  MerchantTypeCondition,
 ]);
 export type Condition = z.infer<typeof Condition>;
 
@@ -258,6 +275,8 @@ export const CONDITION_DEFAULTS: {
   ticker: () => Extract<Condition, { field: "ticker" }>;
   security_name: () => Extract<Condition, { field: "security_name" }>;
   quantity: () => Extract<Condition, { field: "quantity" }>;
+  merchant: (entityId: number) => Extract<Condition, { field: "merchant" }>;
+  merchant_type: (typeId: number) => Extract<Condition, { field: "merchant_type" }>;
 } = {
   payee: () => ({ field: "payee", op: "contains", value: "" }),
   note: () => ({ field: "note", op: "contains", value: "" }),
@@ -269,6 +288,8 @@ export const CONDITION_DEFAULTS: {
   ticker: () => ({ field: "ticker", op: "contains", value: "" }),
   security_name: () => ({ field: "security_name", op: "contains", value: "" }),
   quantity: () => ({ field: "quantity", op: "gt", value: 0 }),
+  merchant: (entityId: number) => ({ field: "merchant", op: "is", entityId }),
+  merchant_type: (typeId: number) => ({ field: "merchant_type", op: "is", typeId }),
 };
 
 /** Build a fully-typed default `Condition` when the editor switches `field`. */
@@ -276,9 +297,8 @@ export function defaultConditionForField(
   field: ConditionField,
   accountId = 0,
 ): Condition {
-  return field === "account"
-    ? CONDITION_DEFAULTS.account(accountId)
-    : CONDITION_DEFAULTS[field]();
+  if (field === "account" || field === "merchant" || field === "merchant_type") return CONDITION_DEFAULTS[field](accountId);
+  return CONDITION_DEFAULTS[field]();
 }
 
 /**

@@ -32,6 +32,10 @@ export interface TransactionInput {
   ticker?: string | null;
   securityName?: string | null;
   quantity?: number | null;
+  /** P8 stage 10: the directory entry / merchant type the payee resolves to
+   *  (filled by `src/lib/rules/merchant-context.ts`; absent = not resolved). */
+  merchantEntityId?: number | null;
+  merchantTypeId?: number | null;
 }
 
 /**
@@ -131,6 +135,13 @@ export function evalCondition(txn: TransactionInput, cond: Condition): boolean {
       const q = txn.quantity ?? 0;
       if (cond.op === "between") return q >= cond.min && q <= cond.max;
       return evalNumberOp(q, cond.op, cond.value);
+    }
+    case "merchant":
+    case "merchant_type": {
+      const v = cond.field === "merchant" ? txn.merchantEntityId : txn.merchantTypeId;
+      // Unresolved payee: neither `is` nor `is_not` — the rule can't know.
+      if (v == null) return false;
+      return evalSetOp(v, cond.op, cond.field === "merchant" ? cond.entityId : cond.typeId);
     }
     case "currency": {
       const a = (txn.enteredCurrency ?? "").toUpperCase();

@@ -20,7 +20,7 @@ import { db } from "@/db";
 import { approveProposals, listProposals, rejectProposals } from "@/lib/payees/proposals";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load proposals" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load proposals" }, async ({ request, userId, dek }) => {
   const raw = request.nextUrl.searchParams.get("status");
   const status = raw === "approved" || raw === "rejected" || raw === "all" ? raw : "draft";
   return NextResponse.json({ proposals: await listProposals(db, userId, dek, { status, limit: 1000 }) });
@@ -32,7 +32,7 @@ const postSchema = z.discriminatedUnion("action", [
 ]);
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Proposal update failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Proposal update failed" },
   async ({ userId, dek, body }) => {
     if (body.action === "reject") return NextResponse.json({ rejected: await rejectProposals(db, userId, body.ids) });
     const res = await approveProposals({ executor: db, userId, dek: dek!, ids: body.ids, actor: "web", dryRun: body.dryRun === true });

@@ -25,6 +25,7 @@ import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { readStoredPayees, writeStoredPayees, type PayeeBatchJournal, type RewriteTable } from "./batches";
 import type { PayeeMatcher } from "./directory";
 import { caseOnlyChange, payeeMatchKey } from "./match-key";
+import { st } from "@/lib/i18n/current";
 
 /** Most rows one apply may rewrite (undo data grows with it). */
 export const PAYEE_APPLY_MAX_ROWS = 20_000;
@@ -197,15 +198,15 @@ export function explainEmptyApply(plan: Pick<ApplyPlan, "total" | "conflicts" | 
     const who = [...new Set(d.nearMisses.map((n) => names(n.entityId)).filter(Boolean))].slice(0, 2).map((n) => `«${n}»`).join(", ");
     const rows = d.nearMisses.reduce((a, n) => a + n.count, 0);
     parts.push(
-      `Немає aliases для ${d.nearMisses.length} написань (${rows} рядків), схожих на ${who}, наприклад ${sample}. Додайте їх як aliases або злийте через «Merge».`,
+      st("srv.apply.nearMisses", { n: d.nearMisses.length, rows, who, sample }),
     );
   }
-  if (d.alreadyCanonical) parts.push(`${d.alreadyCanonical} рядків уже мають канонічну назву.`);
-  if (plan.conflicts.length) parts.push(`${plan.conflicts.length} написань збігаються з кількома платниками і пропущені.`);
-  if (d.undecryptable) parts.push(`${d.undecryptable} рядків не вдалося розшифрувати (немає ключа або інший ключ).`);
-  if (plan.truncated) parts.push("Сканування зупинилося на ліміті рядків.");
-  if (!parts.length) parts.push(d.scanned ? `Жоден із ${d.scanned} переглянутих рядків не збігається з aliases вибраних платників.` : "Немає рядків для перевірки.");
-  return `Нічого не перейменовано. ${parts.join(" ")}`;
+  if (d.alreadyCanonical) parts.push(st("srv.apply.alreadyCanonical", { n: d.alreadyCanonical }));
+  if (plan.conflicts.length) parts.push(st("srv.apply.conflicts", { n: plan.conflicts.length }));
+  if (d.undecryptable) parts.push(st("srv.apply.undecryptable", { n: d.undecryptable }));
+  if (plan.truncated) parts.push(st("srv.apply.truncated"));
+  if (!parts.length) parts.push(d.scanned ? st("srv.apply.noMatch", { n: d.scanned }) : st("srv.apply.noRows"));
+  return st("srv.apply.nothingRenamed", { details: parts.join(" ") });
 }
 
 /** A short stable fingerprint of a plan's rows (binds MCP confirmation tokens). */

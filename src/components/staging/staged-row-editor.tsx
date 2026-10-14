@@ -18,6 +18,7 @@
  * the server when payee changes (load-bearing per CLAUDE.md).
  */
 
+import { PayeePicker } from "@/components/payees/payee-picker";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Select,
@@ -241,17 +242,24 @@ export function StagedRowEditor({
           <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
             Payee <Spinner shown={savingField === "payee"} />
           </Label>
-          <Input
-            value={local.payee ?? ""}
-            onChange={(e) => setLocal({ ...local, payee: e.target.value })}
-            onBlur={() => {
+          {/* P8: the shared payee field — «Рекомендовано: X» when the bank's
+              spelling resolves to a directory entry; saved when focus leaves it. */}
+          <div
+            onBlur={(e) => {
+              if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
               if (local.payee !== row.payee) {
                 void save("payee", { payee: local.payee ?? "" });
               }
             }}
-            className="h-8"
-            placeholder="Merchant or counterparty"
-          />
+          >
+            <PayeePicker
+              value={local.payee ?? ""}
+              onChange={(v) => setLocal({ ...local, payee: v })}
+              ariaLabel="Payee"
+              inputClassName="h-8"
+              placeholder="Merchant or counterparty"
+            />
+          </div>
         </div>
       </div>
 

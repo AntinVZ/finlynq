@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PayeePicker } from "@/components/payees/payee-picker";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -475,11 +476,7 @@ function SwapCreateForm() {
               Payee{" "}
               <span className="text-muted-foreground text-xs">(optional)</span>
             </Label>
-            <Input
-              value={payee}
-              onChange={(e) => setPayee(e.target.value)}
-              placeholder="Broker name"
-            />
+            <PayeePicker value={payee} onChange={setPayee} placeholder="Broker name" />
           </div>
 
           <div className="space-y-1.5">

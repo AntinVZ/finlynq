@@ -20,7 +20,7 @@ import { loadPayeeOverview } from "@/lib/payees/service";
 import { BULK_DEFAULT_THRESHOLD, BULK_MAX, buildBulkCandidates, commitBulkRegistry } from "@/lib/payees/bulk-registry";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load candidates" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load candidates" }, async ({ request, userId, dek }) => {
   const raw = Number(request.nextUrl.searchParams.get("threshold") ?? "");
   const threshold = Number.isFinite(raw) && raw > 0 && raw <= 1 ? raw : BULK_DEFAULT_THRESHOLD;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
@@ -35,7 +35,7 @@ const postSchema = z.object({
 });
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Bulk fill failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Bulk fill failed" },
   async ({ userId, dek, body }) => {
     const overview = await loadPayeeOverview({ executor: db, userId, dek });
     const result = await commitBulkRegistry({ executor: db, userId, dek: dek!, overview, items: body.items, actor: "web", dryRun: body.dryRun === true });

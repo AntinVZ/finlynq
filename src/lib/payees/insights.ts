@@ -28,6 +28,7 @@ import type { PayeeMatcher } from "./directory";
 import { bankOperationOf, type PayeeVocabulary } from "./type-words";
 import { EMPTY_OWN_MATCHER, type OwnMatcher } from "./own-accounts";
 import { formatMerchantType, merchantTypeFilter, type MerchantTypeRef } from "./merchant-types";
+import { st } from "@/lib/i18n/current";
 
 export type Counterparty = {
   /** `e:<entityId>` or `k:<matching key>`. */
@@ -258,7 +259,7 @@ export async function computePayeeInsights(opts: {
   }));
   series.push({
     id: "other",
-    name: "Everyone else",
+    name: st("srv.insights.everyoneElse"),
     values: windowMonths.map((mo) =>
       round2(inWindow.filter((c) => !top5Ids.has(c.acc.id)).reduce((n, c) => n + opts.convert([...(c.acc.months.get(mo)?.values() ?? [])]), 0)),
     ),
@@ -301,7 +302,7 @@ export async function computePayeeInsights(opts: {
     const m = new Map<string, { type: string; spend: number; transactions: number; counterparties: number }>();
     for (const c of active) {
       const t = typeOf(c);
-      const label = t ? (opts.groupByMerchantType === "group" ? t.group : formatMerchantType(t)) : "Без типу";
+      const label = t ? (opts.groupByMerchantType === "group" ? t.group : formatMerchantType(t)) : st("srv.insights.untyped");
       const r = m.get(label) ?? { type: label, spend: 0, transactions: 0, counterparties: 0 };
       r.spend += c.window.spend;
       r.transactions += c.window.count;

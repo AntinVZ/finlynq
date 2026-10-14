@@ -3,13 +3,16 @@
  * shared package of merchant names.
  *
  * File format (JSON, or the same structure as YAML):
- *   { format: "finlynq-payee-dictionary", version: 1, exportedAt,
+ *   { format: "finlynq-payee-dictionary", version: 2, exportedAt, locale, country,
  *     entries: [{ name, type, aliases: [{ pattern, mode }],
  *                 identifiers: [{ kind, value }], website? }] }
  * P5c: `website` is exported (merchants only) and imported (set when the
  * matching entry has none); logos are never exported.
  * P6: `merchantType: { group, name }` is exported and imported (set when the
  * matching entry has none; a type missing from the user's list is added).
+ * P8 stage 7 — v2: `locale` (the language the names are in, e.g. "uk") and
+ * `country` (ISO code, "UA") so shared dictionaries can be picked per
+ * country; v1 files still import (no locale / country).
  *
  * EXPORT keeps only what is safe to share: entities, their aliases and types,
  * and public identifiers of legal entities (EDRPOU; an IBAN only for
@@ -32,9 +35,10 @@ import { ALIAS_MODES, IDENTIFIER_KINDS, normalizeIdentifier, validateAlias, vali
 import type { SingleOp } from "./ops";
 import { normalizeWebsite } from "./profile";
 import { parseMerchantTypeText, validateMerchantTypeRef, type MerchantType, type MerchantTypeRef } from "./merchant-types";
+import { st } from "@/lib/i18n/current";
 
 export const DICTIONARY_FORMAT = "finlynq-payee-dictionary";
-export const DICTIONARY_VERSION = 1;
+export const DICTIONARY_VERSION = 2;
 export const DICTIONARY_MAX_ENTRIES = 5_000;
 
 export type DictionaryEntry = {
@@ -47,7 +51,7 @@ export type DictionaryEntry = {
   /** P6: the merchant type, group → position. */
   merchantType?: MerchantTypeRef;
 };
-export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; entries: DictionaryEntry[] };
+export type PayeeDictionary = { format: typeof DICTIONARY_FORMAT; version: number; exportedAt: string; locale?: string; country?: string; entries: DictionaryEntry[] };
 
 const PERSON_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 const IBAN_SHAREABLE_TYPES = new Set<PayeeType>(["company", "bank", "government"]);
@@ -57,6 +61,7 @@ export function buildDictionary(
   entities: PayeeEntity[],
   now = new Date(),
   merchantTypes: readonly MerchantType[] = [],
+  meta: { locale?: string; country?: string } = {},
 ): PayeeDictionary & { skipped: { people: number; aliases: number; identifiers: number } } {
   const skipped = { people: 0, aliases: 0, identifiers: 0 };
   const entries: DictionaryEntry[] = [];
@@ -83,21 +88,21 @@ export function buildDictionary(
     entries.push({ name: e.name, type: e.type, aliases, identifiers, ...(e.website ? { website: e.website } : {}), ...(mt ? { merchantType: { group: mt.group, name: mt.name } } : {}) });
   }
   entries.sort((a, b) => a.name.localeCompare(b.name));
-  return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), entries, skipped };
+  return { format: DICTIONARY_FORMAT, version: DICTIONARY_VERSION, exportedAt: now.toISOString(), locale: meta.locale ?? "uk", country: meta.country ?? "UA", entries, skipped };
 }
 
 // ─── serialization ──────────────────────────────────────────────────────────
 
 export function dictionaryToJson(d: PayeeDictionary): string {
-  const { format, version, exportedAt, entries } = d;
-  return JSON.stringify({ format, version, exportedAt, entries }, null, 2) + "\n";
+  const { format, version, exportedAt, locale, country, entries } = d;
+  return JSON.stringify({ format, version, exportedAt, ...(locale ? { locale } : {}), ...(country ? { country } : {}), entries }, null, 2) + "\n";
 }
 
 const q = (s: string) => JSON.stringify(s);
 
 /** Block-style YAML; every string double-quoted (valid YAML 1.2). */
 export function dictionaryToYaml(d: PayeeDictionary): string {
-  const out = [`format: ${q(d.format)}`, `version: ${d.version}`, `exportedAt: ${q(d.exportedAt)}`, "entries:"];
+  const out = [`format: ${q(d.format)}`, `version: ${d.version}`, `exportedAt: ${q(d.exportedAt)}`, ...(d.locale ? [`locale: ${q(d.locale)}`] : []), ...(d.country ? [`country: ${q(d.country)}`] : []), "entries:"];
   if (!d.entries.length) out[out.length - 1] = "entries: []";
   for (const e of d.entries) {
     out.push(`  - name: ${q(e.name)}`, `    type: ${q(e.type)}`);
@@ -122,7 +127,7 @@ export function parseSimpleYaml(text: string): unknown {
   text.split(/\r?\n/).forEach((raw, i) => {
     const noComment = stripComment(raw);
     if (!noComment.trim()) return;
-    if (/\t/.test(raw.slice(0, raw.length - raw.trimStart().length))) throw new Error(`YAML line ${i + 1}: tabs are not allowed for indentation.`);
+    if (/\t/.test(raw.slice(0, raw.length - raw.trimStart().length))) throw new Error(st("srv.dictionary.yamlTabs", { line: i + 1 }));
     lines.push({ indent: raw.length - raw.trimStart().length, text: noComment.trim(), no: i + 1 });
   });
   let pos = 0;
@@ -133,11 +138,11 @@ export function parseSimpleYaml(text: string): unknown {
       try {
         return JSON.parse(v);
       } catch {
-        throw new Error(`YAML line ${no}: bad quoted string.`);
+        throw new Error(st("srv.dictionary.yamlBadQuote", { line: no }));
       }
     }
     if (v.startsWith("'")) {
-      if (!v.endsWith("'") || v.length < 2) throw new Error(`YAML line ${no}: bad quoted string.`);
+      if (!v.endsWith("'") || v.length < 2) throw new Error(st("srv.dictionary.yamlBadQuote", { line: no }));
       return v.slice(1, -1).replace(/''/g, "'");
     }
     if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
@@ -147,7 +152,7 @@ export function parseSimpleYaml(text: string): unknown {
   };
   const keyValue = (t: string, no: number): [string, string] => {
     const m = /^("(?:[^"\\]|\\.)*"|'[^']*'|[^:]+?)\s*:(?:\s+(.*))?$/.exec(t);
-    if (!m) throw new Error(`YAML line ${no}: expected "key: value".`);
+    if (!m) throw new Error(st("srv.dictionary.yamlExpectedKey", { line: no }));
     return [String(scalar(m[1], no)), m[2] ?? ""];
   };
   const block = (indent: number): unknown => {
@@ -179,11 +184,11 @@ export function parseSimpleYaml(text: string): unknown {
       if (v) obj[k] = scalar(v, l.no);
       else obj[k] = pos < lines.length && lines[pos].indent > indent ? block(lines[pos].indent) : pos < lines.length && lines[pos].indent === indent && lines[pos].text.startsWith("- ") ? block(indent) : null;
     }
-    if (pos < lines.length && lines[pos].indent > indent) throw new Error(`YAML line ${lines[pos].no}: unexpected indentation.`);
+    if (pos < lines.length && lines[pos].indent > indent) throw new Error(st("srv.dictionary.yamlIndent", { line: lines[pos].no }));
     return obj;
   };
   const value = block(lines.length ? lines[0].indent : 0);
-  if (pos < lines.length) throw new Error(`YAML line ${lines[pos].no}: unexpected content.`);
+  if (pos < lines.length) throw new Error(st("srv.dictionary.yamlContent", { line: lines[pos].no }));
   return value;
 }
 
@@ -207,6 +212,8 @@ const fileSchema = z.object({
   format: z.literal(DICTIONARY_FORMAT),
   version: z.number().int(),
   exportedAt: z.string().optional(),
+  locale: z.string().max(20).optional(),
+  country: z.string().max(3).optional(),
   entries: z
     .array(
       z.object({
@@ -222,20 +229,20 @@ const fileSchema = z.object({
 });
 
 /** Parse + validate a dictionary file (JSON or YAML). Entry problems come back per entry. */
-export function parseDictionary(text: string): { entries: DictionaryEntry[]; errors: Array<{ index: number; error: string }> } {
+export function parseDictionary(text: string): { entries: DictionaryEntry[]; errors: Array<{ index: number; error: string }>; locale?: string; country?: string } {
   const trimmed = text.trim();
   let raw: unknown;
   try {
     raw = trimmed.startsWith("{") ? JSON.parse(trimmed) : parseSimpleYaml(text);
   } catch (e) {
-    throw new Error(`Couldn't read the file: ${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(st("srv.dictionary.unreadable", { error: e instanceof Error ? e.message : String(e) }));
   }
   const parsed = fileSchema.safeParse(raw);
   if (!parsed.success) {
     const formatOk = raw && typeof raw === "object" && (raw as { format?: unknown }).format === DICTIONARY_FORMAT;
-    throw new Error(formatOk ? `Not a valid payee dictionary: ${parsed.error.issues[0]?.message ?? "bad structure"}.` : `Not a payee dictionary (expected format "${DICTIONARY_FORMAT}").`);
+    throw new Error(formatOk ? st("srv.dictionary.invalid", { error: parsed.error.issues[0]?.message ?? st("srv.dictionary.badStructure") }) : st("srv.dictionary.notDictionary", { format: DICTIONARY_FORMAT }));
   }
-  if (parsed.data.version > DICTIONARY_VERSION) throw new Error(`This dictionary is version ${parsed.data.version}; this Finlynq reads up to version ${DICTIONARY_VERSION}.`);
+  if (parsed.data.version > DICTIONARY_VERSION) throw new Error(st("srv.dictionary.version", { version: parsed.data.version, max: DICTIONARY_VERSION }));
   const entries: DictionaryEntry[] = [];
   const errors: Array<{ index: number; error: string }> = [];
   parsed.data.entries.forEach((e, index) => {
@@ -250,7 +257,7 @@ export function parseDictionary(text: string): { entries: DictionaryEntry[]; err
       }
       const identifiers: DictionaryEntry["identifiers"] = [];
       for (const i of e.identifiers ?? []) {
-        if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new Error(`unknown identifier kind "${i.kind}"`);
+        if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new Error(st("srv.dictionary.unknownKind", { kind: i.kind }));
         identifiers.push({ kind: i.kind as IdentifierKind, value: normalizeIdentifier(i.kind as IdentifierKind, String(i.value)) });
       }
       const website = e.website?.trim() && type !== "person" && type !== "sole_proprietor" ? normalizeWebsite(e.website) : undefined;
@@ -264,7 +271,7 @@ export function parseDictionary(text: string): { entries: DictionaryEntry[]; err
       errors.push({ index, error: err instanceof Error ? err.message : String(err) });
     }
   });
-  return { entries, errors };
+  return { entries, errors, ...(parsed.data.locale ? { locale: parsed.data.locale } : {}), ...(parsed.data.country ? { country: parsed.data.country } : {}) };
 }
 
 // ─── import plan ────────────────────────────────────────────────────────────
@@ -305,17 +312,17 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
     if (res === "skip") return { ...base, action: "skip" };
     if (res && res.startsWith("merge:")) {
       target = directory.find((e) => e.id === Number(res.slice(6))) ?? null;
-      if (!target) return { ...base, action: "conflict", note: "The chosen entry no longer exists." };
+      if (!target) return { ...base, action: "conflict", note: st("srv.dictionary.targetGone") };
     } else if (res === "create") {
-      if (hits.size) return { ...base, action: "conflict", note: `“${candidates[0].name}” already owns this name or an alias; merge into it or skip.` };
+      if (hits.size) return { ...base, action: "conflict", note: st("srv.dictionary.nameOwned", { name: candidates[0].name }) };
     } else if (hits.size === 1) {
       target = [...hits.values()][0];
     } else if (hits.size > 1) {
-      return { ...base, action: "conflict", note: `Its name and aliases belong to ${hits.size} different entries; choose one or skip.` };
+      return { ...base, action: "conflict", note: st("srv.dictionary.manyOwners", { n: hits.size }) };
     }
     // A second file entry with the same name as an earlier one in this file.
     const nameKey = payeeMatchKey(entry.name);
-    if (!target && plannedKeys.has(nameKey)) return { ...base, action: "conflict", note: `Duplicate of entry #${plannedKeys.get(nameKey)! + 1} in this file.` };
+    if (!target && plannedKeys.has(nameKey)) return { ...base, action: "conflict", note: st("srv.dictionary.duplicate", { n: plannedKeys.get(nameKey)! + 1 }) };
     if (!target) plannedKeys.set(nameKey, index);
     const known = target ? target.aliases : [];
     const newAliases = entry.aliases.filter((a) => {
@@ -342,7 +349,7 @@ export function planDictionaryImport(entries: DictionaryEntry[], directory: Paye
         newIdentifiers,
         newWebsite,
         newMerchantType,
-        note: target.type !== entry.type ? `Type differs (directory: ${target.type}); the directory keeps its type.` : null,
+        note: target.type !== entry.type ? st("srv.dictionary.typeDiffers", { type: target.type }) : null,
       };
     }
     return { ...base, action: "create", newAliases, newIdentifiers, newWebsite: entry.website ?? null, newMerchantType: entry.merchantType ?? null };

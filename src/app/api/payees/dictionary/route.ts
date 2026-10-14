@@ -23,12 +23,13 @@ import { db } from "@/db";
 import { loadDirectory } from "@/lib/payees/directory";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "@/lib/payees/dictionary";
 import { loadMerchantTypes } from "@/lib/payees/merchant-types";
+import { dictionaryMetaOf, getPayeeSettings } from "@/lib/payees/settings";
 import { executePayeeOp } from "@/lib/payees/ops";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Export failed" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Export failed" }, async ({ request, userId, dek }) => {
   const yaml = request.nextUrl.searchParams.get("format") === "yaml";
-  const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
+  const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId), dictionaryMetaOf(await getPayeeSettings(db, userId)));
   const date = dict.exportedAt.slice(0, 10);
   return new NextResponse(yaml ? dictionaryToYaml(dict) : dictionaryToJson(dict), {
     headers: {
@@ -48,7 +49,7 @@ const postSchema = z.object({
 });
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Import failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Import failed" },
   async ({ userId, dek, body }) => {
     let parsed: ReturnType<typeof parseDictionary>;
     try {

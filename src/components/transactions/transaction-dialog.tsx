@@ -70,7 +70,7 @@ import {
   type Holding as RuleEditorHolding,
 } from "@/components/rules/rule-editor-dialog";
 import { buildPayeeCategoryRule } from "@/lib/rules/build-payee-category-rule";
-import { PayeeCombobox } from "@/components/payees/payee-combobox";
+import { PayeePicker, type PayeeFieldState } from "@/components/payees/payee-picker";
 import { CounterpartyRequisites } from "@/components/payees/counterparty-requisites";
 import { parseSaveError } from "@/lib/save-error";
 import type { Condition, Action } from "@/lib/rules/schema";
@@ -342,6 +342,8 @@ export function TransactionDialog({
   // "Create Transaction" fired two POSTs and booked the transaction twice
   // (review 2026-07-30, finding #10).
   const [saving, setSaving] = useState(false);
+  // P8: «Вимагати платника з довідника» — the picker says whether the payee is a directory entry.
+  const [payeeState, setPayeeState] = useState<PayeeFieldState | null>(null);
   // FINLYNQ-176 — when an edit is lot-locked, hold the reallocation preview so
   // the user can confirm proceeding (reallocate dependents) instead of failing.
   const [reallocPreview, setReallocPreview] = useState<LotReallocationPreview | null>(null);
@@ -740,6 +742,10 @@ export function TransactionDialog({
 
     if (!form.accountId) {
       setSubmitError({ message: "Pick an account" });
+      return;
+    }
+    if (payeeState?.required && form.payee.trim() && !payeeState.fromDirectory) {
+      setSubmitError({ message: "Pick a payee from the directory or add this one (Merchants settings require it)." });
       return;
     }
     if (!form.categoryId) {
@@ -1322,7 +1328,7 @@ export function TransactionDialog({
             <div className="grid grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <Label>Payee</Label>
-                <PayeeCombobox value={form.payee} onChange={(v) => setForm((f) => ({ ...f, payee: v }))} />
+                <PayeePicker value={form.payee} onChange={(v) => setForm((f) => ({ ...f, payee: v }))} onStateChange={setPayeeState} />
               </div>
               <div className="space-y-1.5">
                 <Label>Currency</Label>

@@ -84,13 +84,13 @@ describeDb("Payee Studio P6.2 own accounts and cards (seeded DB)", () => {
   it("adds, edits and removes own accounts as undoable batches; a full card number is refused", async () => {
     const p = await addMine();
     expect((await op({ op: "own_accounts", add: [{ card: "5678" }] }, true)).ownAccounts.added).toHaveLength(1);
-    expect((await op({ op: "own_accounts", add: [{ card: "1234" }] }, true)).warnings.join(" ")).toMatch(/уже є у списку/);
+    expect((await op({ op: "own_accounts", add: [{ card: "1234" }] }, true)).warnings.join(" ")).toMatch(/already on the list/);
     expect(p.ownAccounts.added).toHaveLength(2);
     const list = await own();
     expect(list.map((a) => a.cardLast4 ?? a.iban)).toEqual(["1234", OWN_IBAN]);
     expect(list[0]).toMatchObject({ bank: "monobank", currency: "UAH", owner: "me" });
-    await expect(op({ op: "own_accounts", add: [{ card: "4149 4393 1234 5678" }] })).rejects.toThrow(/Повний номер картки/);
-    await expect(op({ op: "own_accounts", add: [{ card: "4149439312345678" }] })).rejects.toThrow(/Повний номер картки/);
+    await expect(op({ op: "own_accounts", add: [{ card: "4149 4393 1234 5678" }] })).rejects.toThrow(/full card number/i);
+    await expect(op({ op: "own_accounts", add: [{ card: "4149439312345678" }] })).rejects.toThrow(/full card number/i);
     const { db } = await import("@/db");
     const raw = (await db.execute(sql`SELECT iban, card_last4, bank FROM payee_own_accounts WHERE user_id = ${seed.userId}`)) as unknown as { rows: Array<Record<string, string | null>> };
     expect(JSON.stringify(raw.rows)).not.toContain("1234");
@@ -124,12 +124,12 @@ describeDb("Payee Studio P6.2 own accounts and cards (seeded DB)", () => {
     const { findWhose } = await import("@/lib/payees/whose");
     const w = await findWhose({ executor: db, userId: seed.userId, dek: TEST_DEK, identifier: "1234" });
     expect(w!.own).toMatchObject({ owner: "me", bank: "monobank" });
-    expect(w!.hints[0]).toContain("ваш");
+    expect(w!.hints[0]).toContain("your own account");
     const i = await findWhose({ executor: db, userId: seed.userId, dek: TEST_DEK, identifier: OWN_IBAN });
     expect(i!.own).toMatchObject({ owner: "spouse" });
     const call = await tools();
     const m = await call("manage_payees", { op: "whose", identifier: "****1234" });
-    expect(m.yourAccount).toContain("ваш");
+    expect(m.yourAccount).toContain("your account");
   });
 
   it("transfers between own accounts stay out of the spend tops (like bank operations)", async () => {
@@ -164,7 +164,7 @@ describeDb("Payee Studio P6.2 own accounts and cards (seeded DB)", () => {
   it("a new entry with an own card or IBAN gets «looks like your account»", async () => {
     await addMine();
     const p = await op({ op: "create", name: "Дружина", identifiers: [{ kind: "iban", value: OWN_IBAN }], apply: false }, true);
-    expect(p.warnings.join(" ")).toMatch(/схоже на ваш рахунок/i);
+    expect(p.warnings.join(" ")).toMatch(/looks like your own account/i);
     const q = await op({ op: "create", name: "Магазин", identifiers: [{ kind: "card_last4", value: "9999" }], apply: false }, true);
     expect(q.warnings.join(" ")).not.toMatch(/ваш рахунок/i);
   });
@@ -179,6 +179,6 @@ describeDb("Payee Studio P6.2 own accounts and cards (seeded DB)", () => {
     const list = await call("manage_payees", { op: "own_accounts" });
     expect(list.own_accounts[0]).toMatchObject({ card: "•••• 4321", bank: "monobank", owner: "me" });
     const bad = await call("manage_payees", { op: "own_accounts_edit", add: [{ card: "4149439312345678" }] });
-    expect(bad.error).toMatch(/Повний номер картки/);
+    expect(bad.error).toMatch(/full card number/i);
   });
 });

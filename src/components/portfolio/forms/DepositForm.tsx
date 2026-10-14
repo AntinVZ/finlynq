@@ -32,7 +32,7 @@ import { todayISO } from "@/lib/utils/date";
 import { useEditId } from "@/lib/hooks/useEditId";
 import { usePortfolioFormData } from "@/lib/hooks/usePortfolioFormData";
 import { useSeedAccountFromParam } from "@/lib/hooks/useSeedAccountFromParam";
-import { PayeeCombobox } from "@/components/payees/payee-combobox";
+import { PayeePicker } from "@/components/payees/payee-picker";
 
 export default function DepositForm() {
   const router = useRouter();
@@ -397,7 +397,7 @@ export default function DepositForm() {
               Payee{" "}
               <span className="text-muted-foreground text-xs">(optional)</span>
             </Label>
-            <PayeeCombobox value={payee} onChange={setPayee} />
+            <PayeePicker value={payee} onChange={setPayee} />
           </div>
           <div className="space-y-1.5">
             <Label>

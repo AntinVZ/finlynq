@@ -421,6 +421,8 @@ export async function POST(request: NextRequest) {
         ? `/reconcile?account=${accountId}`
         : `/import/pending?id=${encodeURIComponent(staged.stagedImportId)}`,
       format: staged.format,
+      // P8 stage 10: what happened to the payees (null without a key).
+      payeeSummary: staged.payeeSummary ?? null,
       // §A — echo the resolved OFX payee source. Undefined for CSV.
       ...(parseResult.payeeSource ? { payeeSource: parseResult.payeeSource } : {}),
       counts: {

@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  *
- * /settings/payees/[id] — P5c website + logo card.
+ * /merchants/[id] — P5c website + logo card.
  */
 import { describe, it, expect, vi, afterEach } from "vitest";
 import React from "react";
@@ -13,7 +13,7 @@ vi.mock("next/link", () => ({
 }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "5" }), useRouter: () => ({ push: vi.fn() }) }));
 
-import PayeeEntityPage from "@/app/(app)/settings/payees/[id]/page";
+import PayeeEntityPage from "@/app/(app)/merchants/[id]/page";
 
 const entityResponse = (over: Record<string, unknown> = {}) => ({
   entity: {
@@ -90,6 +90,12 @@ describe("payee entity page — requisites (P5f)", () => {
     const cardsGroup = await screen.findByRole("region", { name: "Cards (last 4 digits)" });
     expect(cardsGroup.textContent).toMatch(/•••• 1234Mono blackmonobankUAHPrimary/);
     expect(cardsGroup.textContent).toMatch(/•••• 4321PrivatInactive/);
+    // P8: masked until "Show" is confirmed.
+    expect(screen.getByRole("region", { name: "IBAN accounts" }).textContent).toMatch(/UA21…6001rent/);
+    expect(screen.queryByText("UA213223130000026007233566001")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show in full…" }));
+    expect(screen.getByText(/Show full requisites on this screen/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Show" }));
     expect(screen.getByRole("region", { name: "IBAN accounts" }).textContent).toMatch(/UA213223130000026007233566001rent/);
     const kinds = [...(screen.getByLabelText("Requisite kind") as HTMLSelectElement).options].map((o) => o.value);
     expect(kinds).toContain("tax_id");
@@ -120,3 +126,31 @@ describe("payee entity page — requisites (P5f)", () => {
   });
 });
 
+describe("merchant page — 12-month numbers (P8)", () => {
+  it("shows sum, payments, average, last date, a sparkline and recent transactions", async () => {
+    const months = Array.from({ length: 12 }, (_, i) => ({ month: `2025-${String(i + 1).padStart(2, "0")}`, total: -(i + 1) * 100 }));
+    renderEntityPage({
+      ...entityResponse(),
+      kpis: {
+        currency: "UAH", window: { from: "2025-01-01", to: "2025-12-31", months: 12 }, total: -7800, spend: 7800, count: 56, average: 139.29, lastDate: "2025-12-20",
+        months, truncated: false,
+        recent: [{ id: 9, date: "2025-12-20", amount: -250, currency: "UAH", account: "Mono", category: "Home", payee: "EPICENTR K10" }],
+      },
+    });
+    const kpis = await screen.findByLabelText("Last 12 months");
+    expect(kpis.textContent).toMatch(/Payments56/);
+    expect(screen.getByRole("img", { name: /Per month: 2025-01/ })).toBeTruthy();
+    expect(screen.getByText("EPICENTR K10")).toBeTruthy();
+    expect(screen.getByText("Recent transactions")).toBeTruthy();
+  });
+
+  it("offers Try again when the page fails to load", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "x" }) })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+        <PayeeEntityPage />
+      </SWRConfig>,
+    );
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+});

@@ -21,7 +21,7 @@
  *
  * POST { action: "propose", refs: string[] } → { saved, rejected, missing }
  *   Stores the chosen suggestions / links as DRAFT proposals (encrypted),
- *   which a person approves on Settings → Payees → AI review. Nothing in the
+ *   which a person approves on Merchants → AI review. Nothing in the
  *   directory or the ledger changes here.
  */
 import { NextResponse } from "next/server";
@@ -35,7 +35,7 @@ import { findWhose } from "@/lib/payees/whose";
 import { identifierQueryRefusal } from "@/lib/payees/requisites";
 import { loadPayeeNameMaps, spellingOf } from "@/lib/payees/scan";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to look for requisites" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to look for requisites" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   const action = params.get("action");
   if (action === "whose") {
@@ -63,7 +63,7 @@ export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: 
 const postSchema = z.object({ action: z.literal("propose"), refs: z.array(z.string().regex(/^r_[A-Za-z0-9_-]{16}$/)).min(1).max(200) });
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Failed to save the suggestions" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Failed to save the suggestions" },
   async ({ userId, dek, body }) => {
     const directory = await loadDirectory(db, userId, dek);
     const report = await mineIdentifiers({ executor: db, userId, dek, matcher: buildPayeeMatcher(directory), directory, limit: 5000 });
