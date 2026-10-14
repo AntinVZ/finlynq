@@ -295,13 +295,14 @@ const PATRONYMIC_LAT_RE = /(?:ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evn
 /** One normalized token that is a patronymic (Cyrillic or Latin). */
 export const PATRONYMIC_TOKEN_RE = /(?:ович|евич|йович|івна|ївна|овна|евна|ічна|ична|ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
 // A Unicode-aware end of word: `\b` is ASCII-only, so it never matched after `фоп`.
+// B31 (P8 stage 9): the same for every word list below — `(?<![\p{L}\p{N}])` / `(?![\p{L}\p{N}])` instead of `\b`.
 const SOLE_PROP_RE = /^(?:фоп|флп|спд|fop|flp|spd|фізична особа[- ]підприємець|fizychna osoba[- ]pidpryiemets)(?![\p{L}\p{N}])/u;
 const INITIALS_RE = /^[\p{L}'’-]{2,}\s+\p{L}\.\s*\p{L}\.?$/u;
-const BANK_RE = /\b(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)\b/;
-const GOV_RE = /(?:податков|казначей|treasury|\bдпс\b|\bпфу\b|пенсійн|\bdps\b|tax office|держ|gov\.ua|\bдія\b|\bdiia\b|митн|customs|суд\b)/;
-const COMPANY_RE = /\b(?:тов|тзов|прат|пат|ат|ооо|llc|ltd|inc|gmbh|corp|plc)\b/;
-const SERVICE_RE = /\b(?:binance|bybit|netflix|spotify|google|apple|youtube|uber|bolt|uklon|glovo|wolt|patreon|steam|playstation|microsoft|adobe|openai|anthropic|aws|amazon|paypal|wise|revolut|kyivstar|київстар|vodafone|lifecell|volia|воля|nova poshta|нова пошта|ukrposhta|укрпошта|meest|liqpay|portmone|easypay|city24|ipay)\b/;
-const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|\bshop\b|\bшоп\b|магазин|store|аптека|pharmacy|apteka|кафе|cafe|coffee|кава|restaurant|ресторан|піца|pizza|бакалія|продукти|silpo|сільпо|\bатб\b|\batb\b|novus|новус|fozzy|фоззі|varus|варус|metro|метро|auchan|ашан|епіцентр|epicentr|rozetka|розетка|comfy|фокстрот|foxtrot|eldorado|ельдорадо|aldi|lidl|zara|h&m|ikea|макдональдз|mcdonald|kfc|пекарня|bakery|bulochka|булочка)/;
+const BANK_RE = /(?<![\p{L}\p{N}])(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)(?![\p{L}\p{N}])/u;
+const GOV_RE = /(?:податков|казначей|treasury|(?<![\p{L}\p{N}])дпс(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])пфу(?![\p{L}\p{N}])|пенсійн|(?<![\p{L}\p{N}])dps(?![\p{L}\p{N}])|tax office|держ|gov\.ua|(?<![\p{L}\p{N}])дія(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])diia(?![\p{L}\p{N}])|митн|customs|суд(?![\p{L}\p{N}]))/u;
+const COMPANY_RE = /(?<![\p{L}\p{N}])(?:тов|тзов|прат|пат|ат|ооо|llc|ltd|inc|gmbh|corp|plc)(?![\p{L}\p{N}])/u;
+const SERVICE_RE = /(?<![\p{L}\p{N}])(?:binance|bybit|netflix|spotify|google|apple|youtube|uber|bolt|uklon|glovo|wolt|patreon|steam|playstation|microsoft|adobe|openai|anthropic|aws|amazon|paypal|wise|revolut|kyivstar|київстар|vodafone|lifecell|volia|воля|nova poshta|нова пошта|ukrposhta|укрпошта|meest|liqpay|portmone|easypay|city24|ipay)(?![\p{L}\p{N}])/u;
+const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|(?<![\p{L}\p{N}])shop(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])шоп(?![\p{L}\p{N}])|магазин|store|аптека|pharmacy|apteka|кафе|cafe|coffee|кава|restaurant|ресторан|піца|pizza|бакалія|продукти|silpo|сільпо|(?<![\p{L}\p{N}])атб(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])atb(?![\p{L}\p{N}])|novus|новус|fozzy|фоззі|varus|варус|metro|метро|auchan|ашан|епіцентр|epicentr|rozetka|розетка|comfy|фокстрот|foxtrot|eldorado|ельдорадо|aldi|lidl|zara|h&m|ikea|макдональдз|mcdonald|kfc|пекарня|bakery|bulochka|булочка)/u;
 
 /**
  * Guess what kind of counterparty a payee is, from its own text only.
@@ -325,6 +326,9 @@ export function guessPayeeType(raw: string | null | undefined): TypeGuess {
   if (SERVICE_RE.test(s)) return { type: "service", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_service") };
   if (RETAIL_RE.test(s)) return { type: "retail", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_retail") };
   if (COMPANY_RE.test(s)) return { type: "company", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_company") };
+  // B30 (P8 stage 9): any type word of the vocabulary (АЗС, готель, кав'ярня, …) means a place of business.
+  const typeWord = brandCoreOfKey(payeeMatchKey(raw ?? "")).removed[0];
+  if (typeWord) return { type: "retail", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_typeWord", { word: typeWord }) };
   return { type: "other", confidence: 0.2, isPerson: false, reason: st("srv.matchKey.type_noSignal") };
 }
 

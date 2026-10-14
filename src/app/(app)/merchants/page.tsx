@@ -54,6 +54,7 @@ import { isPersonsMerchantGroup, PERSONS_MERCHANT_GROUP } from "@/lib/payees/pay
 import { groupMerchantTypes, localizedType, merchantTypeLabel, MerchantTypesEditor, PayeeTypeLabel, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
+import { AiDraftsPanel, AiRecipes } from "./_components/ai-drafts-panel";
 import { MerchantsOverviewCards } from "./_components/overview-cards";
 import { StudioSettingsDialog, WordListsSection } from "./_components/settings-dialog";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
@@ -850,6 +851,7 @@ function MerchantsSection() {
                   : go({ tab: "directory", view: "entries", f: "untyped" })
           }
         />
+        <AiRecipes />
         <InsightsPanel />
       </div>
     );
@@ -918,16 +920,7 @@ function MerchantsSection() {
         ) : queueView === "lookalikes" ? (
           <LookalikesPanel onChanged={() => void Promise.all([mutate(), globalMutate("/api/payees/queue")])} />
         ) : queueView === "drafts" ? (
-          (data?.draftCount ?? 0) === 0 ? (
-            <EmptyState reason={t("merchants.drafts.none")} action={<Link className="text-sm underline" href="/merchants/review">{t("page.reviewWithAi")}</Link>} />
-          ) : (
-            <div className="rounded-lg border p-3 text-sm space-y-2">
-              <p>{t("merchants.drafts.waiting", { n: data?.draftCount ?? 0 })}</p>
-              <Link href="/merchants/review" className="inline-flex rounded-md border px-3 py-1.5 text-sm font-medium hover:bg-accent/50">
-                {t("merchants.drafts.open")}
-              </Link>
-            </div>
-          )
+          <AiDraftsPanel onChanged={() => void Promise.all([mutate(), globalMutate("/api/payees/queue")])} />
         ) : queueView === "suspicious" ? (
           <SuspiciousPanel rows={data?.suspicious ?? []} entities={entityOptions} onDone={(r) => done(r, t("suspicious.done"))} />
         ) : queueView === "bulk" ? (

@@ -16,6 +16,7 @@
  *     stored with a conflict note; approving it fails until fixed (pass
  *     `entityId` to attach to that entity instead).
  */
+import { encodeCursor } from "./mcp-page";
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
@@ -41,6 +42,15 @@ import type { PayeeGroup } from "./overview";
 import type { PayeeExecutor } from "./scan";
 import { st } from "@/lib/i18n/current";
 import { invalidatePayeeQueue } from "./queue-cache";
+import { brandCoreOfKey, channelOf } from "./type-words";
+
+/** See `Proposal.exception`. */
+export function proposalException(canonical: string): Proposal["exception"] {
+  if (channelOf(canonical)) return "channel";
+  const key = payeeMatchKey(canonical);
+  if (key && brandCoreOfKey(key).typeOnly) return "type_word";
+  return undefined;
+}
 
 export const MAX_PROPOSALS_PER_CALL = 100;
 
@@ -76,6 +86,12 @@ export type Proposal = ProposalPayload & {
   confidence: number;
   needsDecision: boolean;
   source: string;
+  /**
+   * P8 stage 9: why «accept above the threshold» must leave this draft to the
+   * person even when confident — its canonical name is only type words
+   * (no brand) or a payment channel. People are `needsDecision`.
+   */
+  exception?: "type_word" | "channel";
   batchId: number | null;
   createdAt: string;
   decidedAt: string | null;
@@ -185,8 +201,10 @@ export async function listProposals(
     const plain = dek ? tryDecryptField(dek, String(r.payload), "payee-proposal") : null;
     if (!plain) continue;
     const p = JSON.parse(plain) as ProposalPayload;
+    const exception = proposalException(p.canonical);
     out.push({
       ...p,
+      ...(exception ? { exception } : {}),
       notes: p.notes ?? [],
       id: Number(r.id),
       status: String(r.status) as Proposal["status"],
@@ -294,8 +312,13 @@ export function proposalOut(p: Proposal) {
  * the AI can extend an entity instead of duplicating it). Payees already in
  * a pending draft are marked `proposed`.
  */
-export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { limit?: number } = {}) {
+export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { limit?: number; offset?: number; compact?: boolean } = {}) {
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 300);
+  // P8 stage 9 (B7): `offset` pages the unrecognized list (from an MCP
+  // cursor); clusters and the directory come on the first page only;
+  // `compact` keeps names, keys, counts and sums.
+  const offset = Math.max(0, opts.offset ?? 0);
+  const compact = opts.compact === true;
   const proposedKeys = new Set<string>();
   for (const d of drafts) {
     proposedKeys.add(payeeMatchKey(d.canonical));
@@ -304,10 +327,13 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
   const fmt = (n: number) => Math.round(n * 100) / 100;
   // P6: no brand (only type words) or the bank's own rows → never proposed as a merchant.
   const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null && !g.channel;
-  const unrecognized = o.groups
-    .filter(proposable)
-    .slice(0, limit)
-    .map((g) => ({
+  const allUnrecognized = o.groups.filter(proposable);
+  const page = allUnrecognized.slice(offset, offset + limit);
+  const next = offset + page.length < allUnrecognized.length ? offset + page.length : null;
+  const unrecognized = page.map((g) =>
+    compact
+      ? { key: g.key, payee: g.name, count: g.count, total: fmt(g.total), typeGuess: g.type.type, ...(g.type.isPerson ? { person: true } : {}), ...(proposedKeys.has(g.key) ? { proposed: true } : {}) }
+      : {
       key: g.key,
       payee: g.name,
       ...(g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 5).map((s) => s.spelling) } : {}),
@@ -319,8 +345,9 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
       ...(g.type.isPerson ? { person: true } : {}),
       ...(g.samples?.length ? { examples: g.samples.map((x) => `${x.date} ${x.amount}${x.currency ? " " + x.currency : ""}${x.category ? " · " + x.category : ""}`) } : {}),
       ...(proposedKeys.has(g.key) ? { proposed: true } : {}),
-    }));
-  const clusters = o.clusters.slice(0, Math.ceil(limit / 2)).map((c) => ({
+    },
+  );
+  const clusters = (offset > 0 ? [] : o.clusters.slice(0, Math.ceil(limit / 2))).map((c) => ({
     cluster_id: c.id,
     confidence: c.confidence,
     reasons: c.reasons,
@@ -330,7 +357,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     members: c.groups.map((g) => ({
       payee: g.name,
       count: g.count,
-      ...(g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 4).map((s) => s.spelling) } : {}),
+      ...(!compact && g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 4).map((s) => s.spelling) } : {}),
       ...(g.entityId != null ? { entity_id: g.entityId } : {}),
     })),
   }));
@@ -349,7 +376,10 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     },
     unrecognized,
     clusters,
-    directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, has_website: e.website != null })),
+    ...(offset > 0 || compact ? {} : { directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, has_website: e.website != null })) }),
     currency: o.currency,
+    total: allUnrecognized.length,
+    truncated: next != null,
+    ...(next != null ? { next_cursor: encodeCursor(next) } : {}),
   };
 }

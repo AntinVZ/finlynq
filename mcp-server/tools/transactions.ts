@@ -117,6 +117,7 @@ import { hasTextFilter, compileTextFilters, type TextFilters } from "../lib/text
 import { parseBusinessParam } from "../../src/lib/reports/business-filter";
 import { businessFilterCondition } from "../../src/lib/reports/business-filter-sql";
 import { makePayeeHinter } from "../../src/lib/payees/import-assist";
+import { resolvePayeeForMcp, type PayeeResolution } from "../../src/lib/payees/payee-resolution";
 
 export function registerTransactionsTools(server: McpServer, ctx: PgToolContext) {
   const { db, userId, dek } = ctx;
@@ -435,6 +436,8 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
       // Payee Studio import hint (B14): the canonical name when the payee
       // matches a directory alias and the hint is on (Merchants settings).
       const storedPayee = (await makePayeeHinter(db, userId, dek))(payee);
+      // P8 stage 9: how the payee resolves in the Merchants directory (read only).
+      const payeeResolution = await resolvePayeeForMcp({ executor: db, userId, dek, payee, storedAs: storedPayee });
       const encPayee = dek ? encryptField(dek, storedPayee) : storedPayee;
       const encNote = dek ? encryptField(dek, note ?? "") : (note ?? "");
       const encTags = dek ? encryptField(dek, tags ?? "") : (tags ?? "");
@@ -526,6 +529,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
           resolvedCategory,
           resolvedHolding,
           message: `Recorded: ${resolved.amount > 0 ? "+" : ""}${resolved.amount} ${resolved.currency} on ${txDate} — "${payee}" → ${acct.name} (${catName})${resolved.enteredCurrency !== resolved.currency ? ` [entered: ${resolved.enteredAmount} ${resolved.enteredCurrency} @ rate ${resolved.enteredFxRate}]` : ""}`,
+          ...(payeeResolution ? { payee_resolution: payeeResolution } : {}),
           warnings,
         },
       });
@@ -1440,8 +1444,10 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         await db.execute(sql`UPDATE transactions SET category_id = ${catId}, updated_at = NOW() WHERE id = ${id} AND user_id = ${userId}`);
         fieldsUpdated.push("category_id");
       }
+      let payeeResolution: PayeeResolution | null = null;
       if (payee !== undefined) {
         const stored = (await makePayeeHinter(db, userId, dek))(payee);
+        payeeResolution = await resolvePayeeForMcp({ executor: db, userId, dek, payee, storedAs: stored });
         const v = dek ? encryptField(dek, stored) : stored;
         await db.execute(sql`UPDATE transactions SET payee = ${v}, updated_at = NOW() WHERE id = ${id} AND user_id = ${userId}`);
         fieldsUpdated.push("payee");
@@ -1497,6 +1503,7 @@ export function registerTransactionsTools(server: McpServer, ctx: PgToolContext)
         data: {
           message: `Transaction #${id} updated`,
           fieldsUpdated,
+          ...(payeeResolution ? { payee_resolution: payeeResolution } : {}),
           ...(resolvedCategory ? { resolvedCategory } : {}),
           updatedAt: after[0]?.updated_at,
           warnings,

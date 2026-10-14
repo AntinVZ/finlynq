@@ -272,4 +272,41 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     expect(typed!.typeId).toBeGreaterThan(0);
     expect(out.rows.find((r) => r.amount === -50)).toMatchObject({ label: null, typeId: null });
   });
+
+  it("stage 9: review pack pages with a cursor and a compact form; payee_resolution for MCP writes", async () => {
+    const { db } = await import("@/db");
+    for (const p of ["ZZ SHOP ONE", "ZZ SHOP TWO", "ZZ SHOP THREE"]) await addTx(p, "2026-09-10", -10);
+    const { loadPayeeOverview } = await import("@/lib/payees/service");
+    const { buildReviewPack } = await import("@/lib/payees/proposals");
+    const { decodeCursor } = await import("@/lib/payees/mcp-page");
+    const o = await loadPayeeOverview({ executor: db, userId: seed.userId, dek: TEST_DEK });
+    const first = buildReviewPack(o, [], { limit: 2, compact: true });
+    expect(first.unrecognized).toHaveLength(2);
+    expect(first.truncated).toBe(true);
+    expect(first.next_cursor).toBeTruthy();
+    expect("directory" in first).toBe(false);
+    expect(Object.keys(first.unrecognized[0]).sort()).toEqual(expect.arrayContaining(["count", "key", "payee", "total", "typeGuess"]));
+    const seen = new Set(first.unrecognized.map((u) => u.key));
+    let cursor = first.next_cursor;
+    while (cursor) {
+      const next = buildReviewPack(o, [], { limit: 2, compact: true, offset: decodeCursor(cursor) });
+      expect(next.clusters).toEqual([]);
+      for (const u of next.unrecognized) {
+        expect(seen.has(u.key)).toBe(false);
+        seen.add(u.key);
+      }
+      cursor = next.next_cursor;
+    }
+    expect(seen.size).toBe(first.total);
+
+    await op({ op: "create", name: "Епіцентр", apply: false, aliases: [{ pattern: "EPITCENTR K10", mode: "exact" }] });
+    const { invalidatePayeeSuggest } = await import("@/lib/payees/suggest");
+    invalidatePayeeSuggest(seed.userId);
+    const { resolvePayeeForMcp } = await import("@/lib/payees/payee-resolution");
+    expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "EPITCENTR K10", storedAs: "EPITCENTR K10" })).toMatchObject({ status: "matched", name: "Епіцентр", renamed: false });
+    expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "Нова кав'ярня", storedAs: "Нова кав'ярня" })).toMatchObject({ status: "not_in_directory" });
+    expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "P24", storedAs: "P24" })).toMatchObject({ status: "channel" });
+    expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: null, payee: "X", storedAs: "X" })).toMatchObject({ status: "unavailable" });
+    expect(await resolvePayeeForMcp({ executor: db, userId: seed.userId, dek: TEST_DEK, payee: "  ", storedAs: "" })).toBeNull();
+  });
 });
