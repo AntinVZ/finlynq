@@ -6,6 +6,7 @@ Versioning: [Semantic Versioning](https://semver.org/)
 
 ## [Unreleased]
 
+- **docs(merchants): `docs/merchants.md` (P8 stage 8, 2026-10-14).** How to add an interface language, a country pack and an ID type; the action palette (intents, colours, icons, keyboard); recipes for Claude through the Finlynq connector (drafts only, cursor paging, `payee_resolution`).
 - **feat(merchants): country packs, ID registry, transliteration plugins, dictionary v2 (P8 stage 7, 2026-10-14).** No migration (packs live in the Payee Studio settings JSON).
   - **Country packs** (`src/lib/payees/packs/`): type words with their merchant type, bank operations, payment channels, the merchant-type starting set, MCC codes, ID types and transliteration, as data. **UA** is the old behaviour moved into a pack word for word (always on); a minimal **EU / generic** pack is built in and off until turned on; up to 5 imported packs (JSON, `format: "finlynq-country-pack"`) stack on top, and the person's own words stay on top of all. A pack has no place for names of people, amounts, dates or notes; unknown keys are dropped.
   - **ID registry** (`id-registry.ts`): type, validator, mask and a «private person» flag for UA ІПН (10) / ЄДРПОУ (8), PL NIP / REGON, DE USt-IdNr., EU VAT, US EIN, GB VAT / UTR, IBAN (mod-97) and card last 4. Stored kinds map without data changes (`tax_id` → ua_ipn, `edrpou` → ua_edrpou, `iban`, `card_last4`). A failed check digit is reported, never accepted.
