@@ -127,7 +127,7 @@ describeDb("Payee Studio P6.2 suspicious entries (seeded DB)", () => {
     const call = await tools();
     const list = await call("manage_payees", { op: "suspicious" });
     expect(list.entries.map((e: { name: string }) => e.name)).toEqual(["Ma", "Galia baluvana"]);
-    expect(list.entries[0].reasons[0]).toContain("коротка");
+    expect(list.entries[0].reasons[0]).toContain("short name");
     const p = await call("manage_payees", { op: "mark_reviewed", entity_ids: [ma] });
     expect(p.preview).toBe(true);
     expect((await suspicious()).length).toBe(2);

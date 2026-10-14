@@ -32,6 +32,7 @@ import { sql, type SQL } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export const PAYEE_BATCH_TTL_DAYS = 30;
 
@@ -53,7 +54,8 @@ export type RowChange = {
   new: string | null;
   cols?: Partial<Record<ExtraColumn, { old: string | null; new: string | null }>>;
 };
-export type ExtraColumn = "tags" | "note";
+/** P8 stage 10: `category_id` (stored as text of the id; null = uncategorized). */
+export type ExtraColumn = "tags" | "note" | "category_id";
 type UndoData = { v: 1; before: Snapshot; snapshotIds: number[]; created: number[]; rows: RowChange[]; types?: { before: StoredRow[]; created: number[] }; own?: { before: StoredRow[]; created: number[] } };
 
 export class PayeeBatchError extends Error {
@@ -125,7 +127,7 @@ export class PayeeBatchJournal {
     const fresh = [...new Set(ids)].filter((id) => !this.typesSnapped.has(id) && !this.typesCreated.includes(id));
     if (!fresh.length) return;
     const rows = normalizeDbRows<StoredRow>(
-      await this.tx.execute(sql`SELECT id, group_name, name, sort, default_category_id, created_at FROM payee_merchant_types WHERE user_id = ${this.userId} AND id = ANY(${idList(fresh)}) FOR UPDATE`),
+      await this.tx.execute(sql`SELECT id, group_name, name, sort, default_category_id, code, created_at FROM payee_merchant_types WHERE user_id = ${this.userId} AND id = ANY(${idList(fresh)}) FOR UPDATE`),
     ).map(toJsonRow);
     for (const id of fresh) this.typesSnapped.add(id);
     this.typesBefore.push(...rows);
@@ -308,17 +310,20 @@ export async function readStoredPayees(
   return out;
 }
 
-/** Write a transactions text column (`tags` / `note`) by id (CASE update, user-scoped, chunks of 500, bumps updated_at). */
+/** Write a transactions column (`tags` / `note` text, P8: `category_id`) by id (CASE update, user-scoped, chunks of 500, bumps updated_at). */
 export async function writeTransactionColumn(
   tx: PayeeExecutor,
   userId: string,
   col: ExtraColumn,
   writes: Array<{ id: string; value: string | null }>,
 ): Promise<void> {
-  const column = col === "tags" ? sql`tags` : sql`note`;
+  const column = col === "tags" ? sql`tags` : col === "note" ? sql`note` : sql`category_id`;
   for (let i = 0; i < writes.length; i += 500) {
     const chunk = writes.slice(i, i + 500);
-    const cases = sql.join(chunk.map((w) => sql`WHEN ${Number(w.id)}::int THEN ${w.value}::text`), sql` `);
+    const cases = sql.join(
+      chunk.map((w) => (col === "category_id" ? sql`WHEN ${Number(w.id)}::int THEN ${w.value == null ? null : Number(w.value)}::int` : sql`WHEN ${Number(w.id)}::int THEN ${w.value}::text`)),
+      sql` `,
+    );
     const ids = sql.join(chunk.map((w) => sql`${Number(w.id)}::int`), sql`, `);
     await tx.execute(sql`
       UPDATE transactions SET ${column} = CASE id ${cases} END, updated_at = NOW()
@@ -331,18 +336,19 @@ export async function readTransactionColumns(
   tx: PayeeExecutor,
   userId: string,
   ids: readonly string[],
-): Promise<Map<string, { payee: string | null; tags: string | null; note: string | null }>> {
-  const out = new Map<string, { payee: string | null; tags: string | null; note: string | null }>();
+): Promise<Map<string, { payee: string | null; tags: string | null; note: string | null; category_id: string | null }>> {
+  const out = new Map<string, { payee: string | null; tags: string | null; note: string | null; category_id: string | null }>();
   for (let i = 0; i < ids.length; i += 1000) {
     const list = sql.join(ids.slice(i, i + 1000).map((id) => sql`${Number(id)}::int`), sql`, `);
     const rows = normalizeDbRows<StoredRow>(
-      await tx.execute(sql`SELECT id::text AS id, payee, tags, note FROM transactions WHERE user_id = ${userId} AND id IN (${list}) FOR UPDATE`),
+      await tx.execute(sql`SELECT id::text AS id, payee, tags, note, category_id FROM transactions WHERE user_id = ${userId} AND id IN (${list}) FOR UPDATE`),
     );
     for (const r of rows) {
       out.set(String(r.id), {
         payee: r.payee == null ? null : String(r.payee),
         tags: r.tags == null ? null : String(r.tags),
         note: r.note == null ? null : String(r.note),
+        category_id: r.category_id == null ? null : String(r.category_id),
       });
     }
   }
@@ -359,11 +365,11 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
         SELECT id, entity_ids, undo_data, undone_at, (expires_at > NOW()) AS live
         FROM payee_batches WHERE id = ${batchId} AND user_id = ${userId} FOR UPDATE`),
     );
-    if (!b) throw new PayeeBatchError(`No change batch #${batchId}.`, "not_found");
-    if (b.undone_at != null) throw new PayeeBatchError(`Batch #${batchId} was already undone.`, "already_undone");
-    if (!(b.live === true || b.live === "t")) throw new PayeeBatchError(`Batch #${batchId} is older than ${PAYEE_BATCH_TTL_DAYS} days and can no longer be undone.`, "expired");
+    if (!b) throw new PayeeBatchError(st("srv.batches.notFound", { id: batchId }), "not_found");
+    if (b.undone_at != null) throw new PayeeBatchError(st("srv.batches.alreadyUndone", { id: batchId }), "already_undone");
+    if (!(b.live === true || b.live === "t")) throw new PayeeBatchError(st("srv.batches.expired", { id: batchId, days: PAYEE_BATCH_TTL_DAYS }), "expired");
     const plain = b.undo_data == null ? null : tryDecryptField(dek, String(b.undo_data), "payee-batch-undo");
-    if (!plain) throw new PayeeBatchError(`Batch #${batchId} has no readable undo data.`, "no_undo_data");
+    if (!plain) throw new PayeeBatchError(st("srv.batches.noUndoData", { id: batchId }), "no_undo_data");
     const undo = JSON.parse(plain) as UndoData;
     const entityIds = [...new Set([...undo.snapshotIds, ...undo.created])];
     if (entityIds.length) {
@@ -375,7 +381,7 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
       );
       if (newer.length) {
         throw new PayeeBatchError(
-          `A newer change (batch ${newer.map((r) => `#${Number(r.id)}`).join(", ")}) touched the same payees. Undo it first.`,
+          st("srv.batches.newerBatch", { ids: newer.map((r) => `#${Number(r.id)}`).join(", ") }),
           "newer_batch",
         );
       }
@@ -401,7 +407,7 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
     const withCols = undo.rows.filter((r) => r.t === "transactions" && r.cols);
     if (withCols.length) {
       const current = await readTransactionColumns(tx, userId, withCols.map((c) => c.id));
-      for (const col of ["tags", "note"] as ExtraColumn[]) {
+      for (const col of ["tags", "note", "category_id"] as ExtraColumn[]) {
         const writes: Array<{ id: string; value: string | null }> = [];
         for (const c of withCols) {
           const ch = c.cols?.[col];
@@ -416,11 +422,11 @@ export async function undoPayeeBatch(opts: { executor: PayeeExecutor; userId: st
     // 2a. Merchant types (P6): bring back changed / removed rows first (entities point at them).
     for (const t of undo.types?.before ?? []) {
       await tx.execute(sql`
-        INSERT INTO payee_merchant_types (id, user_id, group_name, name, sort, default_category_id, created_at)
+        INSERT INTO payee_merchant_types (id, user_id, group_name, name, sort, default_category_id, code, created_at)
         VALUES (${Number(t.id)}, ${userId}, ${t.group_name as string}, ${t.name as string}, ${Number(t.sort ?? 0)},
                 (SELECT id FROM categories WHERE id = ${t.default_category_id == null ? null : Number(t.default_category_id)} AND user_id = ${userId}),
-                ${t.created_at as string}::timestamptz)
-        ON CONFLICT (id) DO UPDATE SET group_name = EXCLUDED.group_name, name = EXCLUDED.name, sort = EXCLUDED.sort, default_category_id = EXCLUDED.default_category_id`);
+                ${(t.code as string | null | undefined) ?? null}, ${t.created_at as string}::timestamptz)
+        ON CONFLICT (id) DO UPDATE SET group_name = EXCLUDED.group_name, name = EXCLUDED.name, sort = EXCLUDED.sort, default_category_id = EXCLUDED.default_category_id, code = EXCLUDED.code`);
     }
 
     // 2. Directory: drop the touched + created entities, restore the snapshot.

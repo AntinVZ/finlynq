@@ -6,6 +6,8 @@
  *       clients: [{ client, lastActivityAt, calls7d, writes7d }],
  *       events: [{ id, client, tool, op, isWrite, ok, errorCode, affectedCount, createdAt }],
  *       journalAvailable,
+    schema: { serverVersion: MCP_SERVER_VERSION, tools: MCP_TOOL_COUNTS, payees: PAYEE_MCP_SCHEMA_VERSION },
+ *       schema: { serverVersion, tools: { http, stdio }, payees },   // P8 stage 9 (B12)
  *     }
  *
  * Optional `?writesOnly=1` limits `events` to writes. `events` is the newest
@@ -21,6 +23,8 @@ import { apiHandler } from "@/lib/api-handler";
 import { getApiKeyStatus } from "@/lib/api-auth";
 import { isPgErrorCode, normalizeDbRows } from "@/lib/db-utils";
 import { API_KEY_CLIENT_LABEL } from "@/lib/mcp/activity-log";
+import { MCP_SERVER_VERSION, MCP_TOOL_COUNTS } from "@/lib/mcp/tool-counts";
+import { PAYEE_MCP_SCHEMA_VERSION } from "@/lib/payees/mcp-schema";
 
 const EVENTS_LIMIT = 100;
 

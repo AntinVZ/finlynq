@@ -922,6 +922,9 @@ export const transactionRules = pgTable("transaction_rules", {
   actions: jsonb("actions").notNull(),
   isActive: boolean("is_active").notNull().default(true),
   priority: integer("priority").notNull().default(0),
+  // P8 stage 10: how often the rule filled a row, and when it last did.
+  hitCount: integer("hit_count").notNull().default(0),
+  lastHitAt: timestamp("last_hit_at", { withTimezone: true }),
   createdAt: text("created_at").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
@@ -2163,6 +2166,20 @@ export const payeeRejections = pgTable("payee_rejections", {
   uniqueIndex("payee_rejections_user_key_entity_idx").on(t.userId, t.keyHash, t.entityId),
 ]);
 
+// ─── Payee pair rejections (P8 stage 11) ──────────────────────────────────
+//
+// «Різні» answers in the duplicates-by-amount queue: an HMAC of the two
+// payees' matching keys (never the names), so the pair is not offered again.
+// Migration: scripts/migrations/20261018_colleagues_amount_pairs.sql.
+export const payeePairRejections = pgTable("payee_pair_rejections", {
+  id: serial("id").primaryKey(),
+  userId: text("user_id").notNull(),
+  pairHash: text("pair_hash").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("payee_pair_rejections_user_hash_idx").on(t.userId, t.pairHash),
+]);
+
 // ─── Payee merchant types (P6, B26) ─────────────────────────────────────────
 //
 // The user's editable dictionary of merchant types: group → position, an
@@ -2175,9 +2192,12 @@ export const payeeMerchantTypes = pgTable("payee_merchant_types", {
   name: text("name").notNull(),
   sort: integer("sort").notNull().default(0),
   defaultCategoryId: integer("default_category_id").references(() => categories.id, { onDelete: "set null" }),
+  /** P8: stable key of a built-in position (cafe, fuel, …); null for the user's own types. */
+  code: text("code"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("payee_merchant_types_user_group_name_idx").on(t.userId, t.groupName, t.name),
+  index("payee_merchant_types_user_code_idx").on(t.userId, t.code).where(sql`code IS NOT NULL`),
 ]);
 
 // ─── Payee own accounts and cards (P6.2, item 76 / B27) ─────────────────────

@@ -35,6 +35,8 @@ import { blockKeyOf, clusterable, MIN_EDGE_CONFIDENCE, scoreKeys, type PayeeGrou
 import type { PayeeVocabulary } from "./type-words";
 import type { PayeeEntity } from "./directory";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
+import { invalidatePayeeQueue } from "./queue-cache";
 
 const PERSON_TYPES = new Set<PayeeType>(["person", "sole_proprietor"]);
 
@@ -137,7 +139,7 @@ export function computeLookalikes(
       const entityPerson = PERSON_TYPES.has(p.entity.type);
       if (g.type.isPerson && !entityPerson && p.entity.type !== "other") continue; // a person's name never goes to a merchant
       if (entityPerson && !g.type.isPerson && g.type.type !== "other") continue; // nor a clearly-typed merchant to a person
-      const s = p.key === g.key ? { confidence: 1, reason: "same name" } : scoreKeys(g.key, p.key, opts.vocab);
+      const s = p.key === g.key ? { confidence: 1, reason: st("srv.lookalikes.sameName") } : scoreKeys(g.key, p.key, opts.vocab);
       if (!s || s.confidence < min) continue;
       const cur = best.get(p.entity.id);
       if (!cur || s.confidence > cur.confidence) best.set(p.entity.id, { ...s, pattern: p.pattern, entity: p.entity });
@@ -167,8 +169,8 @@ export function computeLookalikes(
       needsDecision,
       decisionReason: needsDecision
         ? entityPerson
-          ? `“${top.entity.name}” is a ${top.entity.type === "sole_proprietor" ? "sole proprietor (ФОП)" : "private person"}; people are never matched automatically.`
-          : `“${g.name}” looks like a private person (${g.type.reason}); people are never matched automatically.`
+          ? st(top.entity.type === "sole_proprietor" ? "srv.lookalikes.entitySoleProprietor" : "srv.lookalikes.entityPerson", { name: top.entity.name })
+          : st("srv.lookalikes.looksPerson", { name: g.name, reason: g.type.reason })
         : null,
       remainder: payeeRemainder(g.name, names),
       alternatives: ranked.slice(1, 4).map((r) => ({ id: r.entity.id, name: r.entity.name, confidence: Math.round(r.confidence * 100) / 100 })),
@@ -238,7 +240,10 @@ export async function rejectLookalike(executor: PayeeExecutor, userId: string, d
       ON CONFLICT (user_id, key_hash, entity_id) DO NOTHING
       RETURNING id`),
   );
-  if (rows.length) return true;
+  if (rows.length) {
+    invalidatePayeeQueue(userId);
+    return true;
+  }
   const exists = normalizeDbRows(await executor.execute(sql`SELECT 1 FROM payee_entities WHERE id = ${entityId} AND user_id = ${userId}`));
   return exists.length > 0;
 }
@@ -259,6 +264,7 @@ export async function cancelRejection(
             WHERE user_id = ${userId} AND entity_id = ${by.entityId} AND key_hash = ${rejectionKeyHash(dek, payeeMatchKey(by.payee))}
             RETURNING id`),
         );
+  if (rows.length) invalidatePayeeQueue(userId);
   return rows.length;
 }
 

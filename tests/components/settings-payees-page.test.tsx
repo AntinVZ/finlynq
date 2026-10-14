@@ -1,10 +1,11 @@
 /**
  * @vitest-environment jsdom
  *
- * Settings → Payees (Payee Studio P1): All / Clusters / Unrecognized tabs,
- * spellings badge, needs-decision flag for people.
+ * Merchants (was Settings → Payees; Payee Studio P1, P8 stage 1): Overview /
+ * Directory / Queue / Channels / Dictionaries / Changes, spellings badge,
+ * needs-decision flag for people, state kept in the URL.
  */
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import React from "react";
 import { render, screen, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import { SWRConfig } from "swr";
@@ -13,7 +14,18 @@ vi.mock("next/link", () => ({
   default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => <a href={href} {...rest}>{children}</a>,
 }));
 
-import PayeesSettingsPage from "@/app/(app)/settings/payees/page";
+vi.mock("next/navigation", async () => (await import("../helpers/next-navigation")).navigationMock);
+
+import PayeesSettingsPage from "@/app/(app)/merchants/page";
+import { navigationCalls, resetNavigation } from "../helpers/next-navigation";
+
+beforeEach(() => resetNavigation());
+
+/** Open a Merchants section, then (optionally) one of its views. */
+function open(section: RegExp, view?: RegExp) {
+  fireEvent.click(screen.getByRole("tab", { name: section }));
+  if (view) fireEvent.click(screen.getByRole("tab", { name: view }));
+}
 
 const base = {
   rows: 0, sources: {}, firstDate: "2026-01-01", lastDate: "2026-09-01", accounts: [], categories: [],
@@ -62,7 +74,8 @@ function setup() {
     const body = init?.body ? JSON.parse(init.body) : null;
     calls.push({ url, body });
     if (url === "/api/payees/settings") return { ok: true, json: async () => ({ language: "en" }) };
-    if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, dryRun: body.dryRun === true }) };
+    if (url === "/api/payees" && body?.op === "undo") return { ok: true, json: async () => ({ ...preview, op: "undo", batchId: null, undo: { restoredRows: 12, skippedRows: 0, restoredEntities: 0, removedEntities: 1 } }) };
+    if (url === "/api/payees" && body) return { ok: true, json: async () => ({ ...preview, op: body.op, batchId: body.dryRun === true ? null : 42, dryRun: body.dryRun === true }) };
     if (url.startsWith("/api/payees/requisites?action=whose")) {
       return {
         ok: true,
@@ -166,16 +179,17 @@ afterEach(() => {
 describe("Settings → Payees", () => {
   it("lists payees with their spellings and flags people", async () => {
     setup();
-    expect((await screen.findAllByText("Епіцентр")).length).toBeGreaterThan(0);
-    fireEvent.click(screen.getByRole("tab", { name: /^All/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Directory/, /^All spellings/);
     expect(screen.getAllByText("3 spellings").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Needs decision").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Needs your decision").length).toBeGreaterThan(0);
   });
 
   it("shows clusters with confidence and reasons", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Clusters/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Queue/);
+    expect(screen.getByRole("tab", { name: /Similar spellings/ }).getAttribute("aria-selected")).toBe("true");
     expect(screen.getAllByTitle("How sure the match is")[0].textContent).toBe("90%");
     expect(screen.getByText(/one-letter suffix/)).toBeTruthy();
     expect(screen.getByText("Looks like a private person")).toBeTruthy();
@@ -183,17 +197,17 @@ describe("Settings → Payees", () => {
 
   it("filters by search across spellings", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /^All/ }));
-    fireEvent.change(screen.getByPlaceholderText("Search payees…"), { target: { value: "derkach" } });
+    await screen.findByLabelText("Summary");
+    open(/^Directory/, /^All spellings/);
+    fireEvent.change(screen.getByPlaceholderText("Search merchants…"), { target: { value: "derkach" } });
     expect(screen.queryAllByText("Епіцентр К")).toHaveLength(0);
     expect(screen.getAllByText("Деркач Олександр Петрович").length).toBeGreaterThan(0);
   });
 
   it("merges a cluster after a preview of the rows it renames", async () => {
     const calls = setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Clusters/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Queue/);
     fireEvent.click(screen.getAllByRole("button", { name: "Merge…" })[0]);
     expect(await screen.findByText(/Renames 12 rows: 10 in transactions, 1 in recurring transactions, 1 in staged imports/)).toBeTruthy();
     const dry = calls.find((c) => c.body?.dryRun === true)!;
@@ -203,18 +217,38 @@ describe("Settings → Payees", () => {
     await waitFor(() => expect(calls.some((c) => c.body && c.body.op === "merge" && c.body.dryRun === undefined)).toBe(true));
   });
 
+  it("P8: one click makes a cluster one entry, with a preview, then «Done · Undo» for 10 s", async () => {
+    const calls = setup();
+    await screen.findByLabelText("Summary");
+    open(/^Queue/);
+    // The person cluster gets no one-click button, only the full dialog.
+    expect(screen.getAllByRole("button", { name: /^Make it/ })).toHaveLength(1);
+    expect(screen.getByText(/never merged in one click/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Make it “Епіцентр”" }));
+    expect(await screen.findByText(/Renames 12 rows/)).toBeTruthy();
+    const dry = calls.find((c) => c.body?.dryRun === true)!;
+    expect(dry.body).toMatchObject({ op: "merge", into: { name: "Епіцентр", type: "retail" } });
+    expect((dry.body!.payees as string[]).sort()).toEqual(["EPITCENTR K10 KYIV 360616", "Epicentr", "Епіцентр", "Епіцентр К"].sort());
+    fireEvent.click(screen.getByRole("button", { name: "Make it one" }));
+    const toast = (await screen.findByText("Done")).closest("[role=status]") as HTMLElement;
+    expect(toast.textContent).toMatch(/Done · Saved. Renames 12 rows/);
+    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    await waitFor(() => expect(calls.some((c) => c.body?.op === "undo" && c.body?.batchId === 42)).toBe(true));
+    await waitFor(() => expect(screen.queryByText("Done")).toBeNull());
+    expect(await screen.findByText("Undone: restored 12 row(s).")).toBeTruthy();
+  });
+
   it("lists change batches with Undo", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Changes/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Changes/);
     expect(screen.getByText(/Merged · 12 rows · by AI \(MCP\)/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Undo" })).toBeTruthy();
   });
 
   it("shows insights: concentration, monthly spend and regular counterparties", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Insights/ }));
+    // Insights are on the Overview, where the section opens.
     expect(await screen.findByText("91%")).toBeTruthy();
     expect(screen.getByRole("img", { name: /Spend per month/ })).toBeTruthy();
     expect(screen.getByText(/monthly · ~30 days/)).toBeTruthy();
@@ -228,27 +262,48 @@ describe("Settings → Payees", () => {
     expect(screen.getByText(/Home 60% · Garden 40%/)).toBeTruthy();
   });
 
-  it("P5a: opens on Clusters, shows the summary strip and keeps settings behind the gear", async () => {
+  it("P8: opens on the Overview with the summary strip; the queue opens on Similar spellings; settings behind the gear", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    expect(screen.getByRole("tab", { name: /Clusters/ }).getAttribute("aria-selected")).toBe("true");
-    const strip = screen.getByLabelText("Summary");
-    expect(strip.textContent).toMatch(/Payees3/);
+    const strip = await screen.findByLabelText("Summary");
+    expect(screen.getByRole("tab", { name: /^Overview/ }).getAttribute("aria-selected")).toBe("true");
+    expect(strip.textContent).toMatch(/Merchants3/);
     expect(strip.textContent).toMatch(/Not in directory3/);
     expect(strip.textContent).toMatch(/Merge candidates2/);
     expect(strip.textContent).toMatch(/Auto-replaceOFF/);
-    expect(screen.getByRole("link", { name: /Review with AI/ }).getAttribute("href")).toBe("/settings/payees/review");
+    expect(screen.getByRole("link", { name: /Review with AI/ }).getAttribute("href")).toBe("/merchants/review");
+    // The queue tab carries the number of decisions waiting (2 clusters).
+    expect(screen.getByRole("tab", { name: /^Queue/ }).textContent).toMatch(/Queue2/);
+    fireEvent.click(screen.getByRole("button", { name: /Merge candidates/ }));
+    expect(screen.getByRole("tab", { name: /Similar spellings/ }).getAttribute("aria-selected")).toBe("true");
+    expect(navigationCalls.at(-1)).toBe("/merchants?tab=queue&view=clusters");
     expect(screen.queryByText("Auto-replace known spellings on import")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Studio settings" }));
     expect(await screen.findByText("Auto-replace known spellings on import")).toBeTruthy();
     expect(screen.getByText("Auto-merge close new spellings")).toBeTruthy();
+    expect(screen.getByText(/Merchants → Dictionaries & packs/)).toBeTruthy();
+  });
+
+  it("P8: type words and the dictionary file live on Dictionaries & packs", async () => {
+    setup();
+    await screen.findByLabelText("Summary");
+    open(/^Dictionaries/);
     expect(screen.getByText("Dictionary file")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit merchant types" })).toBeTruthy();
+  });
+
+  it("P8: the section, view and search come back from the URL", async () => {
+    resetNavigation({ search: "tab=directory&view=spellings&q=derkach" });
+    setup();
+    await screen.findByLabelText("Search merchants…");
+    expect(screen.getByRole("tab", { name: /^All spellings/ }).getAttribute("aria-selected")).toBe("true");
+    expect((screen.getByLabelText("Search merchants…") as HTMLInputElement).value).toBe("derkach");
+    expect(screen.queryAllByText("Епіцентр К")).toHaveLength(0);
   });
 
   it("P5a: a payee outside the directory opens a side panel with Add to directory / Show transactions", async () => {
     setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /^Unrecognized/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Queue/, /^Unrecognized/);
     fireEvent.click(screen.getAllByRole("button", { name: "Епіцентр К" })[0]);
     expect(await screen.findByText("Top categories")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Show transactions" }).getAttribute("href")).toContain("search=");
@@ -258,7 +313,8 @@ describe("Settings → Payees", () => {
 
   it("P5a: Explain asks the server why two payees are (not) clustered", async () => {
     const calls = setup();
-    await screen.findAllByText("Епіцентр");
+    await screen.findByLabelText("Summary");
+    open(/^Queue/);
     fireEvent.click(screen.getByRole("button", { name: "Explain…" }));
     fireEvent.change(screen.getByLabelText("First payee"), { target: { value: "Rozetka" } });
     fireEvent.change(screen.getByLabelText("Second payee"), { target: { value: "Comfy" } });
@@ -274,6 +330,7 @@ describe("Settings → Payees paging", () => {
       ...base, key: `p${i}`, name: `Payee ${String(i).padStart(2, "0")}`, suggestedName: `Payee ${i}`, count: 100 - i, rows: 100 - i, total: -1,
       spellings: [{ spelling: `Payee ${String(i).padStart(2, "0")}`, count: 1 }], type: { type: "other", confidence: 0.2, isPerson: false, reason: "" },
     }));
+    resetNavigation({ search: "tab=queue" });
     vi.stubGlobal("fetch", vi.fn(async () => ({
       ok: true,
       json: async () => ({ groups: many, totalGroups: 60, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities: [], batches: [], settings: { advancedMode: false, identifierKinds: [], importHint: true }, language: "en" }),
@@ -283,7 +340,7 @@ describe("Settings → Payees paging", () => {
         <PayeesSettingsPage />
       </SWRConfig>,
     );
-    // No clusters → opens on Unrecognized.
+    // No clusters → the queue opens on Unrecognized.
     expect((await screen.findAllByText("Payee 00")).length).toBeGreaterThan(0);
     expect(screen.getByRole("tab", { name: /^Unrecognized/ }).getAttribute("aria-selected")).toBe("true");
     expect(screen.queryAllByText("Payee 30")).toHaveLength(0);
@@ -292,17 +349,16 @@ describe("Settings → Payees paging", () => {
     expect(screen.getAllByText("Payee 30").length).toBeGreaterThan(0);
     fireEvent.change(screen.getByLabelText("Rows per page"), { target: { value: "50" } });
     expect(screen.getByText("1–50 of 60")).toBeTruthy();
-    expect(screen.getByLabelText("Summary").textContent).toMatch(/Auto-replaceON/);
   });
 });
 
 describe("Settings → Payees look-alikes (P5b)", () => {
   it("offers the three answers, moves the rest to a tag after a preview, remembers «different payee»", async () => {
     const calls = setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Look-alikes/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Queue/, /^Other spellings/);
     expect(await screen.findByText("Степаненко компенсація житла")).toBeTruthy();
-    expect(screen.getAllByText("Needs decision").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Needs your decision").length).toBeGreaterThan(0);
     expect(screen.getByText("Belongs to an entry, not renamed yet")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Apply" })).toBeTruthy();
     const keep = screen.getByLabelText("Text to keep from Степаненко компенсація житла") as HTMLInputElement;
@@ -321,8 +377,8 @@ describe("Settings → Payees look-alikes (P5b)", () => {
 describe("Settings → Payees requisites tab (P5f)", () => {
   it("looks for requisites only when asked and saves picked ones as drafts", async () => {
     const calls = setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Requisites/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Channels/);
     expect(calls.some((c) => c.url.includes("action=mine"))).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Look for requisites in my transactions" }));
     expect(await screen.findByText("•••• 5678")).toBeTruthy();
@@ -338,8 +394,8 @@ describe("Settings → Payees requisites tab (P5f)", () => {
 describe("Settings → Payees find by card (P5g)", () => {
   it("lists every candidate for 4 digits with hints and offers Add to payee for one that lacks it", async () => {
     const calls = setup();
-    await screen.findAllByText("Епіцентр");
-    fireEvent.click(screen.getByRole("tab", { name: /Requisites/ }));
+    await screen.findByLabelText("Summary");
+    open(/^Channels/);
     fireEvent.change(screen.getByLabelText("Card, IBAN or tax id"), { target: { value: "5168 **** 1234" } });
     fireEvent.click(screen.getByRole("button", { name: "Find" }));
     expect(await screen.findByText(/belong to 2 payees/)).toBeTruthy();
@@ -351,3 +407,70 @@ describe("Settings → Payees find by card (P5g)", () => {
   });
 });
 
+
+describe("Merchants directory chips and filters (P8)", () => {
+  const entity = (id: number, name: string, type: string, extra: Record<string, unknown> = {}) => ({
+    id, name, type, aliasCount: 1, aliasNames: [], identifierCount: 0, defaultCategoryId: null, merchantType: null, merchantTypeHint: null, merchantTypeMixed: null, count: 1, total: -1, lastDate: null, ...extra,
+  });
+  it("splits entries into merchants / people / channels and filters untyped, without requisites, needing a check", async () => {
+    resetNavigation({ search: "tab=directory" });
+    const entities = [
+      entity(1, "Сільпо", "retail", { merchantType: { id: 1, group: "Супермаркети і продукти", name: "Супермаркети і продукти", code: "grocery" }, identifierCount: 1 }),
+      entity(2, "Степаненко", "person"),
+      entity(3, "Комісія банку", "bank", { merchantType: { id: 2, group: "Банківські операції", name: "Комісії банку", code: "bank_fees" } }),
+      entity(4, "Ma", "other"),
+    ];
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ groups: [], totalGroups: 0, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities, batches: [], settings: { advancedMode: false, identifierKinds: [] }, suspicious: [{ id: 4, name: "Ma", reasons: [], count: 1, spellings: [] }] }),
+    })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <PayeesSettingsPage />
+      </SWRConfig>,
+    );
+    expect(await screen.findByRole("button", { name: "All · 4" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Merchants · 2" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "People · 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Channels · 1" }));
+    expect(screen.getByText("Комісія банку")).toBeTruthy();
+    expect(screen.queryByText("Сільпо")).toBeNull();
+    expect(navigationCalls.at(-1)).toBe("/merchants?tab=directory&chip=channels");
+    fireEvent.click(screen.getByRole("button", { name: "All · 4" }));
+    fireEvent.click(screen.getByLabelText("needs a check"));
+    expect(screen.getByRole("link", { name: "Ma" })).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Степаненко" })).toBeNull();
+    fireEvent.click(screen.getByLabelText("needs a check"));
+    fireEvent.click(screen.getByLabelText("no requisites"));
+    expect(screen.queryByRole("link", { name: "Сільпо" })).toBeNull();
+    fireEvent.click(screen.getByLabelText("no type"));
+    expect(screen.queryByRole("link", { name: "Комісія банку" })).toBeNull();
+    expect(screen.getByRole("link", { name: "Степаненко" })).toBeTruthy();
+  });
+
+  it("an empty list says why and offers a way out", async () => {
+    resetNavigation({ search: "tab=directory&chip=people" });
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ groups: [], totalGroups: 0, clusters: [], currency: "UAH", truncated: [], undecryptable: 0, entities: [entity(1, "Сільпо", "retail")], batches: [], settings: { advancedMode: false, identifierKinds: [] } }),
+    })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0 }}>
+        <PayeesSettingsPage />
+      </SWRConfig>,
+    );
+    expect(await screen.findByText("No entry matches these chips and filters.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(screen.getByRole("link", { name: "Сільпо" })).toBeTruthy();
+  });
+
+  it("a load error offers Try again", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: "x" }) })));
+    render(
+      <SWRConfig value={{ provider: () => new Map(), dedupingInterval: 0, shouldRetryOnError: false }}>
+        <PayeesSettingsPage />
+      </SWRConfig>,
+    );
+    expect(await screen.findByRole("button", { name: "Try again" })).toBeTruthy();
+  });
+});

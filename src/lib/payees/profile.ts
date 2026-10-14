@@ -12,6 +12,7 @@
  * fetches a site or a favicon: the user or their AI client supplies them.
  */
 import { PayeeDirectoryError } from "./directory";
+import { st } from "@/lib/i18n/current";
 
 export const LOGO_MAX_BYTES = 20 * 1024;
 const LOGO_TYPES = ["image/png", "image/jpeg", "image/webp"] as const;
@@ -20,19 +21,19 @@ export type LogoType = (typeof LOGO_TYPES)[number];
 /** Normalize a website to `https://host/path`, or throw a plain-language error. */
 export function normalizeWebsite(raw: string): string {
   const v = raw.trim();
-  if (!v) throw new PayeeDirectoryError("The website can't be empty.");
-  if (v.length > 500) throw new PayeeDirectoryError("The website address is too long.");
+  if (!v) throw new PayeeDirectoryError(st("srv.profile.websiteEmpty"));
+  if (v.length > 500) throw new PayeeDirectoryError(st("srv.profile.websiteTooLong"));
   const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(v) ? v : `https://${v.replace(/^\/+/, "")}`;
   let url: URL;
   try {
     url = new URL(withScheme);
   } catch {
-    throw new PayeeDirectoryError(`“${v}” is not a web address.`);
+    throw new PayeeDirectoryError(st("srv.profile.notWebAddress", { value: v }));
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") throw new PayeeDirectoryError("Only http and https websites are allowed.");
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new PayeeDirectoryError(st("srv.profile.httpOnly"));
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   if (!host.includes(".") || !/^[a-z0-9.-]+$/.test(host) || /^\d+\.\d+\.\d+\.\d+$/.test(host)) {
-    throw new PayeeDirectoryError(`“${v}” is not a public website address.`);
+    throw new PayeeDirectoryError(st("srv.profile.notPublic", { value: v }));
   }
   const path = url.pathname.replace(/\/+$/, "");
   return `https://${host}${path}`;
@@ -48,18 +49,18 @@ function detectImage(bytes: Uint8Array): LogoType | null {
 /** Validate a logo data URI; returns it in canonical `data:<type>;base64,<…>` form. */
 export function normalizeLogo(raw: string): string {
   const m = /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(raw.trim());
-  if (!m) throw new PayeeDirectoryError("The logo must be a PNG, JPEG or WebP image (data: URI, base64).");
+  if (!m) throw new PayeeDirectoryError(st("srv.profile.logoDataUri"));
   const declared = m[1].toLowerCase().replace("image/jpg", "image/jpeg");
-  if (declared === "image/svg+xml") throw new PayeeDirectoryError("SVG logos are not allowed; use PNG, JPEG or WebP.");
-  if (!(LOGO_TYPES as readonly string[]).includes(declared)) throw new PayeeDirectoryError("The logo must be a PNG, JPEG or WebP image.");
+  if (declared === "image/svg+xml") throw new PayeeDirectoryError(st("srv.profile.logoNoSvg"));
+  if (!(LOGO_TYPES as readonly string[]).includes(declared)) throw new PayeeDirectoryError(st("srv.profile.logoType"));
   const b64 = m[2].replace(/\s+/g, "");
-  if (b64.length > Math.ceil((LOGO_MAX_BYTES * 4) / 3) + 4) throw new PayeeDirectoryError(`The logo is too large (${Math.round(LOGO_MAX_BYTES / 1024)} KB max).`);
+  if (b64.length > Math.ceil((LOGO_MAX_BYTES * 4) / 3) + 4) throw new PayeeDirectoryError(st("srv.profile.logoTooLarge", { kb: Math.round(LOGO_MAX_BYTES / 1024) }));
   const bytes = Uint8Array.from(Buffer.from(b64, "base64"));
-  if (bytes.length === 0) throw new PayeeDirectoryError("The logo is empty.");
-  if (bytes.length > LOGO_MAX_BYTES) throw new PayeeDirectoryError(`The logo is too large (${Math.round(LOGO_MAX_BYTES / 1024)} KB max).`);
+  if (bytes.length === 0) throw new PayeeDirectoryError(st("srv.profile.logoEmpty"));
+  if (bytes.length > LOGO_MAX_BYTES) throw new PayeeDirectoryError(st("srv.profile.logoTooLarge", { kb: Math.round(LOGO_MAX_BYTES / 1024) }));
   const actual = detectImage(bytes);
-  if (!actual) throw new PayeeDirectoryError("The logo file is not a PNG, JPEG or WebP image.");
-  if (actual !== declared) throw new PayeeDirectoryError(`The logo says ${declared} but the file is ${actual}.`);
+  if (!actual) throw new PayeeDirectoryError(st("srv.profile.logoNotImage"));
+  if (actual !== declared) throw new PayeeDirectoryError(st("srv.profile.logoMismatch", { declared, actual }));
   return `data:${actual};base64,${Buffer.from(bytes).toString("base64")}`;
 }
 

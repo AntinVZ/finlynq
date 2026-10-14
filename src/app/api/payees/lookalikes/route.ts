@@ -1,6 +1,6 @@
 /**
  * /api/payees/lookalikes — new spellings that look like a directory entry
- * (Payee Studio P5b; Settings → Payees → Look-alikes, "Check for new
+ * (Payee Studio P5b; Merchants → Queue → Other spellings, "Check for new
  * look-alikes").
  *
  * GET ?limit=N (default 500)
@@ -28,7 +28,7 @@ import { loadLookalikes, loadPayeeOverview } from "@/lib/payees/service";
 import { cancelRejection, rejectLookalike } from "@/lib/payees/lookalikes";
 import { payeeErrorResponse } from "@/lib/payees/route-errors";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to check look-alikes" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to check look-alikes" }, async ({ request, userId, dek }) => {
   const raw = Number(request.nextUrl.searchParams.get("limit") ?? "");
   const limit = Number.isInteger(raw) && raw > 0 ? Math.min(raw, 5000) : 500;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
@@ -47,7 +47,7 @@ const postSchema = z.discriminatedUnion("action", [
 ]);
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Look-alike update failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Look-alike update failed" },
   async ({ userId, dek, body }) => {
     if (body.action === "reject") {
       const ok = await rejectLookalike(db, userId, dek!, body.payee, body.entityId);

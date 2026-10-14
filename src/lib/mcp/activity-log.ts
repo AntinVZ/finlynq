@@ -60,6 +60,10 @@ export const MCP_READ_OPS: ReadonlySet<string> = new Set([
   "suspicious",
   "own_accounts",
   "bulk_review",
+  // B32 (P8 stage 9): reading the merchant-type list is not a write.
+  "merchant_types",
+  "coverage",
+  "queue",
 ]);
 
 /** `op` as a safe label, or null (never echoes free text from the arguments). */

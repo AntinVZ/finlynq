@@ -105,7 +105,7 @@ describeDb("Payee Studio P6 merchant types (seeded DB)", () => {
     const c = await op({ op: "create", name: "Uklon", apply: false, merchantType: "Транспорт і таксі" });
     const added = await op({ op: "merchant_types", add: [{ group: "Транспорт і таксі", name: "Таксі" }] });
     expect(added.merchantTypes.added).toEqual(["Транспорт і таксі → Таксі"]);
-    await expect(op({ op: "merchant_types", add: [{ group: "транспорт і таксі", name: "таксі" }] })).rejects.toThrow(/уже є/);
+    await expect(op({ op: "merchant_types", add: [{ group: "транспорт і таксі", name: "таксі" }] })).rejects.toThrow(/already exists/);
     const taxi = (await types()).find((t) => t.name === "Транспорт і таксі")!;
     const renamed = await op({ op: "merchant_types", update: [{ id: taxi.id!, name: "Громадський транспорт" }] });
     expect(renamed.merchantTypes.updated[0]).toContain("Громадський транспорт");

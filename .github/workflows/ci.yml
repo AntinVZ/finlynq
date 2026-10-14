@@ -59,6 +59,11 @@ jobs:
         # truncating clients never render two tools as the same string.
         run: npm run lint:tool-descriptions
 
+      - name: Check translations
+        # P8 — every language has the English keys, the same variables and a
+        # plural `other`; no key is left unused (scripts/lint-i18n.ts).
+        run: npm run lint:i18n
+
       - name: Build
         run: npm run build
         env:

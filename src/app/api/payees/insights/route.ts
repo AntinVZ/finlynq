@@ -1,5 +1,5 @@
 /**
- * /api/payees/insights — who the money goes to (Settings → Payees → Insights).
+ * /api/payees/insights — who the money goes to (Merchants → Overview).
  *
  * GET ?months=1..60 (default 12) &recentDays=7..730 (default 90)
  *   → { topBySpend, topByCount, monthly: { months, series }, newCounterparties,
@@ -38,7 +38,7 @@ const intParam = (v: string | null, def: number) => {
   return Number.isInteger(n) && n > 0 ? n : def;
 };
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payee insights" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payee insights" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   if (params.get("view") === "merchants") {
     const entityId = Number(params.get("entityId") ?? "");

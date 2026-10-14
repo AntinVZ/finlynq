@@ -30,7 +30,6 @@ import {
   Landmark,
   Users,
   Tags,
-  Store,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -47,7 +46,6 @@ const NAV_ITEMS: NavItem[] = [
   // Transaction tags: list, rename, merge, delete.
   { href: "/settings/tags", label: "Tags", icon: Tags },
   // Payee Studio: payee overview, clusters, directory.
-  { href: "/settings/payees", label: "Payees", icon: Store },
   // FINLYNQ-84 — rules moved out of /settings/categorization into their own
   // sub-page with a multi-condition + multi-action editor.
   { href: "/settings/rules", label: "Rules", icon: Zap },

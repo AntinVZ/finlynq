@@ -11,15 +11,35 @@
 import Link from "next/link";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Settings2 } from "lucide-react";
+import { Languages, Settings2 } from "lucide-react";
+import { LanguagePicker } from "@/components/i18n/language-picker";
+import { useT } from "@/lib/i18n/client";
 
 export default function DisplaySettingsPage() {
+  const t = useT();
   return (
     <div className="max-w-2xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Display & Ordering</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Customize how lists and pickers are ordered</p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-sky-100 text-sky-700">
+              <Languages className="h-5 w-5" />
+            </div>
+            <div>
+              <CardTitle className="text-base">{t("lang.cardTitle")}</CardTitle>
+              <CardDescription>{t("lang.note")}</CardDescription>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          <LanguagePicker />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

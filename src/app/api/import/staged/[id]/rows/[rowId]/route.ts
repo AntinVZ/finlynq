@@ -313,7 +313,15 @@ export async function PATCH(
       : encryptStaged(v);
   };
 
-  if (body.payee !== undefined) update.payee = encrypt(body.payee);
+  if (body.payee !== undefined) {
+    // P8 stage 10 (B33): the import hint applies to a staged edit too. import_hash stays.
+    let payee = body.payee;
+    if (payee) {
+      const { canonicalPayeeHint } = await import("@/lib/payees/import-assist");
+      payee = (await canonicalPayeeHint(db, userId, dek, payee).catch(() => null)) ?? payee;
+    }
+    update.payee = encrypt(payee);
+  }
   if (body.category !== undefined) update.category = encrypt(body.category);
   if (body.note !== undefined) update.note = encrypt(body.note);
   // tags is a free-text comma-separated value — NOT encrypted at staging

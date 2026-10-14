@@ -30,7 +30,9 @@ const limit = 50;
 
 export const TX_PAGE_LIMIT = limit;
 
-type TxListResponse = { data?: Transaction[]; total?: number };
+/** P8 stage 2: count + per-currency sums of the rows of a merchant / merchant-type filter. */
+export type MerchantSummary = { count: number; totals: Record<string, number>; truncated: boolean };
+type TxListResponse = { data?: Transaction[]; total?: number; merchantSummary?: MerchantSummary };
 
 export function useTransactions(
   filters: {
@@ -41,6 +43,8 @@ export function useTransactions(
     accountId: string;
     categoryId: string;
     search: string;
+    merchant?: string;
+    merchantType?: string;
     portfolioHolding: string;
     tag: string;
     tags_all?: string;
@@ -87,6 +91,7 @@ export function useTransactions(
   return {
     txns: data?.data ?? [],
     total: data?.total ?? 0,
+    merchantSummary: data?.merchantSummary,
     loading,
     limit,
     loadTxns,

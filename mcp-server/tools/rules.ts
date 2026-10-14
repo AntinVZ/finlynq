@@ -44,6 +44,8 @@ import {
   invalidateUser as invalidateUserTxCache,
 } from "../../src/lib/mcp/user-tx-cache";
 import { registerManageTool } from "./_consolidate";
+import { testRuleConditions } from "../../src/lib/rules/test-rule";
+import { makeMerchantResolver, recordRuleHits, rulesUseMerchant } from "../../src/lib/rules/merchant-context";
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
 
@@ -162,7 +164,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
       type ParsedRule = {
         id: number;
         name: string;
-        conditions: { all: Array<{ field?: string; op?: string; value?: string; min?: number; max?: number; accountId?: number; weekday?: number; day?: number; from?: string; to?: string }> };
+        conditions: { all: Array<{ field?: string; op?: string; value?: string; min?: number; max?: number; accountId?: number; weekday?: number; day?: number; from?: string; to?: string; entityId?: number; typeId?: number }> };
         actions: Array<{ kind: string; categoryId?: number; tags?: string; to?: string; currency?: string; holdingId?: number }>;
         priority: number;
         hasSideEffects: boolean;
@@ -191,7 +193,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
       });
 
       // Inline matcher — supports payee/note/tags/amount/account/currency/date predicates.
-      function matchesProbe(probe: { payee: string; tags: string; amount: number; accountId: number | null; date: string }, conds: ParsedRule["conditions"]): boolean {
+      function matchesProbe(probe: { payee: string; tags: string; amount: number; accountId: number | null; date: string; merchantEntityId: number | null; merchantTypeId: number | null }, conds: ParsedRule["conditions"]): boolean {
         const all = conds.all ?? [];
         if (all.length === 0) return false;
         return all.every((c) => {
@@ -227,6 +229,13 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
             // Without a JOIN to accounts we can't probe entered currency here; skip.
             return false;
           }
+          if (field === "merchant" || field === "merchant_type") {
+            // P8 stage 10: resolved through the Merchants directory; unresolved = no match.
+            const v = field === "merchant" ? probe.merchantEntityId : probe.merchantTypeId;
+            const want = field === "merchant" ? c.entityId : c.typeId;
+            if (v == null || want == null) return false;
+            return op === "is" ? v === want : v !== want;
+          }
           if (field === "date") {
             const dStr = probe.date;
             if (!/^\d{4}-\d{2}-\d{2}$/.test(dStr)) return false;
@@ -240,6 +249,8 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
         });
       }
 
+      const resolveMerchant = rulesUseMerchant(rules) ? await makeMerchantResolver(db, userId, dek) : null;
+      const hits: number[] = [];
       let updated = 0;
       const preview: { id: number; payee: string; categoryId: number }[] = [];
       const skipped: { ruleId: number; reason: string; txnId?: number }[] = [];
@@ -253,6 +264,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
           amount: Number(txn.amount),
           accountId: txn.account_id == null ? null : Number(txn.account_id),
           date: String(txn.date ?? ""),
+          ...(resolveMerchant ? (({ entityId, typeId }) => ({ merchantEntityId: entityId, merchantTypeId: typeId }))(resolveMerchant(plainPayee)) : { merchantEntityId: null, merchantTypeId: null }),
         };
         for (const rule of rules) {
           if (!matchesProbe(probe, rule.conditions)) continue;
@@ -290,12 +302,14 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
             `);
           }
           preview.push({ id: Number(txn.id), payee: plainPayee, categoryId });
+          if (!dry_run) hits.push(rule.id);
           updated++;
           break;
         }
       }
 
       if (!dry_run && updated > 0) invalidateUserTxCache(userId);
+      if (hits.length) await recordRuleHits(db, userId, hits);
       return text({
         success: true,
         data: {
@@ -317,7 +331,7 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
   // as actionFKNames map for human-readable rendering.
   async function opList(): Promise<ToolResult> {
       const rawRows = await q(db, sql`
-        SELECT id, name, conditions, actions, is_active, priority, created_at, updated_at
+        SELECT id, name, conditions, actions, is_active, priority, hit_count, last_hit_at, created_at, updated_at
         FROM transaction_rules
         WHERE user_id = ${userId}
         ORDER BY priority DESC, id
@@ -554,6 +568,13 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
   }
 
 
+  // P8 stage 10: dry-run a v2 condition group (merchant / merchant-type conditions included).
+  async function testRuleV2(conditions: ConditionGroupType, limit: number): Promise<ToolResult> {
+    // Rule condition values are stored encrypted; the caller passes plaintext, so match as given.
+    const r = await testRuleConditions({ executor: db, userId, dek, conditions, limit });
+    return text({ success: true, data: { ...r, note: r.matchedCount > r.matches.length ? `Showing ${r.matches.length} of ${r.matchedCount} matches` : undefined } });
+  }
+
   // ── test_rule ─────────────────────────────────────────────────────────────
   server.tool(
     "test_rule",
@@ -565,8 +586,10 @@ export function registerRulesTools(server: McpServer, ctx: PgToolContext) {
       match_value: z.string().optional().describe("Overrides match_payee when match_field != 'payee'"),
       match_amount: z.number().optional().describe("Alias — set as match_value when match_field='amount'"),
       sample_size: z.number().optional().describe("Max transactions to scan (default 5000)"),
+      conditions: ConditionGroup.optional().describe("v2 condition group ({all:[…]}) instead of the flat pattern — e.g. [{field:'merchant',op:'is',entityId}] or [{field:'merchant_type',op:'is',typeId}]. Reports uncategorizedCount too."),
     },
-    async ({ match_payee, match_field, match_type, match_value, match_amount, sample_size }) => {
+    async ({ match_payee, match_field, match_type, match_value, match_amount, sample_size, conditions }) => {
+      if (conditions) return testRuleV2(conditions, sample_size ?? 5000);
       const field = match_field ?? "payee";
       const type = match_type ?? "contains";
       const value =

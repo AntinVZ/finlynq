@@ -14,6 +14,7 @@
  * email that matches an auto-rule flips to "Recorded" on open.
  */
 
+import { PayeePicker } from "@/components/payees/payee-picker";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -543,10 +544,12 @@ export function InboxEmailTab() {
                           </div>
                           <div className="space-y-1">
                             <label className="text-xs text-muted-foreground">Payee</label>
-                            <input
-                              className="h-9 w-[160px] rounded-md border bg-background px-2 text-sm"
+                            <PayeePicker
+                              className="w-[180px]"
+                              inputClassName="h-9"
+                              ariaLabel="Payee"
                               value={editPayee}
-                              onChange={(e) => setEditPayee(e.target.value)}
+                              onChange={setEditPayee}
                             />
                           </div>
                           <Button

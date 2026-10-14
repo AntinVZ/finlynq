@@ -22,6 +22,8 @@ import { Input } from "@/components/ui/input";
 import { ConfirmDialog } from "@/components/ui/confirm-dialog";
 import { parseSaveError } from "@/lib/save-error";
 import { Activity, KeyRound, Loader2 } from "lucide-react";
+import Link from "next/link";
+import { useT } from "@/lib/i18n/client";
 
 type AiAccess = {
   apiKey: { exists: boolean; createdAt: string | null; hasDekWrap: boolean; lastActivityAt: string | null };
@@ -38,6 +40,8 @@ type AiAccess = {
     createdAt: string | null;
   }>;
   journalAvailable: boolean;
+  /** P8 stage 9 (B12): which connector schema this server answers with. */
+  schema?: { serverVersion: string; tools: { http: number; stdio: number }; payees: string };
 };
 
 function formatWhen(iso: string | null): string {
@@ -55,6 +59,7 @@ function formatDay(iso: string | null): string {
 }
 
 export function AiAccess() {
+  const t = useT();
   const [writesOnly, setWritesOnly] = useState(false);
   const { data, error, isLoading, mutate } = useSWR<AiAccess>(
     `/api/settings/ai-access${writesOnly ? "?writesOnly=1" : ""}`,
@@ -142,6 +147,16 @@ export function AiAccess() {
                 <dd>{key?.exists ? formatDay(key.createdAt) : "—"}</dd>
                 <dt className="text-muted-foreground">Last MCP activity</dt>
                 <dd>{formatWhen(key?.lastActivityAt ?? null)}</dd>
+                {data?.schema && (
+                  <>
+                    <dt className="text-muted-foreground">{t("aiAccess.schemaTitle")}</dt>
+                    <dd data-testid="mcp-schema">
+                      {t("aiAccess.schemaLine", { version: data.schema.serverVersion, http: data.schema.tools.http, stdio: data.schema.tools.stdio, payees: data.schema.payees })}
+                      {" · "}
+                      <Link href="/merchants?tab=changes" className="underline">{t("aiAccess.batchesLink")}</Link>
+                    </dd>
+                  </>
+                )}
               </dl>
               {newKey && (
                 <div className="rounded-md border border-amber-300 bg-amber-50 p-3 space-y-2 dark:border-amber-800 dark:bg-amber-950/30">

@@ -15,7 +15,7 @@ import { apiHandler } from "@/lib/api-handler";
 import { db } from "@/db";
 import { suggestPayees } from "@/lib/payees/service";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payee suggestions" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payee suggestions" }, async ({ request, userId, dek }) => {
   const params = request.nextUrl.searchParams;
   const q = (params.get("q") ?? "").slice(0, 200);
   const raw = Number(params.get("limit") ?? "");

@@ -24,7 +24,7 @@ const HAS_TEST_DB = /\/[^/]*_test([?#]|$)/.test(DB_URL);
 const describeDb = HAS_TEST_DB ? describe : describe.skip;
 
 const PAN = "4149 4999 1234 5678";
-const REFUSED = /Повний номер картки не приймається/;
+const REFUSED = /full card number isn't accepted/i;
 
 describe("server log scrubber", () => {
   it("redacts a full card number", () => {

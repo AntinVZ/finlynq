@@ -25,6 +25,7 @@ import { decodeStoredPayee, spellingOf, type PayeeExecutor } from "./scan";
 import { extractRequisites, maskSensitiveText, parseIdentifierQuery, type IdentifierQuery } from "./requisites";
 import { describeOwnAccount, loadOwnMatcher, type OwnAccount } from "./own-accounts";
 import { buildPayeeMatcher, findByIdentifier, loadDirectory, type PayeeEntity, type PayeeMatcher } from "./directory";
+import { st } from "@/lib/i18n/current";
 
 export type MatchedVia = "directory" | "text" | "bank";
 
@@ -271,15 +272,20 @@ export async function findWhose(opts: {
   const hints: string[] = [];
   const ownHit = (await loadOwnMatcher(executor, userId, dek)).byValue(im.query.kind, im.query.value);
   if (ownHit) {
-    hints.push(`Це ваш рахунок: ${describeOwnAccount(ownHit)} («Мої рахунки і картки»). Платежі на нього — перекази між своїми рахунками, не витрати.`);
+    hints.push(st("srv.whose.ownAccount", { account: describeOwnAccount(ownHit) }));
   }
   if (weak && candidates.length > 1) {
-    hints.push(`The last 4 digits ${im.query.value} belong to ${candidates.length} payees; tell them apart by the typical amount, the dates and the account you paid from:`);
+    hints.push(st("srv.whose.sharedLast4", { value: im.query.value, n: candidates.length }));
     for (const c of candidates) {
-      hints.push(`${c.payee}: ${c.transactions} payment(s)${c.typicalAmount != null ? `, usually ${c.typicalAmount}` : ""}${c.firstDate ? `, ${c.firstDate} → ${c.lastDate}` : ""}${c.accounts.length ? `, from ${c.accounts.map((x) => x.name).join(" / ")}` : ""}.`);
+      hints.push([
+        st("srv.whose.candidatePayments", { payee: c.payee, n: c.transactions }),
+        c.typicalAmount != null ? st("srv.whose.candidateUsually", { amount: c.typicalAmount }) : "",
+        c.firstDate ? `, ${c.firstDate} → ${c.lastDate}` : "",
+        c.accounts.length ? st("srv.whose.candidateFrom", { accounts: c.accounts.map((x) => x.name).join(" / ") }) : "",
+      ].join("") + ".");
     }
   } else if (weak && candidates.length === 1 && !candidates[0].holdsRequisite) {
-    hints.push("Only the last 4 digits matched: a hint, not proof. Add the card to the payee if it is really theirs.");
+    hints.push(st("srv.whose.last4Weak"));
   }
   return {
     query: { kind: im.query.kind, masked: im.query.masked, strength: weak ? "weak" : "strong" },

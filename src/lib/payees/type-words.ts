@@ -21,14 +21,14 @@ import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, PATRONYMIC_TOKEN_RE } from "./match-key";
 
 /** A merchant-type suggestion: group → position (stage 3 dictionary). */
-export type MerchantTypeHint = { group: string; name: string };
+export type MerchantTypeHint = { group: string; name: string; code?: string };
 
-const CAFE: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Кафе" };
-const RESTAURANT: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Ресторани" };
-const BAR: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Бари" };
-const PHARMACY: MerchantTypeHint = { group: "Аптеки", name: "Аптеки" };
-const HOTEL: MerchantTypeHint = { group: "Готелі", name: "Готелі" };
-const FUEL: MerchantTypeHint = { group: "Пальне (АЗС)", name: "Пальне (АЗС)" };
+const CAFE: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Кафе", code: "cafe" };
+const RESTAURANT: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Ресторани", code: "restaurant" };
+const BAR: MerchantTypeHint = { group: "Кафе, ресторани, бари", name: "Бари", code: "bar" };
+const PHARMACY: MerchantTypeHint = { group: "Аптеки", name: "Аптеки", code: "pharmacy" };
+const HOTEL: MerchantTypeHint = { group: "Готелі", name: "Готелі", code: "hotel" };
+const FUEL: MerchantTypeHint = { group: "Пальне (АЗС)", name: "Пальне (АЗС)", code: "fuel" };
 
 /**
  * Default type words (uk, ru, en, transliterated). Multi-word entries
@@ -75,6 +75,9 @@ export type VocabularyOptions = {
   typeWordsOff?: readonly string[];
   bankOpsExtra?: readonly string[];
   bankOpsOff?: readonly string[];
+  /** P8 stage 7: words and bank operations from the country packs turned on beyond UA (./packs). */
+  packTypeWords?: ReadonlyArray<{ word: string; hint: MerchantTypeHint | null }>;
+  packBankOps?: readonly string[];
 };
 
 type TypePhrase = { word: string; tokens: string[]; hint: MerchantTypeHint | null };
@@ -106,7 +109,7 @@ function compileBankOp(pattern: string): BankOp | null {
 
 const cleanList = (l: readonly string[] | undefined) => (l ?? []).map((w) => w.replace(/\s+/g, " ").trim()).filter((w) => w.length > 0 && w.length <= 60);
 
-/** Build a vocabulary: the defaults, minus what the user switched off, plus their own words. */
+/** Build a vocabulary: the defaults (the UA pack), the other packs turned on, minus what the user switched off, plus their own words. */
 export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
   const off = new Set(cleanList(opts.typeWordsOff).map((w) => payeeMatchKey(w)));
   const phrases = new Map<string, TypePhrase>();
@@ -116,6 +119,7 @@ export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
     phrases.set(key, { word, tokens: key.split(" "), hint });
   };
   for (const w of DEFAULT_TYPE_WORDS) add(w.word, w.hint ?? null);
+  for (const w of opts.packTypeWords ?? []) if (w.word.trim() && w.word.length <= 60) add(w.word.trim(), w.hint);
   // P6.2 (B30): a user word may carry a hint — `кальянна = Кафе, ресторани, бари → Бари`.
   for (const w of cleanList(opts.typeWordsExtra)) {
     const m = w.match(/^(.+?)\s*=\s*(.+)$/);
@@ -124,7 +128,7 @@ export function buildVocabulary(opts: VocabularyOptions = {}): PayeeVocabulary {
   const opsOff = new Set(cleanList(opts.bankOpsOff).map((p) => normalizeForMatch(p)));
   const bankOps: BankOp[] = [];
   const seen = new Set<string>();
-  for (const p of [...DEFAULT_BANK_OPERATIONS, ...cleanList(opts.bankOpsExtra)]) {
+  for (const p of [...DEFAULT_BANK_OPERATIONS, ...cleanList(opts.packBankOps), ...cleanList(opts.bankOpsExtra)]) {
     const op = compileBankOp(p);
     if (!op || opsOff.has(op.pattern) || seen.has(op.pattern)) continue;
     seen.add(op.pattern);
@@ -199,6 +203,30 @@ export function typeWordSynonymKeys(word: string, vocab: PayeeVocabulary = defau
   const own = vocab.phrases.find((p) => p.tokens.join(" ") === key);
   if (!own?.hint) return [key];
   return [...new Set([key, ...vocab.phrases.filter((p) => p.hint && sameHint(p.hint, own.hint!)).map((p) => p.tokens.join(" "))])];
+}
+
+/**
+ * Payment channels (P8 stage 10): the bank or service a payment went through,
+ * not the merchant. A payee that IS only a channel (`OTPC2C`, `P24 12345`,
+ * `MONODirect`) is marked as a channel: it never becomes a merchant
+ * proposal, a cluster or an autopilot rename, and the import summary counts
+ * it apart. A channel in front of a real name (`P24 SILPO`) is dropped from
+ * the matching key like any terminal prefix (./match-key.ts).
+ */
+export const PAYMENT_CHANNELS: readonly string[] = ["OTPC2C", "P24", "MONODirect", "LiqPay", "WFP", "Portmone", "Apple Pay", "Google Pay"];
+const CHANNEL_RE = new RegExp(
+  `^(${PAYMENT_CHANNELS.map((c) => c.toLowerCase().replace(/ /g, "\\s*")).join("|")})(?:[\\s*#:./-]*[\\d\\s*#:./-]*)$`,
+  "i",
+);
+
+/** The channel a payee consists of (no merchant name next to it), or null. */
+export function channelOf(payee: string | null | undefined): string | null {
+  const s = String(payee ?? "").trim();
+  if (!s) return null;
+  const m = s.match(CHANNEL_RE);
+  if (!m) return null;
+  const hit = m[1].replace(/\s+/g, "").toLowerCase();
+  return PAYMENT_CHANNELS.find((c) => c.replace(/\s+/g, "").toLowerCase() === hit) ?? null;
 }
 
 /** The bank-operation pattern a payee matches, or null. */
