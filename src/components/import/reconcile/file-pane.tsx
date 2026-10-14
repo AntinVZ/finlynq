@@ -32,6 +32,7 @@ import {
   type HoldingOption,
 } from "@/components/staging/staged-row-editor";
 import { RowBadge, type ReconcileState } from "./row-badge";
+import { RecommendedChip, usePayeeRecommendations } from "@/components/payees/recommended-chip";
 import { matchRowClass, type PaneMatchStatus } from "./match-status";
 
 const RowFragment = Fragment;
@@ -87,6 +88,18 @@ export function FilePane({
   highlightedStagedIds,
   matchStatus,
 }: FilePaneProps) {
+  // P8 stage 4: «Рекомендовано: X» when a row's payee resolves to a
+  // directory entry under another name; one click saves that name.
+  const recommendationFor = usePayeeRecommendations(rows.map((r) => r.payee));
+  async function applyPayee(row: StagedEditableRow, name: string) {
+    const res = await fetch(`/api/import/staged/${stagedImportId}/rows/${row.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ payee: name }),
+    }).catch(() => null);
+    const data = res ? await res.json().catch(() => null) : null;
+    if (res?.ok && data?.row) onRowUpdated(data.row as StagedEditableRow);
+  }
   if (rows.length === 0) {
     return (
       <>
@@ -243,6 +256,7 @@ export function FilePane({
                       {r.payee || (
                         <span className="text-muted-foreground">—</span>
                       )}
+                      <RecommendedChip rec={recommendationFor(r.payee)} onApply={(name) => void applyPayee(r, name)} />
                       {r.category && (
                         <span className="text-muted-foreground"> · {r.category}</span>
                       )}

@@ -83,6 +83,8 @@ export async function GET(request: NextRequest) {
       actions: transactionRules.actions,
       isActive: transactionRules.isActive,
       priority: transactionRules.priority,
+      hitCount: transactionRules.hitCount,
+      lastHitAt: transactionRules.lastHitAt,
       createdAt: transactionRules.createdAt,
       updatedAt: transactionRules.updatedAt,
     })
@@ -131,6 +133,18 @@ export async function GET(request: NextRequest) {
     fetchNames(portfolioHoldings, holdingIdSet),
   ]);
 
+  // P8 stage 10: names for `merchant` / `merchant_type` conditions.
+  const merchantNames: Record<string, string> = {};
+  const merchantTypeNames: Record<string, { group: string; name: string; code: string | null }> = {};
+  if (rawRules.some((r) => ((r.conditions as ConditionGroupType | null)?.all ?? []).some((c) => c.field === "merchant" || c.field === "merchant_type"))) {
+    const [{ loadDirectory }, { loadMerchantTypes }] = await Promise.all([
+      import("@/lib/payees/directory"),
+      import("@/lib/payees/merchant-types"),
+    ]);
+    for (const e of dek ? await loadDirectory(db, userId, dek) : []) merchantNames[String(e.id)] = e.name;
+    for (const t of await loadMerchantTypes(db, userId)) if (t.id != null) merchantTypeNames[String(t.id)] = { group: t.group, name: t.name, code: t.code ?? null };
+  }
+
   const rules = rawRules.map((r) => {
     // Decrypt the rule's sensitive free-text (name + payee/note/tags condition
     // values + rename_payee.to + set_tags.tags) for display (2026-06-01). FK ids
@@ -149,6 +163,8 @@ export async function GET(request: NextRequest) {
         categories: Object.fromEntries(categoryNames),
         accounts: Object.fromEntries(accountNames),
         holdings: Object.fromEntries(holdingNames),
+        merchants: merchantNames,
+        merchantTypes: merchantTypeNames,
       },
     };
   });

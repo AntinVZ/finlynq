@@ -414,6 +414,8 @@ export interface StageStatementCounts {
 
 export interface StageStatementSuccess {
   ok: true;
+  /** P8 stage 10: what happened to the payees (Payee Studio import hint / autopilot); null without a key. */
+  payeeSummary?: import("@/lib/payees/import-assist").ImportPayeeSummary | null;
   stagedImportId: string;
   format: StatementFileFormat;
   rowCount: number;
@@ -798,10 +800,12 @@ export async function writeStagedImport(
 
   // Payee Studio import hint / autopilot (both default OFF; each change is an
   // undoable payee batch). Never allowed to fail the import.
+  // P8 stage 10: the result is the post-import summary (no longer discarded).
+  let payeeSummary: import("@/lib/payees/import-assist").ImportPayeeSummary | null = null;
   if (dek && shaped.length > 0) {
     try {
       const { applyPayeeImportAssist } = await import("@/lib/payees/import-assist");
-      await applyPayeeImportAssist({ executor: db, userId, dek, stagedImportId });
+      payeeSummary = (await applyPayeeImportAssist({ executor: db, userId, dek, stagedImportId })).summary;
     } catch (err) {
       console.warn("[payees] import assist skipped:", err instanceof Error ? err.message : String(err));
     }
@@ -811,6 +815,7 @@ export async function writeStagedImport(
   return {
     ok: true,
     stagedImportId,
+    payeeSummary,
     format: parseResult.format,
     rowCount: shaped.length,
     duplicateCount: dupCount,

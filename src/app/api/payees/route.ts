@@ -1,5 +1,5 @@
 /**
- * /api/payees — Payee Studio overview (Settings → Payees).
+ * /api/payees — Payee Studio overview (Merchants).
  *
  * GET ?limit=N (default 5000)
  *   → { groups, clusters, currency, scanned, truncated, undecryptable, totalGroups }
@@ -49,7 +49,7 @@ import { getPayeeSettings } from "@/lib/payees/settings";
 import { PAYEE_TYPES } from "@/lib/payees/match-key";
 import { ALIAS_MODES, IDENTIFIER_KINDS } from "@/lib/payees/directory";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load payees" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load payees" }, async ({ request, userId, dek }) => {
   const limitRaw = Number(request.nextUrl.searchParams.get("limit") ?? "");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 20_000) : 5_000;
   const overview = await loadPayeeOverview({ executor: db, userId, dek });
@@ -158,6 +158,7 @@ const postSchema = z.discriminatedUnion("op", [
   z.object({ op: z.literal("split"), entityId: id, aliasIds: z.array(id).min(1).max(200), name, type, apply, dryRun }),
   z.object({ op: z.literal("apply"), entityIds: z.array(id).max(5000).optional(), dryRun }),
   z.object({ op: z.literal("delete"), entityId: id, dryRun }),
+  z.object({ op: z.literal("apply_default_category"), entityId: id, categoryId: id.optional(), dryRun }),
   z.object({ op: z.literal("move_remainder"), entityId: id, payees: z.array(z.string().min(1).max(500)).min(1).max(100), remainder: z.string().min(1).max(200), target: z.enum(["tag", "note"]).optional(), dryRun }),
   z.object({ op: z.literal("mark_reviewed"), entityIds: z.array(id).min(1).max(500), reviewed: z.boolean().optional(), dryRun }),
   z.object({
@@ -171,7 +172,7 @@ const postSchema = z.discriminatedUnion("op", [
 ]);
 
 export const POST = apiHandler(
-  { auth: "encryption", raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Payee change failed" },
+  { auth: "encryption", locale: true, raw: true, body: postSchema, mapError: payeeErrorResponse, fallbackMessage: "Payee change failed" },
   async ({ userId, dek, body }) => {
     const { dryRun: isDry, ...op } = body;
     const result = await executePayeeOp({ executor: db, userId, dek: dek!, op: op as PayeeOp, actor: "web", dryRun: isDry === true });

@@ -12,7 +12,7 @@ import { db } from "@/db";
 import { describeOwnAccount, loadOwnAccounts } from "@/lib/payees/own-accounts";
 import { maskIdentifier } from "@/lib/payees/directory";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load own accounts" }, async ({ userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load own accounts" }, async ({ userId, dek }) => {
   const list = await loadOwnAccounts(db, userId, dek);
   return NextResponse.json({
     ownAccounts: list.map((a) => ({

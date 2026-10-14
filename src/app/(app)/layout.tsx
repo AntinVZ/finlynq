@@ -8,6 +8,7 @@ import { FontProvider } from "@/components/font-provider";
 import { ReportingRecomputeIndicator } from "@/components/reporting-recompute-indicator";
 import { ViewScopeProvider } from "@/components/view-scope-provider";
 import { ViewScopeBar } from "@/components/view-scope-switcher";
+import { LocaleDocumentSync } from "@/lib/i18n/client";
 
 export default function AppLayout({ children }: { children: React.ReactNode }) {
   return (
@@ -17,6 +18,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
         <FontProvider>
         <ViewScopeProvider>
         <div className="relative flex min-h-screen flex-col">
+          <LocaleDocumentSync />
           <AnnouncementBanner />
           <PromptGate />
           <ReportingRecomputeIndicator />

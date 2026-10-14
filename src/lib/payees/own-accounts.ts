@@ -25,6 +25,7 @@ import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
 import { PayeeDirectoryError } from "./directory";
 import { extractRequisites, FULL_CARD_REFUSAL, ibanChecksumOk, isFullCardNumber, maskIban } from "./requisites";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export const OWN_ACCOUNT_OWNERS = ["me", "spouse", "business"] as const;
 export type OwnAccountOwner = (typeof OWN_ACCOUNT_OWNERS)[number];
@@ -59,35 +60,40 @@ export function normalizeOwnAccount(input: OwnAccountInput): Omit<OwnAccount, "i
   let iban: string | null = null;
   if (input.iban != null && input.iban.trim()) {
     iban = input.iban.replace(/\s+/g, "").toUpperCase();
-    if (!/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(iban)) throw new PayeeDirectoryError("Це не схоже на IBAN (наприклад UA21 3223 1300 0002 6007 2335 6600 1).");
-    if (!ibanChecksumOk(iban)) warnings.push(`IBAN ${maskIban(iban)}: контрольні цифри не сходяться — можливо, описка.`);
+    if (!/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(iban)) throw new PayeeDirectoryError(st("srv.own.notIban"));
+    if (!ibanChecksumOk(iban)) warnings.push(st("srv.own.ibanChecksum", { iban: maskIban(iban) }));
   }
   let cardLast4: string | null = null;
   if (input.card != null && input.card.trim()) {
     const raw = input.card.trim();
     // A full card number — never accepted, never stored.
-    if (isFullCardNumber(raw, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL);
+    if (isFullCardNumber(raw, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL());
     const last = raw.match(/(\d{4})\s*$/);
-    if (!last) throw new PayeeDirectoryError("Для картки потрібні останні 4 цифри.");
+    if (!last) throw new PayeeDirectoryError(st("srv.own.cardLast4Needed"));
     cardLast4 = last[1];
   }
-  if (!iban && !cardLast4) throw new PayeeDirectoryError("Вкажіть IBAN або останні 4 цифри картки.");
-  const text = (v: string | null | undefined, what: string) => {
+  if (!iban && !cardLast4) throw new PayeeDirectoryError(st("srv.own.ibanOrCard"));
+  const text = (v: string | null | undefined, what: "bank" | "label") => {
     const t = (v ?? "").replace(/\s+/g, " ").trim();
-    if (t.length > 60) throw new PayeeDirectoryError(`${what} задовга (до 60 символів).`);
+    if (t.length > 60) throw new PayeeDirectoryError(what === "bank" ? st("srv.own.bankTooLong") : st("srv.own.labelTooLong"));
     return t || null;
   };
   const currency = input.currency?.trim().toUpperCase() || null;
-  if (currency && !/^[A-Z]{3}$/.test(currency)) throw new PayeeDirectoryError("Валюта — трилітерний код (UAH, USD, EUR…).");
+  if (currency && !/^[A-Z]{3}$/.test(currency)) throw new PayeeDirectoryError(st("srv.own.currencyCode"));
   const owner = (input.owner ?? "me").trim() as OwnAccountOwner;
-  if (!(OWN_ACCOUNT_OWNERS as readonly string[]).includes(owner)) throw new PayeeDirectoryError("Власник: me (я), spouse (дружина / чоловік) або business (бізнес).");
-  return { iban, cardLast4, bank: text(input.bank, "Назва банку"), label: text(input.label, "Назва"), currency, owner, warnings };
+  if (!(OWN_ACCOUNT_OWNERS as readonly string[]).includes(owner)) throw new PayeeDirectoryError(st("srv.own.ownerValues"));
+  return { iban, cardLast4, bank: text(input.bank, "bank"), label: text(input.label, "label"), currency, owner, warnings };
+}
+
+/** The owner's label in the current request's language (OWN_OWNER_LABEL is the Ukrainian data form). */
+export function ownerLabel(owner: OwnAccountOwner): string {
+  return owner === "spouse" ? st("srv.own.ownerSpouse") : owner === "business" ? st("srv.own.ownerBusiness") : st("srv.own.ownerMe");
 }
 
 /** Masked one-line description: "Mono black · •••• 1234 · monobank · UAH (я)". */
 export function describeOwnAccount(a: Pick<OwnAccount, "iban" | "cardLast4" | "bank" | "label" | "currency" | "owner">): string {
   const parts = [a.label, a.iban ? maskIban(a.iban) : null, a.cardLast4 ? `•••• ${a.cardLast4}` : null, a.bank, a.currency].filter(Boolean);
-  return `${parts.join(" · ")} (${OWN_OWNER_LABEL[a.owner]})`;
+  return `${parts.join(" · ")} (${ownerLabel(a.owner)})`;
 }
 
 const dec = (dek: Buffer | null, v: unknown) => (v == null || !dek ? null : tryDecryptField(dek, String(v), "payee-own-account"));

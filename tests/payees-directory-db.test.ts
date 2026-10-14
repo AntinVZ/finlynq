@@ -151,7 +151,7 @@ describeDb("Payee Studio P2 directory (seeded DB)", () => {
     // P6.2: a full card number is refused, never cut down to its last 4 digits.
     await expect(
       op({ op: "create", name: "FOP Davydzon", type: "sole_proprietor", apply: false, identifiers: [{ kind: "card_last4", value: "4149 4393 1234 5678" }] }),
-    ).rejects.toThrow(/Повний номер картки не приймається/);
+    ).rejects.toThrow(/full card number isn't accepted/i);
     const res = await op({
       op: "create", name: "FOP Davydzon", type: "sole_proprietor", apply: false,
       identifiers: [{ kind: "card_last4", value: "4149 **** **** 5678" }, { kind: "iban", value: "ua21 3223 1300 0002 6007 2335 6600 1" }],
@@ -199,7 +199,7 @@ describeDb("Payee Studio P2 directory (seeded DB)", () => {
     expect(done.rows.total).toBe(10);
     const again = await op({ op: "apply", entityIds: [created.entity!.id] }, true);
     expect(again.rows.total).toBe(0);
-    expect(again.emptyReason).toMatch(/уже мають канонічну назву/);
+    expect(again.emptyReason).toMatch(/already have the canonical name/);
   });
 
   it("adding a cluster to the directory keeps every spelling as an exact alias", async () => {

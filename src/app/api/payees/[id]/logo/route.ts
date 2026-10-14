@@ -11,7 +11,7 @@ import { normalizeDbRows } from "@/lib/db-utils";
 import { tryDecryptField } from "@/lib/crypto/envelope";
 import { decodeLogo } from "@/lib/payees/profile";
 
-export const GET = apiHandler({ auth: "encryption", raw: true, fallbackMessage: "Failed to load logo" }, async ({ request, userId, dek }) => {
+export const GET = apiHandler({ auth: "encryption", locale: true, raw: true, fallbackMessage: "Failed to load logo" }, async ({ request, userId, dek }) => {
   const parts = request.nextUrl.pathname.split("/").filter(Boolean);
   const id = Number(parts[parts.length - 2]);
   if (!Number.isInteger(id) || id <= 0) return NextResponse.json({ error: "Bad entity id" }, { status: 400 });

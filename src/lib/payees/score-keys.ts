@@ -6,6 +6,7 @@
  */
 import { keySimilarity } from "./match-key";
 import { brandCoreOfKey, type PayeeVocabulary } from "./type-words";
+import { st } from "@/lib/i18n/current";
 
 /** A pair score. `sameBrand` = the brand cores agree (equal, or one continues the other); false = only spelled alike. */
 export type KeyScore = { confidence: number; reason: string; sameBrand: boolean };
@@ -28,14 +29,14 @@ export function scoreKeys(keyA: string, keyB: string, vocab?: PayeeVocabulary): 
   const ca = A.core;
   const cb = B.core;
   if (ca === cb) {
-    const typeWord = A.removed.length || B.removed.length ? ", legal form or type word" : " or legal form";
-    return { confidence: 0.9, reason: `same name apart from a one-letter suffix${typeWord}`, sameBrand: true };
+    const reason = A.removed.length || B.removed.length ? st("srv.score.sameApartFromTypeWord") : st("srv.score.sameApartFromLegalForm");
+    return { confidence: 0.9, reason, sameBrand: true };
   }
   const ta = ca.split(" ");
   const tb = cb.split(" ");
   const [short, long] = ta.length <= tb.length ? [ta, tb] : [tb, ta];
   if (short.join(" ").length >= 5 && short.every((t, i) => long[i] === t)) {
-    return { confidence: 0.75, reason: "one name continues the other", sameBrand: true };
+    return { confidence: 0.75, reason: st("srv.score.continues"), sameBrand: true };
   }
   if (Math.min(ca.length, cb.length) >= 5) {
     const sim = keySimilarity(ca, cb);
@@ -43,7 +44,7 @@ export function scoreKeys(keyA: string, keyB: string, vocab?: PayeeVocabulary): 
       const letters = Math.round((1 - sim) * Math.max(ca.length, cb.length));
       return {
         confidence: Math.min(0.88, round2(0.6 + (sim - 0.85) * 2)),
-        reason: `spellings differ by ${letters} letter${letters === 1 ? "" : "s"}`,
+        reason: st("srv.score.lettersDiffer", { n: letters }),
         sameBrand: false,
       };
     }

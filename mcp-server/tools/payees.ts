@@ -3,7 +3,7 @@
  *
  * Payees are per-row encrypted free text in transactions, recurring, staged,
  * SimpleFIN pending and the bank ledger, so every op reads and decrypts them
- * (src/lib/payees — the same code Settings → Payees uses) and works in
+ * (src/lib/payees — the same code the Merchants section uses) and works in
  * memory. The server never calls an LLM: the AI client looks at the compact
  * structured answers and proposes; the human approves.
  *
@@ -26,7 +26,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { type PgToolContext, dataResponse, err } from "./_shared";
+import { decodeCursor, pageMeta, pageOf } from "../../src/lib/payees/mcp-page";
+import { PAYEE_MCP_SCHEMA_VERSION } from "../../src/lib/payees/mcp-schema";
+import { loadQueueCounts } from "../../src/lib/payees/queue";
+import { computeOverviewCards, type OverviewPeriod } from "../../src/lib/payees/overview-cards";
+import { matcherFor } from "../../src/lib/payees/resolve-hint";
 import { registerManageTool } from "./_consolidate";
+import { runInUserLocale } from "../../src/lib/i18n/server";
+import { st } from "../../src/lib/i18n/current";
 import { signPreviewToken, verifyPreviewToken } from "./_confirm";
 import { executePayeeOp, PayeeBatchError, PayeeDirectoryError, type PayeeOp, type PayeeOpResult } from "../../src/lib/payees/ops";
 import { listPayeeBatches } from "../../src/lib/payees/batches";
@@ -44,7 +51,7 @@ import {
 } from "../../src/lib/payees/proposals";
 import { computePayeeInsights } from "../../src/lib/payees/insights";
 import { explainPayeePair } from "../../src/lib/payees/explain";
-import { getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
+import { dictionaryMetaOf, getPayeeSettings, vocabularyOf } from "../../src/lib/payees/settings";
 import { formatMerchantType, loadMerchantTypes, merchantTypeFilter, type MerchantType } from "../../src/lib/payees/merchant-types";
 import { buildDictionary, dictionaryImportOps, dictionaryToJson, dictionaryToYaml, parseDictionary, planDictionaryImport, type Resolution } from "../../src/lib/payees/dictionary";
 import { makeSliceConverter } from "../../src/lib/payees/service";
@@ -108,6 +115,15 @@ function clusterOut(c: PayeeCluster) {
       entity: g.entityId == null ? null : { id: g.entityId, name: g.entityName },
     })),
   };
+}
+
+/**
+ * P8 stage 9 (B7): a paged answer. Compact answers go without indentation;
+ * both carry `truncated` and, when more rows exist, `next_cursor`.
+ */
+function pagedResponse(data: Record<string, unknown>, compact?: boolean) {
+  if (!compact) return dataResponse(data);
+  return { content: [{ type: "text" as const, text: JSON.stringify({ success: true, data }) }] };
 }
 
 function entityOut(e: PayeeEntity, types: MerchantType[] = []) {
@@ -178,7 +194,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     return { currency: o.currency, ...(notes.length ? { note: notes.join(" ") } : {}) };
   }
 
-  async function opList(input: { view?: "all" | "unrecognized" | "entities"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number; merchant_type?: string }) {
+  async function opList(input: { view?: "all" | "unrecognized" | "entities"; search?: string; sort?: "count" | "total" | "name" | "last_date"; limit?: number; merchant_type?: string; cursor?: string; compact?: boolean }) {
     const o = await overview();
     const typeTest = input.merchant_type?.trim() ? merchantTypeFilter(input.merchant_type) : null;
     const typeOfEntity = new Map(o.entities.map((e) => [e.id, e.merchantType]));
@@ -192,9 +208,19 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       }
       if (input.sort === "name") ents = [...ents].sort((a, b) => a.name.localeCompare(b.name));
       else if (input.sort === "total") ents = [...ents].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
-      const limit = input.limit ?? 100;
+      const page = pageOf(ents, { cursor: input.cursor, limit: input.limit ?? 100 });
+      if (input.compact) {
+        return pagedResponse(
+          {
+            entities: page.items.map((e) => ({ entity_id: e.id, name: e.name, type: e.type, merchant_type: e.merchantType ? formatMerchantType(e.merchantType) : null, count: e.count, total: e.total })),
+            ...pageMeta(page),
+            ...scanMeta(o),
+          },
+          true,
+        );
+      }
       return dataResponse({
-        entities: ents.slice(0, limit).map((e) => ({
+        entities: page.items.map((e) => ({
           entity_id: e.id,
           name: e.name,
           type: e.type,
@@ -211,7 +237,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           aliases: e.aliasCount,
           identifiers: e.identifierCount,
         })),
-        total: ents.length,
+        ...pageMeta(page),
         ...scanMeta(o),
       });
     }
@@ -225,29 +251,54 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     if (sort === "total") groups = [...groups].sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
     else if (sort === "name") groups = [...groups].sort((a, b) => a.name.localeCompare(b.name));
     else if (sort === "last_date") groups = [...groups].sort((a, b) => (b.lastDate ?? "").localeCompare(a.lastDate ?? ""));
-    const limit = input.limit ?? 100;
+    const page = pageOf(groups, { cursor: input.cursor, limit: input.limit ?? 100 });
     const emptyPayee = o.groups.find((g) => !g.key);
-    return dataResponse({
-      payees: groups.slice(0, limit).map((g) => groupOut(g)),
-      total: groups.length,
-      ...(groups.length > limit ? { more: `Showing ${limit} of ${groups.length}; raise \`limit\` or pass \`search\`.` } : {}),
-      ...(emptyPayee ? { blankPayeeTransactions: emptyPayee.count } : {}),
-      ...scanMeta(o),
-    });
+    return pagedResponse(
+      {
+        payees: page.items.map((g) =>
+          input.compact ? { name: g.name, key: g.key, count: g.count, total: g.total, ...(g.entityId != null ? { entity_id: g.entityId } : {}) } : groupOut(g),
+        ),
+        ...pageMeta(page),
+        ...(page.truncated ? { more: `Showing ${page.items.length} of ${groups.length}; pass next_cursor for the next page, or \`search\`.` } : {}),
+        ...(emptyPayee ? { blankPayeeTransactions: emptyPayee.count } : {}),
+        ...scanMeta(o),
+      },
+      input.compact,
+    );
   }
 
-  async function opClusters(input: { min_confidence?: number; include_needs_decision?: boolean; limit?: number }) {
+  async function opClusters(input: { min_confidence?: number; include_needs_decision?: boolean; limit?: number; cursor?: string; compact?: boolean }) {
     const o = await overview();
     const min = input.min_confidence ?? 0;
     let clusters = o.clusters.filter((c) => c.confidence >= min);
     if (input.include_needs_decision === false) clusters = clusters.filter((c) => !c.needsDecision);
-    const limit = input.limit ?? 50;
-    return dataResponse({
-      clusters: clusters.slice(0, limit).map(clusterOut),
-      total: clusters.length,
-      needsDecision: clusters.filter((c) => c.needsDecision).length,
-      ...scanMeta(o),
-    });
+    const page = pageOf(clusters, { cursor: input.cursor, limit: input.limit ?? 50 });
+    return pagedResponse(
+      {
+        clusters: page.items.map((c) =>
+          input.compact
+            ? { cluster_id: c.id, confidence: c.confidence, ...(c.needsDecision ? { needsDecision: true } : {}), suggestedName: c.suggestedName, count: c.count, members: c.groups.map((g) => g.name) }
+            : clusterOut(c),
+        ),
+        ...pageMeta(page),
+        needsDecision: clusters.filter((c) => c.needsDecision).length,
+        ...scanMeta(o),
+      },
+      input.compact,
+    );
+  }
+
+  /** P8 stage 9: the Merchants overview cards — coverage, uncovered top, new, large checks, duplicates, silent, untyped. */
+  async function opCoverage(period: OverviewPeriod) {
+    if (!dek) return err("Unlock required: payees are encrypted. Sign in to Finlynq in the browser, then retry.");
+    const [matcher, own, settings, converter] = await Promise.all([
+      matcherFor({ executor: db, userId, dek }),
+      loadOwnMatcher(db, userId, dek),
+      getPayeeSettings(db, userId),
+      makeSliceConverter(userId),
+    ]);
+    const cards = await computeOverviewCards({ executor: db, userId, dek, matcher, own, vocab: vocabularyOf(settings), convert: converter.convert, currency: converter.currency, period });
+    return dataResponse({ ...cards, note: "Channels, bank operations and own-account transfers are left out. Large checks: above Q3 + 1.5·IQR of the same merchant's earlier payments." });
   }
 
   async function opGet(input: { payee?: string; key?: string; cluster_id?: string; entity_id?: number }) {
@@ -398,6 +449,8 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
     .array(z.object({ kind: z.enum(IDENTIFIER_KINDS), value: z.string() }))
     .optional()
     .describe("Requisites: iban | tax_id | edrpou | card_last4 (last 4 digits or a mask; a full card number is refused) | crypto_wallet.");
+  const cursorArg = z.string().max(200).optional().describe("next_cursor from the previous page.");
+  const compactArg = z.boolean().optional().describe("Only names, keys, counts and sums (smaller answer).");
   const applyArg = z.boolean().optional().describe("Also rename stored payees to the canonical name (default true).");
   const ownAccountArgs = {
     iban: z.string().max(40).nullable().optional(),
@@ -413,7 +466,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
   registerManageTool(
     server,
     "manage_payees",
-    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
+    "Review and clean up payees (merchants, people, services). Reads: list, clusters, get, coverage, queue, batches, insights, merchant_types, review, proposals, explain, lookalikes, suspicious, own_accounts, bulk_review, mine_identifiers, whose, dictionary_export. AI flow: review → propose (drafts) → user approves / rejects. Writes: create, update, set_profile, set_merchant_type, merchant_types_edit, alias_add, alias_remove, identifiers, merge, split, apply, move_remainder, apply_default_category, mark_reviewed, delete, own_accounts_edit, bulk_create, reject_lookalike, propose_identifiers, dictionary_import, undo. Every write is TWO-STEP: call without confirmation_token to preview (+ token), then repeat with it; each commit is one batch, undoable 30 days. Never merge a person with a merchant unless the user says so. Bank-statement rows never change. Details: finlynq_help topic=payees.",
     z.discriminatedUnion("op", [
       z.object({
         op: z.literal("list"),
@@ -422,12 +475,16 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         sort: z.enum(["count", "total", "name", "last_date"]).optional().describe("Order: count (default), total (by absolute amount), name, last_date."),
         limit: z.number().int().positive().max(5000).optional().describe("Most payees to return (default 100)."),
         merchant_type: merchantTypeFilterArg,
+        cursor: cursorArg,
+        compact: compactArg,
       }),
       z.object({
         op: z.literal("clusters"),
         min_confidence: z.number().min(0).max(1).optional().describe("Only clusters at or above this confidence (0–1)."),
         include_needs_decision: z.boolean().optional().describe("false hides clusters containing a private person / sole proprietor (default true)."),
         limit: z.number().int().positive().max(1000).optional().describe("Most clusters to return (default 50)."),
+        cursor: cursorArg,
+        compact: compactArg,
       }),
       z.object({
         op: z.literal("get"),
@@ -590,6 +647,12 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         limit: z.number().int().positive().max(1000).optional().describe("Most suggestions (default 50)."),
       }),
       z.object({
+        op: z.literal("apply_default_category"),
+        entity_id: z.number().int().positive().describe("The directory entry."),
+        category_id: z.number().int().positive().optional().describe("Default: the entry's default category, else its merchant type's."),
+        confirmation_token: tokenArg,
+      }),
+      z.object({
         op: z.literal("move_remainder"),
         entity_id: z.number().int().positive().describe("The directory entry the spelling belongs to."),
         payees: z.array(z.string().min(1)).min(1).max(100).describe("The spelling(s), e.g. \"Степаненко компенсація житла\"."),
@@ -606,6 +669,15 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       z.object({
         op: z.literal("review"),
         limit: z.number().int().positive().max(300).optional().describe("Most unrecognized payees in the pack (default 60; clusters get half)."),
+        cursor: cursorArg,
+        compact: compactArg,
+      }),
+      z.object({
+        op: z.literal("coverage"),
+        period: z.enum(["30d", "90d", "1y"]).optional().describe("Window (default 90d)."),
+      }),
+      z.object({
+        op: z.literal("queue"),
       }),
       z.object({
         op: z.literal("propose"),
@@ -685,13 +757,24 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
         confirmation_token: tokenArg,
       }),
     ]),
-    async (input) => {
+    // P8: answers (warnings, reasons, errors) in the user's interface language.
+    (input) => runInUserLocale(db, userId, null, async () => {
       try {
         switch (input.op) {
           case "list":
             return await opList(input);
           case "clusters":
             return await opClusters(input);
+          case "coverage":
+            return await opCoverage(input.period ?? "90d");
+          case "queue": {
+            const q = await loadQueueCounts({ executor: db, userId, dek });
+            return dataResponse({
+              ...q,
+              where: "Merchants → Черга (/merchants?tab=queue): clusters = op=clusters, lookalikes = op=lookalikes, drafts = op=proposals, suspicious = op=suspicious, unrecognized = op=review.",
+              schema: PAYEE_MCP_SCHEMA_VERSION,
+            });
+          }
           case "get":
             return input.entity_id != null ? await opEntity(input.entity_id) : await opGet(input);
           case "batches": {
@@ -783,7 +866,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
                 accounts: c.accounts.map((a) => a.name),
                 examples: c.examples,
               })),
-              ...(r.own ? { yourAccount: `Це ваш рахунок: ${r.own.description}` } : {}),
+              ...(r.own ? { yourAccount: st("srv.mcp.yourAccount", { account: r.own.description }) } : {}),
               ...(r.hints.length ? { hints: r.hints } : {}),
               bankRowsMentioning: r.bankRows,
               ...(r.truncated ? { truncated: true } : {}),
@@ -968,7 +1051,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
           }
           case "dictionary_export": {
             if (!dek) return err("Unlock required: the directory is encrypted. Sign in to Finlynq in the browser, then retry.");
-            const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId));
+            const dict = buildDictionary(await loadDirectory(db, userId, dek), new Date(), await loadMerchantTypes(db, userId), dictionaryMetaOf(await getPayeeSettings(db, userId)));
             return dataResponse({
               format: input.format ?? "json",
               content: input.format === "yaml" ? dictionaryToYaml(dict) : dictionaryToJson(dict),
@@ -1028,6 +1111,8 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               { op: "update", entityId: input.entity_id, website: input.website, logo: input.logo, type: input.type, note: input.note, merchantType: input.merchant_type, apply: false },
               input.confirmation_token,
             );
+          case "apply_default_category":
+            return await writeOp({ op: "apply_default_category", entityId: input.entity_id, categoryId: input.category_id }, input.confirmation_token);
           case "move_remainder":
             return await writeOp(
               { op: "move_remainder", entityId: input.entity_id, payees: input.payees, remainder: input.remainder, target: input.target },
@@ -1058,9 +1143,9 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
             return dataResponse({ verdict: x.verdict, score: x.score, reasons: x.reasons, a: sideOut(x.a), b: sideOut(x.b) });
           }
           case "review": {
-            const o = await loadPayeeOverview({ executor: db, userId, dek, samples: 3 });
+            const o = await loadPayeeOverview({ executor: db, userId, dek, samples: input.compact ? 0 : 3 });
             const drafts = dek ? await listProposals(db, userId, dek, { status: "draft" }) : [];
-            return dataResponse({ ...buildReviewPack(o, drafts, { limit: input.limit }), ...scanMeta(o) });
+            return pagedResponse({ ...buildReviewPack(o, drafts, { limit: input.limit, offset: decodeCursor(input.cursor), compact: input.compact }), ...scanMeta(o) }, input.compact);
           }
           case "propose": {
             if (!dek) return err("Unlock required: proposals are stored encrypted. Sign in to Finlynq in the browser, then retry.");
@@ -1069,7 +1154,7 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
               return dataResponse({
                 saved: res.saved.map((x) => ({ proposal_id: x.id, canonical: x.canonical, ...(x.needsDecision ? { needsDecision: true } : {}), ...(x.notes.length ? { notes: x.notes } : {}) })),
                 ...(res.rejected.length ? { rejected: res.rejected } : {}),
-                note: "Saved as drafts — nothing changed. The user reviews them in Settings → Payees → AI review, or approve with op=approve (two-step) once they agree.",
+                note: "Saved as drafts — nothing changed. The user reviews them in Merchants → AI review (/merchants/review), or approve with op=approve (two-step) once they agree.",
               });
             } catch (e) {
               if (e instanceof PayeeDirectoryError) return err(e.message);
@@ -1089,6 +1174,6 @@ export function registerPayeesTools(server: McpServer, ctx: PgToolContext) {
       } catch (e) {
         return err(String(e instanceof Error ? e.message : e));
       }
-    },
+    }),
   );
 }

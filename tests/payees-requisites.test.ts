@@ -95,7 +95,7 @@ describe("identifier queries and type hints", () => {
 describe("a full card number is refused, never cut down to its last 4 (P6.2)", () => {
   const FULL = ["4149 4999 1234 5678", "4149499912345678", "4149-4999-1234-5678", "4149 4999 1234 5678 901", "4149*4999*1234*5678"];
   it("as a requisite of a payee (op identifiers, create, proposals, dictionary import)", () => {
-    for (const v of [...FULL, "41494999", "12345"]) expect(() => normalizeIdentifier("card_last4", v), v).toThrow(/Повний номер картки не приймається/);
+    for (const v of [...FULL, "41494999", "12345"]) expect(() => normalizeIdentifier("card_last4", v), v).toThrow(/full card number isn't accepted/i);
     expect(normalizeIdentifier("card_last4", "5678")).toBe("5678");
     expect(normalizeIdentifier("card_last4", "**** 5678")).toBe("5678");
     expect(normalizeIdentifier("card_last4", "5168 **** **** 5678")).toBe("5678");
@@ -104,7 +104,7 @@ describe("a full card number is refused, never cut down to its last 4 (P6.2)", (
   it("as a search value (whose, search_transactions identifier / payee_resolve, the Transactions filter)", () => {
     for (const v of FULL) {
       expect(parseIdentifierQuery(v), v).toBeNull();
-      expect(identifierQueryRefusal(v), v).toMatch(/Повний номер картки не приймається/);
+      expect(identifierQueryRefusal(v), v).toMatch(/full card number isn't accepted/i);
     }
     for (const v of ["5168 **** 1234", "1234", "3123456789", "14360570", "UA21 3223 1300 0002 6007 2335 6600 1", "Сільпо"]) expect(identifierQueryRefusal(v), v).toBeNull();
     expect(isFullCardNumber("Переказ 4149 4999 1234 5678")).toBe(true);

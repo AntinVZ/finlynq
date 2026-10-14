@@ -10,8 +10,14 @@ import { parseAccountIdsParam, ACCOUNT_IDS_PARAM } from "@/lib/reports/account-f
 import { parseBusinessParam, BUSINESS_PARAM } from "@/lib/reports/business-filter";
 import { businessFilterCondition } from "@/lib/reports/business-filter-sql";
 import { isReportPeriod, type ReportPeriod as Period } from "@/lib/reports/period";
+import { loadMerchantTypeRows } from "@/lib/reports/merchant-type-breakdown";
+import { matcherFor } from "@/lib/payees/resolve-hint";
+import { loadMerchantTypes, localizeMerchantType } from "@/lib/payees/merchant-types";
+import { resolveUiLocale } from "@/lib/i18n/settings";
+import { translate } from "@/lib/i18n";
+import type { MessageKey } from "@/lib/i18n/types";
 
-type GroupBy = "category" | "group";
+type GroupBy = "category" | "group" | "merchant_type";
 
 function periodExpr(period: Period) {
   switch (period) {
@@ -155,9 +161,62 @@ export async function GET(request: NextRequest) {
   // the plaintext `categories.group` column (unencrypted). Both add
   // currency + reporting_currency to the grouping so each slice converts
   // independently (see convertGroup).
-  const isCategoryMode = groupBy !== "group";
+  const isCategoryMode = groupBy === "category";
+  const isTypeMode = groupBy === "merchant_type";
 
-  const breakdownRows = isCategoryMode
+  // P8 stage 2 — by merchant type: the payee is encrypted and its type lives
+  // on the Merchants directory entry, so rows are resolved one by one after
+  // decryption (see merchant-type-breakdown.ts), then summed like the others.
+  let typeTruncated = false;
+  const typeRows = isTypeMode
+    ? await (async () => {
+        if (!dek) return [];
+        const { language } = await resolveUiLocale(db, userId, request.headers.get("accept-language"));
+        const tr = (k: string) => translate(language, k as MessageKey);
+        const [matcher, types] = await Promise.all([matcherFor({ executor: db, userId, dek }), loadMerchantTypes(db, userId)]);
+        const out = await loadMerchantTypeRows({
+          executor: db,
+          userId,
+          dek,
+          matcher,
+          types,
+          periodSql: periodCol,
+          where: and(...conditions)!,
+          label: (t) => {
+            const l = localizeMerchantType(t, tr);
+            return l.name && l.name !== l.group ? `${l.group} · ${l.name}` : l.group;
+          },
+        });
+        typeTruncated = out.truncated;
+        return out.rows.map((r) => ({
+          period: r.period,
+          categoryType: r.categoryType,
+          categoryId: null,
+          categoryNameCt: null,
+          categoryGroup: r.label ?? translate(language, "reports.noMerchantType"),
+          merchantTypeId: r.typeId,
+          currency: r.currency,
+          reportingCurrency: r.reportingCurrency,
+          totalAmount: r.amount,
+          totalReporting: r.reportingAmount,
+          count: 1,
+        }));
+      })()
+    : null;
+
+  const breakdownRows: Array<{
+    period: string;
+    categoryType: string | null;
+    categoryId: number | null;
+    categoryNameCt: string | null;
+    categoryGroup: string | null;
+    merchantTypeId?: number | null;
+    currency: string | null;
+    reportingCurrency: string | null;
+    totalAmount: number | null;
+    totalReporting: number | null;
+    count: number;
+  }> = typeRows ?? (isCategoryMode
     ? await db
         .select({
           period: periodCol,
@@ -203,7 +262,7 @@ export async function GET(request: NextRequest) {
         .where(and(...conditions))
         .groupBy(periodCol, schema.categories.group, schema.categories.type, schema.transactions.currency, schema.transactions.reportingCurrency)
         .orderBy(periodCol, schema.categories.type, schema.categories.group)
-        .all();
+        .all());
 
   // Build grouped breakdown (totals across all periods). Keyed on the
   // resolved display name + categoryType so income/expense rows with the
@@ -212,8 +271,9 @@ export async function GET(request: NextRequest) {
   // /transactions filtered by category. Only set in category-mode (group-mode
   // aggregates many categories under one label, so there is no single id);
   // left null there and the client omits the drill link.
-  const incomeGroups = new Map<string, { group: string; categoryId: number | null; total: number; count: number; periods: Record<string, number> }>();
-  const expenseGroups = new Map<string, { group: string; categoryId: number | null; total: number; count: number; periods: Record<string, number> }>();
+  type GroupAcc = { group: string; categoryId: number | null; merchantTypeId: number | null; total: number; count: number; periods: Record<string, number> };
+  const incomeGroups = new Map<string, GroupAcc>();
+  const expenseGroups = new Map<string, GroupAcc>();
 
   for (const row of breakdownRows) {
     // group-mode rows already have group as the display label (no encryption);
@@ -224,7 +284,7 @@ export async function GET(request: NextRequest) {
     const name = resolvedName && resolvedName !== "" ? resolvedName : "Uncategorized";
     const catGroup = row.categoryGroup ?? "";
     const target = row.categoryType === "I" ? incomeGroups : expenseGroups;
-    if (!target.has(name)) target.set(name, { group: catGroup, categoryId: isCategoryMode ? (row.categoryId ?? null) : null, total: 0, count: 0, periods: {} });
+    if (!target.has(name)) target.set(name, { group: catGroup, categoryId: isCategoryMode ? (row.categoryId ?? null) : null, merchantTypeId: isTypeMode ? (row.merchantTypeId ?? null) : null, total: 0, count: 0, periods: {} });
     const entry = target.get(name)!;
     const converted = convertGroup(row);
     const amt = row.categoryType === "E" ? Math.abs(converted) : converted;
@@ -239,6 +299,7 @@ export async function GET(request: NextRequest) {
         name,
         group: data.group,
         categoryId: data.categoryId,
+        ...(isTypeMode ? { merchantTypeId: data.merchantTypeId } : {}),
         total: Math.round(data.total * 100) / 100,
         count: data.count,
         periods: Object.fromEntries(
@@ -253,6 +314,7 @@ export async function GET(request: NextRequest) {
   return NextResponse.json({
     period,
     groupBy,
+    ...(isTypeMode ? { truncated: typeTruncated } : {}),
     startDate,
     endDate,
     displayCurrency,

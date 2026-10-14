@@ -23,25 +23,20 @@
  */
 import { normalizeForMatch } from "@/lib/text-normalize";
 import { brandCoreOfKey, type PayeeVocabulary } from "./type-words";
+import { st } from "@/lib/i18n/current";
+import { transliterate } from "./translit";
 
 // ─── transliteration ───────────────────────────────────────────────────────
 
-/** Ukrainian-first Cyrillic → Latin (with the Russian-only letters). */
-const CYR_TO_LAT: Record<string, string> = {
-  а: "a", б: "b", в: "v", г: "h", ґ: "g", д: "d", е: "e", є: "ie", ж: "zh", з: "z",
-  и: "y", і: "i", ї: "i", й: "i", к: "k", л: "l", м: "m", н: "n", о: "o", п: "p",
-  р: "r", с: "s", т: "t", у: "u", ф: "f", х: "kh", ц: "ts", ч: "ch", ш: "sh",
-  щ: "shch", ь: "", ю: "iu", я: "ia", ъ: "", ы: "y", э: "e", ё: "e",
-};
-
 const HAS_CYRILLIC = /[Ѐ-ӿ]/;
 
-/** Cyrillic letters → Latin; everything else unchanged. Input is lowercase. */
+/**
+ * Cyrillic letters → Latin; everything else unchanged. Input is lowercase.
+ * P8 stage 7: the table lives in the transliteration plugin (./translit.ts);
+ * the matching key runs its built-in chain.
+ */
 export function transliterateToLatin(s: string): string {
-  if (!HAS_CYRILLIC.test(s)) return s;
-  let out = "";
-  for (const ch of s) out += CYR_TO_LAT[ch] ?? ch;
-  return out;
+  return transliterate(s);
 }
 
 /**
@@ -76,7 +71,7 @@ function foldLatin(token: string): string {
 
 /** Leading words that card terminals and banks prepend. Matched repeatedly. */
 const PREFIX_RE =
-  /^(?:pos|purchase|card purchase|payment|pmt|оплата|покупка|покупка товару|оплата товарів|apple pay|google pay|gpay|liqpay|wfp|www\.)[\s:*#.-]+/;
+  /^(?:pos|purchase|card purchase|payment|pmt|оплата|покупка|покупка товару|оплата товарів|apple pay|google pay|gpay|liqpay|wfp|otpc2c|p24|monodirect|www\.)[\s:*#.-]+/;
 
 /** Cities / countries banks append to a merchant name. Dropped only after the first token. */
 const PLACE_WORDS = new Set([
@@ -294,13 +289,14 @@ const PATRONYMIC_LAT_RE = /(?:ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evn
 /** One normalized token that is a patronymic (Cyrillic or Latin). */
 export const PATRONYMIC_TOKEN_RE = /(?:ович|евич|йович|івна|ївна|овна|евна|ічна|ична|ovych|ovich|evych|evich|yovych|ivna|yivna|ovna|evna|ichna)$/;
 // A Unicode-aware end of word: `\b` is ASCII-only, so it never matched after `фоп`.
+// B31 (P8 stage 9): the same for every word list below — `(?<![\p{L}\p{N}])` / `(?![\p{L}\p{N}])` instead of `\b`.
 const SOLE_PROP_RE = /^(?:фоп|флп|спд|fop|flp|spd|фізична особа[- ]підприємець|fizychna osoba[- ]pidpryiemets)(?![\p{L}\p{N}])/u;
 const INITIALS_RE = /^[\p{L}'’-]{2,}\s+\p{L}\.\s*\p{L}\.?$/u;
-const BANK_RE = /\b(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)\b/;
-const GOV_RE = /(?:податков|казначей|treasury|\bдпс\b|\bпфу\b|пенсійн|\bdps\b|tax office|держ|gov\.ua|\bдія\b|\bdiia\b|митн|customs|суд\b)/;
-const COMPANY_RE = /\b(?:тов|тзов|прат|пат|ат|ооо|llc|ltd|inc|gmbh|corp|plc)\b/;
-const SERVICE_RE = /\b(?:binance|bybit|netflix|spotify|google|apple|youtube|uber|bolt|uklon|glovo|wolt|patreon|steam|playstation|microsoft|adobe|openai|anthropic|aws|amazon|paypal|wise|revolut|kyivstar|київстар|vodafone|lifecell|volia|воля|nova poshta|нова пошта|ukrposhta|укрпошта|meest|liqpay|portmone|easypay|city24|ipay)\b/;
-const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|\bshop\b|\bшоп\b|магазин|store|аптека|pharmacy|apteka|кафе|cafe|coffee|кава|restaurant|ресторан|піца|pizza|бакалія|продукти|silpo|сільпо|\bатб\b|\batb\b|novus|новус|fozzy|фоззі|varus|варус|metro|метро|auchan|ашан|епіцентр|epicentr|rozetka|розетка|comfy|фокстрот|foxtrot|eldorado|ельдорадо|aldi|lidl|zara|h&m|ikea|макдональдз|mcdonald|kfc|пекарня|bakery|bulochka|булочка)/;
+const BANK_RE = /(?<![\p{L}\p{N}])(?:bank|банк|приватбанк|privatbank|monobank|монобанк|ощадбанк|oschadbank|raiffeisen|райффайзен|pumb|пумб|sense bank|абанк|a-bank|universal bank)(?![\p{L}\p{N}])/u;
+const GOV_RE = /(?:податков|казначей|treasury|(?<![\p{L}\p{N}])дпс(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])пфу(?![\p{L}\p{N}])|пенсійн|(?<![\p{L}\p{N}])dps(?![\p{L}\p{N}])|tax office|держ|gov\.ua|(?<![\p{L}\p{N}])дія(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])diia(?![\p{L}\p{N}])|митн|customs|суд(?![\p{L}\p{N}]))/u;
+const COMPANY_RE = /(?<![\p{L}\p{N}])(?:тов|тзов|прат|пат|ат|ооо|llc|ltd|inc|gmbh|corp|plc)(?![\p{L}\p{N}])/u;
+const SERVICE_RE = /(?<![\p{L}\p{N}])(?:binance|bybit|netflix|spotify|google|apple|youtube|uber|bolt|uklon|glovo|wolt|patreon|steam|playstation|microsoft|adobe|openai|anthropic|aws|amazon|paypal|wise|revolut|kyivstar|київстар|vodafone|lifecell|volia|воля|nova poshta|нова пошта|ukrposhta|укрпошта|meest|liqpay|portmone|easypay|city24|ipay)(?![\p{L}\p{N}])/u;
+const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|(?<![\p{L}\p{N}])shop(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])шоп(?![\p{L}\p{N}])|магазин|store|аптека|pharmacy|apteka|кафе|cafe|coffee|кава|restaurant|ресторан|піца|pizza|бакалія|продукти|silpo|сільпо|(?<![\p{L}\p{N}])атб(?![\p{L}\p{N}])|(?<![\p{L}\p{N}])atb(?![\p{L}\p{N}])|novus|новус|fozzy|фоззі|varus|варус|metro|метро|auchan|ашан|епіцентр|epicentr|rozetka|розетка|comfy|фокстрот|foxtrot|eldorado|ельдорадо|aldi|lidl|zara|h&m|ikea|макдональдз|mcdonald|kfc|пекарня|bakery|bulochka|булочка)/u;
 
 /**
  * Guess what kind of counterparty a payee is, from its own text only.
@@ -309,22 +305,25 @@ const RETAIL_RE = /(?:market|маркет|supermarket|супермаркет|\bs
  */
 export function guessPayeeType(raw: string | null | undefined): TypeGuess {
   const s = normalizeForMatch(raw ?? "");
-  if (!s) return { type: "other", confidence: 0.2, isPerson: false, reason: "empty payee" };
-  if (SOLE_PROP_RE.test(s)) return { type: "sole_proprietor", confidence: 0.9, isPerson: true, reason: "starts with ФОП / FOP" };
+  if (!s) return { type: "other", confidence: 0.2, isPerson: false, reason: st("srv.matchKey.type_emptyPayee") };
+  if (SOLE_PROP_RE.test(s)) return { type: "sole_proprietor", confidence: 0.9, isPerson: true, reason: st("srv.matchKey.type_solePropPrefix") };
   const words = s.split(/\s+/).filter(Boolean);
   const patronymic = words.some((w) => PATRONYMIC_RE.test(w) || PATRONYMIC_LAT_RE.test(w));
   if (patronymic && words.length >= 2 && words.length <= 4) {
-    return { type: "person", confidence: 0.85, isPerson: true, reason: "full name with a patronymic" };
+    return { type: "person", confidence: 0.85, isPerson: true, reason: st("srv.matchKey.type_patronymic") };
   }
   if (INITIALS_RE.test((raw ?? "").trim())) {
-    return { type: "person", confidence: 0.6, isPerson: true, reason: "surname with initials" };
+    return { type: "person", confidence: 0.6, isPerson: true, reason: st("srv.matchKey.type_initials") };
   }
-  if (GOV_RE.test(s)) return { type: "government", confidence: 0.7, isPerson: false, reason: "tax / state body wording" };
-  if (BANK_RE.test(s)) return { type: "bank", confidence: 0.7, isPerson: false, reason: "bank name" };
-  if (SERVICE_RE.test(s)) return { type: "service", confidence: 0.7, isPerson: false, reason: "known online service" };
-  if (RETAIL_RE.test(s)) return { type: "retail", confidence: 0.6, isPerson: false, reason: "shop / food wording" };
-  if (COMPANY_RE.test(s)) return { type: "company", confidence: 0.6, isPerson: false, reason: "legal form (ТОВ / LLC …)" };
-  return { type: "other", confidence: 0.2, isPerson: false, reason: "no type signal in the name" };
+  if (GOV_RE.test(s)) return { type: "government", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_government") };
+  if (BANK_RE.test(s)) return { type: "bank", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_bank") };
+  if (SERVICE_RE.test(s)) return { type: "service", confidence: 0.7, isPerson: false, reason: st("srv.matchKey.type_service") };
+  if (RETAIL_RE.test(s)) return { type: "retail", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_retail") };
+  if (COMPANY_RE.test(s)) return { type: "company", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_company") };
+  // B30 (P8 stage 9): any type word of the vocabulary (АЗС, готель, кав'ярня, …) means a place of business.
+  const typeWord = brandCoreOfKey(payeeMatchKey(raw ?? "")).removed[0];
+  if (typeWord) return { type: "retail", confidence: 0.6, isPerson: false, reason: st("srv.matchKey.type_typeWord", { word: typeWord }) };
+  return { type: "other", confidence: 0.2, isPerson: false, reason: st("srv.matchKey.type_noSignal") };
 }
 
 // ─── similarity ─────────────────────────────────────────────────────────────
@@ -364,12 +363,12 @@ export function keySimilarity(a: string, b: string): number {
  * apostrophes, terminal noise, or transliteration.
  */
 export function spellingDifferenceReason(a: string, b: string): string {
-  if (normalizeForMatch(a) === normalizeForMatch(b)) return "letter case, spacing or apostrophes";
+  if (normalizeForMatch(a) === normalizeForMatch(b)) return st("srv.matchKey.diffCase");
   const ta = payeeTokens(a).kept.join(" ");
   const tb = payeeTokens(b).kept.join(" ");
-  if (ta === tb) return "card-terminal noise (codes, city, long numbers)";
+  if (ta === tb) return st("srv.matchKey.diffNoise");
   const cyrA = HAS_CYRILLIC.test(a);
   const cyrB = HAS_CYRILLIC.test(b);
-  if (cyrA !== cyrB) return "Latin / Cyrillic transliteration";
-  return "spelling variant (transliteration, doubled letters, noise)";
+  if (cyrA !== cyrB) return st("srv.matchKey.diffTranslit");
+  return st("srv.matchKey.diffVariant");
 }

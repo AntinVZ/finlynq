@@ -80,6 +80,7 @@ import { decryptRuleFields } from "@/lib/rules/crypto";
 import type { Action, ConditionGroup } from "@/lib/rules/schema";
 import { defaultHoldingForInvestmentAccount } from "@/lib/investment-account";
 import { validateSignVsCategoryById } from "@/lib/transactions/sign-category-invariant";
+import { makeMerchantResolver, recordRuleHits, rulesUseMerchant } from "@/lib/rules/merchant-context";
 
 export interface ApplyResult {
   rowsTouched: number;
@@ -287,6 +288,10 @@ export async function applyRulesToStagedBatch(
     return tier === "user" ? encryptField(dek, plaintext) : encryptStaged(plaintext);
   };
 
+  // P8 stage 10: `merchant` / `merchant_type` conditions resolve the payee
+  // through the Merchants directory (loaded only when a rule needs it).
+  const resolveMerchant = rulesUseMerchant(activeRules) ? await makeMerchantResolver(client, userId, dek) : null;
+
   for (const row of stagedRows) {
     // Invariant #3: skip rows the user already resolved manually OR rows that
     // are excluded from default approve. Rules don't override either case.
@@ -311,6 +316,11 @@ export async function applyRulesToStagedBatch(
       enteredCurrency: row.enteredCurrency ?? null,
       date: row.date,
     };
+    if (resolveMerchant) {
+      const m = resolveMerchant(probe.payee);
+      probe.merchantEntityId = m.entityId;
+      probe.merchantTypeId = m.typeId;
+    }
 
     const match = applyRules(probe, activeRules);
     if (!match) continue;
@@ -500,6 +510,7 @@ export async function applyRulesToStagedBatch(
   }
 
   // No invalidateUserTxCache — we didn't write to `transactions`.
+  await recordRuleHits(client, userId, matches.map((m) => m.ruleId));
 
   return { rowsTouched, matches };
 }

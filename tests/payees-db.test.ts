@@ -152,7 +152,7 @@ describeDb("Payee Studio P2 MCP writes (seeded DB)", () => {
 
     // P6.2: a full card number is refused (no token, nothing stored); the last 4 digits / a mask are fine.
     const full = await call({ op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "4149439312345678" }] });
-    expect(full.error).toMatch(/Повний номер картки не приймається/);
+    expect(full.error).toMatch(/full card number isn't accepted/i);
     expect(JSON.stringify(full)).not.toContain("4149439312345678");
     const idArgs = { op: "identifiers", entity_id: done.entity.entity_id, add: [{ kind: "card_last4", value: "**** 5678" }, { kind: "iban", value: "UA213223130000026007233566001" }] };
     const idDone = await call({ ...idArgs, confirmation_token: (await call(idArgs)).confirmationToken });

@@ -38,12 +38,17 @@ import {
   Activity,
   Server,
   ScrollText,
+  Store,
+  Search,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { FinlynqLogo } from "@/components/FinlynqLogo";
 import { FeedbackDialog } from "@/components/feedback-dialog";
+import { MerchantSearch, openMerchantSearch } from "@/components/merchants/merchant-search";
+import { useT } from "@/lib/i18n/client";
+import type { MessageKey } from "@/lib/i18n";
 
-type NavItem = { href: string; label: string; icon: LucideIcon; color: string; mode?: "prod" | "dev" };
+type NavItem = { href: string; label: string; icon: LucideIcon; color: string; mode?: "prod" | "dev"; labelKey?: MessageKey };
 
 // Single-accent system: active items glow amber (`text-primary`) to match the
 // landing's restraint. Inactive icons use the sidebar-foreground muted tones.
@@ -63,6 +68,9 @@ const navGroups: { label: string; items: NavItem[] }[] = [
     label: "Tracking",
     items: [
       { href: "/transactions", label: "Transactions", icon: ArrowLeftRight, color: ACTIVE_ACCENT, mode: "prod" },
+      // P8: Merchants is a section of its own (was Settings → Payees); the
+      // badge counts decisions waiting in its queue.
+      { href: "/merchants", label: "Merchants", labelKey: "nav.merchants", icon: Store, color: ACTIVE_ACCENT, mode: "prod" },
       { href: "/budgets", label: "Budgets", icon: PiggyBank, color: ACTIVE_ACCENT, mode: "prod" },
       { href: "/goals", label: "Goals", icon: Target, color: ACTIVE_ACCENT, mode: "prod" },
       // Subscriptions + Bill Calendar merged (2026-10): the calendar is a view
@@ -135,6 +143,9 @@ export function Nav() {
   const [unread, setUnread] = useState(0);
   const [feedbackUnread, setFeedbackUnread] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [queueCount, setQueueCount] = useState(0);
+  const t = useT();
+  const labelOf = (item: NavItem) => (item.labelKey ? t(item.labelKey) : item.label);
 
   const handleSignOut = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -188,9 +199,20 @@ export function Nav() {
       .catch(() => {});
   }, [pathname]);
 
+  // P8: decisions waiting in the Merchants queue (cached server-side for two
+  // minutes and dropped on every directory change).
+  useEffect(() => {
+    fetch("/api/payees/queue")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((q) => {
+        if (q && typeof q.decisions === "number") setQueueCount(q.decisions);
+      })
+      .catch(() => {});
+  }, [pathname]);
+
   // Unread count to badge a given nav link (0 = no badge).
   const unreadFor = (href: string) =>
-    href === "/whats-new" ? unread : href === "/feedback" ? feedbackUnread : 0;
+    href === "/whats-new" ? unread : href === "/feedback" ? feedbackUnread : href === "/merchants" ? queueCount : 0;
 
   const toggleCollapsed = () => {
     const next = !collapsed;
@@ -209,7 +231,7 @@ export function Nav() {
       <Link
         key={item.href}
         href={item.href}
-        title={!showLabel ? item.label : undefined}
+        title={!showLabel ? labelOf(item) : item.href === "/merchants" && badge > 0 ? t("nav.merchantsBadge", { n: badge }) : undefined}
         aria-current={isActive ? "page" : undefined}
         onClick={() => setMobileOpen(false)}
         className={cn(
@@ -231,7 +253,7 @@ export function Nav() {
         {!showLabel && badge > 0 && (
           <span className="absolute right-1 top-1 h-2 w-2 rounded-full bg-primary" />
         )}
-        {showLabel && <span className="truncate">{item.label}</span>}
+        {showLabel && <span className="truncate">{labelOf(item)}</span>}
         {showLabel && badge > 0 ? (
           <span className="ml-auto rounded-full bg-primary px-1.5 py-0.5 text-[10px] font-semibold leading-none text-primary-foreground">
             {badge}
@@ -297,6 +319,20 @@ export function Nav() {
 
       {/* Bottom section */}
       <div className="px-2 pb-3 pt-2 border-t border-sidebar-border/50 space-y-0.5">
+        <button
+          onClick={openMerchantSearch}
+          title={collapsed ? t("search.open") : undefined}
+          aria-keyshortcuts="Control+K Meta+K"
+          className={cn(
+            "group/link relative flex items-center gap-3 rounded-lg text-[13px] font-medium transition-all duration-200 w-full",
+            collapsed ? "px-0 py-2 justify-center" : "px-3 py-2",
+            "text-sidebar-foreground/50 hover:bg-white/[0.05] hover:text-sidebar-foreground"
+          )}
+        >
+          <Search className="h-[18px] w-[18px] shrink-0 text-sidebar-foreground/40 group-hover/link:text-sidebar-foreground/70 group-hover/link:scale-110 transition-all duration-200" />
+          {!collapsed && <span className="truncate">{t("search.open")}</span>}
+          {!collapsed && <kbd className="ms-auto rounded border border-sidebar-border px-1 text-[10px] text-sidebar-foreground/40">Ctrl K</kbd>}
+        </button>
         {toolLinks.filter((item) => (devMode || item.mode !== "dev") && (!item.href.startsWith("/admin") || isAdmin)).map((item) => renderLink(item, !collapsed))}
         <button
           onClick={() => setFeedbackOpen(true)}
@@ -380,7 +416,17 @@ export function Nav() {
       <div className="absolute bottom-14 left-0 right-0 bg-sidebar border-t border-sidebar-border rounded-t-xl max-h-[70vh] overflow-y-auto p-4 space-y-1 animate-in slide-in-from-bottom duration-200">
         <div className="flex items-center justify-between mb-3">
           <span className="text-sm font-semibold text-sidebar-foreground">All Pages</span>
-          <ThemeToggle />
+          <span className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => { setMobileOpen(false); openMerchantSearch(); }}
+              aria-label={t("search.open")}
+              className="p-1.5 rounded-lg text-sidebar-foreground/60 hover:text-sidebar-foreground"
+            >
+              <Search className="h-5 w-5" />
+            </button>
+            <ThemeToggle />
+          </span>
         </div>
         {allFlatItems
           .filter((item) => !mobileBarItems.some((m) => m.href === item.href))
@@ -411,6 +457,7 @@ export function Nav() {
       {mobileBar}
       {mobilePanel}
       <FeedbackDialog open={feedbackOpen} onOpenChange={setFeedbackOpen} />
+      <MerchantSearch />
     </>
   );
 }

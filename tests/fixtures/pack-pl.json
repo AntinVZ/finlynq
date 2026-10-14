@@ -1,0 +1,21 @@
+{
+  "format": "finlynq-country-pack",
+  "version": 1,
+  "id": "pl-test",
+  "country": "PL",
+  "locale": "pl",
+  "name": "Polska (test)",
+  "typeWords": [
+    { "word": "sklep spożywczy", "type": "grocery" },
+    { "word": "apteka", "type": "pharmacy" },
+    { "word": "stacja paliw", "type": "fuel" },
+    { "word": "restauracja", "type": "restaurant" },
+    { "word": "kawiarnia", "type": "cafe" },
+    { "word": "piekarnia" }
+  ],
+  "bankOperations": ["opłata za kartę*", "prowizja*"],
+  "channels": ["BLIK", "PayU", "Przelewy24"],
+  "mcc": { "5411": "grocery" },
+  "idTypes": ["pl_nip", "pl_regon", "eu_vat", "iban", "card_last4"],
+  "transliteration": []
+}

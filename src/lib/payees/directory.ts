@@ -28,6 +28,7 @@ import { normalizeForMatch } from "@/lib/text-normalize";
 import { payeeMatchKey, PAYEE_TYPES, type PayeeType } from "./match-key";
 import { edrpouChecksumOk, FULL_CARD_REFUSAL, ibanChecksumOk, identifierQueryRefusal, isFullCardNumber, parseIdentifierQuery, rnokppChecksumOk } from "./requisites";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export const ALIAS_MODES = ["exact", "contains", "regex"] as const;
 export type AliasMode = (typeof ALIAS_MODES)[number];
@@ -240,27 +241,27 @@ export function normalizeIdentifier(kind: IdentifierKind, raw: string): string {
   const v = raw.trim();
   if (kind === "card_last4") {
     // P6.2: a full card number is refused, never cut down to its last 4 digits.
-    if (isFullCardNumber(v, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL);
+    if (isFullCardNumber(v, { strict: true })) throw new PayeeDirectoryError(FULL_CARD_REFUSAL());
     const digits = v.replace(/\D/g, "");
-    if (digits.length < 4) throw new PayeeDirectoryError("A card identifier needs at least the last 4 digits.");
+    if (digits.length < 4) throw new PayeeDirectoryError(st("srv.directory.cardLast4"));
     return digits.slice(-4);
   }
   if (kind === "iban") {
     const iban = v.replace(/\s+/g, "").toUpperCase();
-    if (!/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(iban)) throw new PayeeDirectoryError("That doesn't look like an IBAN (e.g. UA21 3223 1300 0002 6007 2335 6600 1).");
+    if (!/^[A-Z]{2}\d{2}[A-Z0-9]{8,30}$/.test(iban)) throw new PayeeDirectoryError(st("srv.directory.notIban"));
     return iban;
   }
   if (kind === "edrpou") {
     const d = v.replace(/[\s-]+/g, "");
-    if (!/^\d{8}$/.test(d)) throw new PayeeDirectoryError("An EDRPOU code is exactly 8 digits (legal entities; a ФОП has an ІПН instead).");
+    if (!/^\d{8}$/.test(d)) throw new PayeeDirectoryError(st("srv.directory.edrpouDigits"));
     return d;
   }
   if (kind === "tax_id") {
     const d = v.replace(/[\s-]+/g, "");
-    if (!/^\d{10}$/.test(d)) throw new PayeeDirectoryError("A tax id (ІПН / РНОКПП) is exactly 10 digits.");
+    if (!/^\d{10}$/.test(d)) throw new PayeeDirectoryError(st("srv.directory.taxIdDigits"));
     return d;
   }
-  if (!/^[A-Za-z0-9:_-]{10,120}$/.test(v)) throw new PayeeDirectoryError("A wallet address is 10–120 letters or digits.");
+  if (!/^[A-Za-z0-9:_-]{10,120}$/.test(v)) throw new PayeeDirectoryError(st("srv.directory.walletChars"));
   return v;
 }
 
@@ -275,14 +276,14 @@ const PERSONISH = new Set<string>(["person", "sole_proprietor"]);
 export function identifierWarnings(kind: IdentifierKind, value: string, entityType: PayeeType): string[] {
   const out: string[] = [];
   if (kind === "tax_id") {
-    if (!rnokppChecksumOk(value)) out.push(`The ІПН / РНОКПП ${maskIdentifier(kind, value)} fails its check digit — it looks like a typo.`);
-    if (!PERSONISH.has(entityType)) out.push("A 10-digit ІПН belongs to a private person or a ФОП; consider changing the type to Person or Sole proprietor.");
+    if (!rnokppChecksumOk(value)) out.push(st("srv.directory.taxIdChecksum", { value: maskIdentifier(kind, value) }));
+    if (!PERSONISH.has(entityType)) out.push(st("srv.directory.taxIdPersonType"));
   }
   if (kind === "edrpou") {
-    if (!edrpouChecksumOk(value)) out.push(`The EDRPOU code ${value} fails its check digit — it looks like a typo.`);
-    if (PERSONISH.has(entityType)) out.push("An 8-digit EDRPOU belongs to a legal entity (a ФОП has none); consider changing the type to Company.");
+    if (!edrpouChecksumOk(value)) out.push(st("srv.directory.edrpouChecksum", { value }));
+    if (PERSONISH.has(entityType)) out.push(st("srv.directory.edrpouCompanyType"));
   }
-  if (kind === "iban" && value.startsWith("UA") && !ibanChecksumOk(value)) out.push(`The IBAN ${maskIdentifier(kind, value)} fails its check digits — it looks like a typo.`);
+  if (kind === "iban" && value.startsWith("UA") && !ibanChecksumOk(value)) out.push(st("srv.directory.ibanChecksum", { value: maskIdentifier(kind, value) }));
   return out;
 }
 
@@ -330,19 +331,19 @@ export function findByIdentifier(entities: PayeeEntity[], raw: string): PayeeEnt
 
 export function validateEntityName(name: string): string {
   const n = name.replace(/\s+/g, " ").trim();
-  if (!n) throw new PayeeDirectoryError("The payee name can't be empty.");
-  if (n.length > 200) throw new PayeeDirectoryError("The payee name is too long (200 characters max).");
-  if (!payeeMatchKey(n)) throw new PayeeDirectoryError("The payee name needs at least one letter or digit.");
+  if (!n) throw new PayeeDirectoryError(st("srv.directory.nameEmpty"));
+  if (n.length > 200) throw new PayeeDirectoryError(st("srv.directory.nameTooLong"));
+  if (!payeeMatchKey(n)) throw new PayeeDirectoryError(st("srv.directory.nameNoLetters"));
   return n;
 }
 
 export function validateAlias(pattern: string, mode: AliasMode): string {
   const p = pattern.replace(/\s+/g, " ").trim();
-  if (!p) throw new PayeeDirectoryError("An alias can't be empty.");
-  if (p.length > 200) throw new PayeeDirectoryError("An alias is too long (200 characters max).");
-  if (mode === "regex" && !compileAliasRegex(p)) throw new PayeeDirectoryError(`"${p}" is not a valid regular expression.`);
-  if (mode === "contains" && normalizeForMatch(p).length < 3) throw new PayeeDirectoryError("A \"contains\" alias needs at least 3 characters.");
-  if (mode === "exact" && !payeeMatchKey(p)) throw new PayeeDirectoryError("An exact alias needs at least one letter or digit.");
+  if (!p) throw new PayeeDirectoryError(st("srv.directory.aliasEmpty"));
+  if (p.length > 200) throw new PayeeDirectoryError(st("srv.directory.aliasTooLong"));
+  if (mode === "regex" && !compileAliasRegex(p)) throw new PayeeDirectoryError(st("srv.directory.aliasBadRegex", { pattern: p }));
+  if (mode === "contains" && normalizeForMatch(p).length < 3) throw new PayeeDirectoryError(st("srv.directory.aliasContainsShort"));
+  if (mode === "exact" && !payeeMatchKey(p)) throw new PayeeDirectoryError(st("srv.directory.aliasNoLetters"));
   return p;
 }
 

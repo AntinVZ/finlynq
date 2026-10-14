@@ -21,6 +21,8 @@
  *
  * Pure: no DB, no network.
  */
+import { st } from "@/lib/i18n/current";
+
 
 export type RequisiteKind = "iban" | "card_last4" | "tax_id" | "edrpou";
 
@@ -163,7 +165,8 @@ export function typeHintForCode(code: string): "company" | "person_or_sole_propr
 }
 
 /** The one refusal for a full card number, wherever it is typed (P6.2: never accepted, never stored). */
-export const FULL_CARD_REFUSAL = "Повний номер картки не приймається: вкажіть лише останні 4 цифри (або маску «**** 1234»).";
+/** The refusal for a full card number, in the current request's language (a function: the language is per request). */
+export const FULL_CARD_REFUSAL = (): string => st("srv.req.fullCardRefusal");
 
 /**
  * Is this card input a full card number? 13+ digits in all (a mask keeps at
@@ -185,7 +188,7 @@ export function identifierQueryRefusal(raw: string): string | null {
   if (!t) return null;
   const compact = t.replace(/[\s-]+/g, "").toUpperCase();
   if (/^[A-Z]{2}\d{2}[A-Z0-9]{10,30}$/.test(compact)) return null; // an IBAN
-  return isFullCardNumber(t) ? FULL_CARD_REFUSAL : null;
+  return isFullCardNumber(t) ? FULL_CARD_REFUSAL() : null;
 }
 
 export type IdentifierQuery =

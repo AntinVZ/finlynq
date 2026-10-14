@@ -16,6 +16,7 @@
  *     stored with a conflict note; approving it fails until fixed (pass
  *     `entityId` to attach to that entity instead).
  */
+import { encodeCursor } from "./mcp-page";
 import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { encryptField, tryDecryptField } from "@/lib/crypto/envelope";
@@ -39,6 +40,17 @@ import type { BatchActor } from "./batches";
 import type { PayeeOverview } from "./service";
 import type { PayeeGroup } from "./overview";
 import type { PayeeExecutor } from "./scan";
+import { st } from "@/lib/i18n/current";
+import { invalidatePayeeQueue } from "./queue-cache";
+import { brandCoreOfKey, channelOf } from "./type-words";
+
+/** See `Proposal.exception`. */
+export function proposalException(canonical: string): Proposal["exception"] {
+  if (channelOf(canonical)) return "channel";
+  const key = payeeMatchKey(canonical);
+  if (key && brandCoreOfKey(key).typeOnly) return "type_word";
+  return undefined;
+}
 
 export const MAX_PROPOSALS_PER_CALL = 100;
 
@@ -74,6 +86,12 @@ export type Proposal = ProposalPayload & {
   confidence: number;
   needsDecision: boolean;
   source: string;
+  /**
+   * P8 stage 9: why «accept above the threshold» must leave this draft to the
+   * person even when confident — its canonical name is only type words
+   * (no brand) or a payment channel. People are `needsDecision`.
+   */
+  exception?: "type_word" | "channel";
   batchId: number | null;
   createdAt: string;
   decidedAt: string | null;
@@ -96,7 +114,7 @@ export function normalizeProposal(input: ProposalInput): { payload: ProposalPayl
   }
   const identifiers: ProposalPayload["identifiers"] = [];
   for (const i of input.identifiers ?? []) {
-    if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(`Unknown identifier kind "${i.kind}".`);
+    if (!(IDENTIFIER_KINDS as readonly string[]).includes(i.kind)) throw new PayeeDirectoryError(st("srv.ops.unknownIdentifierKind", { kind: i.kind }));
     identifiers.push({ kind: i.kind as IdentifierKind, value: normalizeIdentifier(i.kind as IdentifierKind, String(i.value ?? "")) });
   }
   const confidence = Math.round(Math.min(1, Math.max(0, Number(input.confidence ?? 0) || 0)) * 100) / 100;
@@ -107,7 +125,7 @@ export function normalizeProposal(input: ProposalInput): { payload: ProposalPayl
   const notes: string[] = [];
   let website: string | null = null;
   if (input.website?.trim()) {
-    if (type === "person" || type === "sole_proprietor") notes.push("Website skipped: private persons and sole proprietors don't get one.");
+    if (type === "person" || type === "sole_proprietor") notes.push(st("srv.proposals.websiteSkipped"));
     else website = normalizeWebsite(input.website);
   }
   return {
@@ -126,7 +144,7 @@ export async function saveProposals(opts: {
   source?: string;
 }): Promise<{ saved: Array<{ id: number; canonical: string; needsDecision: boolean; notes: string[] }>; rejected: Array<{ index: number; error: string }> }> {
   const { executor, userId, dek } = opts;
-  if (opts.proposals.length > MAX_PROPOSALS_PER_CALL) throw new PayeeDirectoryError(`At most ${MAX_PROPOSALS_PER_CALL} proposals per call.`);
+  if (opts.proposals.length > MAX_PROPOSALS_PER_CALL) throw new PayeeDirectoryError(st("srv.proposals.tooMany", { max: MAX_PROPOSALS_PER_CALL }));
   const directory = await loadDirectory(executor, userId, dek);
   const saved: Array<{ id: number; canonical: string; needsDecision: boolean; notes: string[] }> = [];
   const rejected: Array<{ index: number; error: string }> = [];
@@ -140,13 +158,13 @@ export async function saveProposals(opts: {
     }
     const p = norm.payload;
     if (p.entityId != null && !directory.some((e) => e.id === p.entityId)) {
-      rejected.push({ index: i, error: `No payee entity #${p.entityId}.` });
+      rejected.push({ index: i, error: st("srv.ops.noEntity", { id: p.entityId }) });
       continue;
     }
     for (const name of [p.entityId == null ? p.canonical : null, ...p.aliases.filter((a) => a.mode === "exact").map((a) => a.pattern)]) {
       if (!name) continue;
       const owner = exactAliasOwners(directory, name, p.entityId ?? undefined)[0];
-      if (owner) p.notes.push(`"${name}" already belongs to "${owner.name}" (#${owner.id}); propose with entity_id ${owner.id} to extend it instead.`);
+      if (owner) p.notes.push(st("srv.proposals.aliasTaken", { name, owner: owner.name, id: owner.id }));
     }
     const rows = normalizeDbRows<{ id: unknown }>(
       await executor.execute(sql`
@@ -156,6 +174,7 @@ export async function saveProposals(opts: {
     );
     saved.push({ id: Number(rows[0].id), canonical: p.canonical, needsDecision: norm.needsDecision, notes: p.notes });
   }
+  if (saved.length) invalidatePayeeQueue(userId);
   return { saved, rejected };
 }
 
@@ -182,8 +201,10 @@ export async function listProposals(
     const plain = dek ? tryDecryptField(dek, String(r.payload), "payee-proposal") : null;
     if (!plain) continue;
     const p = JSON.parse(plain) as ProposalPayload;
+    const exception = proposalException(p.canonical);
     out.push({
       ...p,
+      ...(exception ? { exception } : {}),
       notes: p.notes ?? [],
       id: Number(r.id),
       status: String(r.status) as Proposal["status"],
@@ -228,13 +249,13 @@ export async function approveProposals(opts: {
   // Applied in submission order (oldest first), so a failure is predictable.
   const drafts = (await listProposals(executor, userId, dek, { status: "draft", ids: opts.ids })).sort((a, b) => a.id - b.id);
   const missing = opts.ids.filter((id) => !drafts.some((d) => d.id === id));
-  if (missing.length) throw new PayeeDirectoryError(`No draft proposal ${missing.map((m) => `#${m}`).join(", ")} (already decided, or not yours).`, "not_found");
-  if (!drafts.length) throw new PayeeDirectoryError("Pick at least one proposal.");
+  if (missing.length) throw new PayeeDirectoryError(st("srv.proposals.noDraft", { ids: missing.map((m) => `#${m}`).join(", ") }), "not_found");
+  if (!drafts.length) throw new PayeeDirectoryError(st("srv.proposals.pickOne"));
   const ops: SingleOp[] = [];
   const labels: string[] = [];
   for (const d of drafts) for (const o of proposalOps(d)) {
     ops.push(o);
-    labels.push(`proposal #${d.id} ("${d.canonical}")`);
+    labels.push(st("srv.proposals.label", { id: d.id, name: d.canonical }));
   }
   const result = await executePayeeOp({
     executor,
@@ -260,6 +281,7 @@ export async function rejectProposals(executor: PayeeExecutor, userId: string, i
       WHERE user_id = ${userId} AND status = 'draft' AND id IN (${sql.join(ids.map((i) => sql`${i}`), sql`, `)})
       RETURNING id`),
   );
+  if (rows.length) invalidatePayeeQueue(userId);
   return rows.length;
 }
 
@@ -290,8 +312,13 @@ export function proposalOut(p: Proposal) {
  * the AI can extend an entity instead of duplicating it). Payees already in
  * a pending draft are marked `proposed`.
  */
-export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { limit?: number } = {}) {
+export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { limit?: number; offset?: number; compact?: boolean } = {}) {
   const limit = Math.min(Math.max(opts.limit ?? 60, 1), 300);
+  // P8 stage 9 (B7): `offset` pages the unrecognized list (from an MCP
+  // cursor); clusters and the directory come on the first page only;
+  // `compact` keeps names, keys, counts and sums.
+  const offset = Math.max(0, opts.offset ?? 0);
+  const compact = opts.compact === true;
   const proposedKeys = new Set<string>();
   for (const d of drafts) {
     proposedKeys.add(payeeMatchKey(d.canonical));
@@ -299,11 +326,14 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
   }
   const fmt = (n: number) => Math.round(n * 100) / 100;
   // P6: no brand (only type words) or the bank's own rows → never proposed as a merchant.
-  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
-  const unrecognized = o.groups
-    .filter(proposable)
-    .slice(0, limit)
-    .map((g) => ({
+  const proposable = (g: PayeeGroup) => g.key && g.entityId == null && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null && !g.channel;
+  const allUnrecognized = o.groups.filter(proposable);
+  const page = allUnrecognized.slice(offset, offset + limit);
+  const next = offset + page.length < allUnrecognized.length ? offset + page.length : null;
+  const unrecognized = page.map((g) =>
+    compact
+      ? { key: g.key, payee: g.name, count: g.count, total: fmt(g.total), typeGuess: g.type.type, ...(g.type.isPerson ? { person: true } : {}), ...(proposedKeys.has(g.key) ? { proposed: true } : {}) }
+      : {
       key: g.key,
       payee: g.name,
       ...(g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 5).map((s) => s.spelling) } : {}),
@@ -315,8 +345,9 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
       ...(g.type.isPerson ? { person: true } : {}),
       ...(g.samples?.length ? { examples: g.samples.map((x) => `${x.date} ${x.amount}${x.currency ? " " + x.currency : ""}${x.category ? " · " + x.category : ""}`) } : {}),
       ...(proposedKeys.has(g.key) ? { proposed: true } : {}),
-    }));
-  const clusters = o.clusters.slice(0, Math.ceil(limit / 2)).map((c) => ({
+    },
+  );
+  const clusters = (offset > 0 ? [] : o.clusters.slice(0, Math.ceil(limit / 2))).map((c) => ({
     cluster_id: c.id,
     confidence: c.confidence,
     reasons: c.reasons,
@@ -326,7 +357,7 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
     members: c.groups.map((g) => ({
       payee: g.name,
       count: g.count,
-      ...(g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 4).map((s) => s.spelling) } : {}),
+      ...(!compact && g.spellings.length > 1 ? { spellings: g.spellings.slice(0, 4).map((s) => s.spelling) } : {}),
       ...(g.entityId != null ? { entity_id: g.entityId } : {}),
     })),
   }));
@@ -338,13 +369,17 @@ export function buildReviewPack(o: PayeeOverview, drafts: Proposal[], opts: { li
       unrecognized: o.groups.filter((g) => g.key && g.entityId == null).length,
       noBrand: o.groups.filter((g) => g.key && g.entityId == null && g.brand.typeOnly).length,
       bankOperations: o.groups.filter((g) => g.key && g.bankOperation != null).length,
+      channels: o.groups.filter((g) => g.key && g.channel).length,
       clusters: o.clusters.length,
       directory: o.directory.length,
       pendingDrafts: drafts.length,
     },
     unrecognized,
     clusters,
-    directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, has_website: e.website != null })),
+    ...(offset > 0 || compact ? {} : { directory: o.directory.slice(0, 300).map((e) => ({ entity_id: e.id, name: e.name, type: e.type, has_website: e.website != null })) }),
     currency: o.currency,
+    total: allUnrecognized.length,
+    truncated: next != null,
+    ...(next != null ? { next_cursor: encodeCursor(next) } : {}),
   };
 }

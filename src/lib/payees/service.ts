@@ -134,7 +134,7 @@ export async function loadPayeeOverview(opts: {
       hasLogo: e.logo != null,
       merchantType: (() => {
         const t = e.merchantTypeId == null ? undefined : typeById.get(e.merchantTypeId);
-        return t ? { id: t.id!, group: t.group, name: t.name } : null;
+        return t ? { id: t.id!, group: t.group, name: t.name, code: t.code ?? null } : null;
       })(),
       ...(() => {
         if (e.merchantTypeId != null) return { merchantTypeHint: null, merchantTypeMixed: null };
@@ -243,16 +243,18 @@ export async function loadMerchantAnalytics(opts: {
 /** P6.2 (83): directory entries with a short / meaningless name, with their rows and spellings. Read only. */
 export function suspiciousOf(o: PayeeOverview, opts: { includeReviewed?: boolean } = {}): SuspiciousEntry[] {
   const counts = new Map(o.entities.map((e) => [e.id, e.count]));
+  const totals = new Map(o.entities.map((e) => [e.id, e.total]));
   return listSuspicious(
     o.directory,
     (id) => ({
       count: counts.get(id) ?? 0,
+      total: totals.get(id) ?? 0,
       spellings: o.groups
         .filter((g) => g.entityId === id)
         .flatMap((g) => g.spellings.map((s) => ({ spelling: s.spelling, count: s.count })))
         .sort((a, b) => b.count - a.count)
         .slice(0, 10),
     }),
-    { includeReviewed: opts.includeReviewed, vocab: o.vocab },
+    { includeReviewed: opts.includeReviewed, vocab: o.vocab, own: o.own },
   );
 }

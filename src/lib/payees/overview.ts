@@ -37,10 +37,11 @@ import {
   spellingDifferenceReason,
   type TypeGuess,
 } from "./match-key";
-import { bankOperationOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
+import { bankOperationOf, channelOf, brandCoreOfKey, defaultVocabulary, personNameKey, type MerchantTypeHint, type PayeeVocabulary } from "./type-words";
 import { scoreKeys, type KeyScore } from "./score-keys";
 import { describeOwnAccount, type OwnMatcher } from "./own-accounts";
 import { mergeSlices, PAYEE_SOURCES, type AmountSlice, type PayeeScan, type PayeeSource, type SpellingAgg } from "./scan";
+import { st } from "@/lib/i18n/current";
 
 export type NamedCount = { id: number; name: string; count: number };
 
@@ -78,6 +79,8 @@ export type PayeeGroup = {
   bankOperation: string | null;
   /** P6.2 (76): a transfer between own accounts — the own account / card it mentions (masked description). */
   ownAccount: string | null;
+  /** P8 stage 10: the payee is only a payment channel (`OTPC2C`, `P24`, `MONODirect`…), not a merchant. */
+  channel?: string | null;
   /** Most recent transactions (when the scan kept samples). */
   samples?: Array<{ date: string; amount: number; currency: string | null; category: string | null }>;
 };
@@ -164,6 +167,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
     const vocab = opts.vocab ?? defaultVocabulary();
     const bc = brandCoreOfKey(acc.key, vocab);
     const bankOperation = spellings.map((s) => bankOperationOf(s.spelling, vocab)).find((x) => x != null) ?? null;
+    const channel = spellings.map((x) => channelOf(x.spelling)).find((x) => x != null) ?? null;
     const ownHit = opts.own ? spellings.map((s) => opts.own!.inText(s.spelling)).find((x) => x != null) : null;
     const ownAccount = ownHit ? describeOwnAccount(ownHit) : entity && opts.ownOfEntity ? opts.ownOfEntity(entity.id) : null;
     const samples = spellings.some((s) => s.samples)
@@ -194,6 +198,7 @@ export function buildPayeeGroups(scan: Pick<PayeeScan, "spellings">, opts: Build
       brand: { core: bc.core, removed: bc.removed, typeOnly: bc.typeOnly, hint: bc.hint },
       bankOperation,
       ownAccount,
+      channel,
       ...(samples ? { samples } : {}),
     });
   }
@@ -214,7 +219,7 @@ export { scoreKeys, type KeyScore };
 
 /** Groups that never take part in merchant clustering: no brand (only type words), a bank service row or an own transfer. */
 export function clusterable(g: PayeeGroup): boolean {
-  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null;
+  return Boolean(g.key) && !g.brand.typeOnly && g.bankOperation == null && g.ownAccount == null && !g.channel;
 }
 
 /** Score a pair of groups; null when they should not be clustered. */
@@ -292,7 +297,7 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
     if (!l.some((i) => groups[i].type.isPerson)) continue;
     for (let x = 1; x < l.length; x++) {
       if (groups[l[0]].key === groups[l[x]].key) continue;
-      edges.push({ a: l[0], b: l[x], confidence: 0.7, reason: "same person's name (word order or patronymic differ)", sameBrand: false });
+      edges.push({ a: l[0], b: l[x], confidence: 0.7, reason: st("srv.overview.samePerson"), sameBrand: false });
     }
   }
   // Strongest edges first so a component's weakest link is its confidence.
@@ -326,7 +331,7 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
     const reasons = new Set<string>();
     let confidence = 0.95;
     for (const g of members) {
-      for (const s of g.spellings.slice(1)) reasons.add(`same name: ${spellingDifferenceReason(g.spellings[0].spelling, s.spelling)}`);
+      for (const s of g.spellings.slice(1)) reasons.add(st("srv.overview.sameName", { why: spellingDifferenceReason(g.spellings[0].spelling, s.spelling) }));
     }
     for (const e of compEdges.get(root) ?? []) {
       reasons.add(e.reason);
@@ -342,9 +347,9 @@ export function buildPayeeClusters(groups: readonly PayeeGroup[], opts: { vocab?
       reasons: [...reasons],
       needsDecision: Boolean(person || brandEdge),
       decisionReason: person
-        ? `Looks like a ${person.type.type === "sole_proprietor" ? "sole proprietor (ФОП)" : "private person"} (${person.type.reason}); people are never merged automatically.`
+        ? st(person.type.type === "sole_proprietor" ? "srv.overview.looksSoleProprietor" : "srv.overview.looksPerson", { reason: person.type.reason })
         : brandEdge
-          ? `Різні бренд-токени («${groups[brandEdge.a].brand.core}» / «${groups[brandEdge.b].brand.core}»): назви лише схожі, автоматично не зливаються.`
+          ? st("srv.overview.brandDiffers", { a: groups[brandEdge.a].brand.core, b: groups[brandEdge.b].brand.core })
           : null,
       // P6.2: across every member's spellings, so one mixed-case spelling anywhere wins over ALL CAPS.
       suggestedName: canonicalSpelling(lead.spellings, { mixedOnly: true }) || canonicalSpelling(members.flatMap((g) => g.spellings), { mixedOnly: true }) || lead.suggestedName,

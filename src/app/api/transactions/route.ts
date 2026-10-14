@@ -289,7 +289,10 @@ export async function GET(request: NextRequest) {
   }
 
   // FK filter is SQL-side, so it's NOT a postDecryptFilter — paginate normally.
-  const postDecryptFilter = search || tag || hasMultiTagFilter || hasEncryptedSubstringFilter || identifier;
+  // P8 stage 2: a Merchants directory entry / merchant type, resolved after decryption.
+  const merchantFilter = Number(params.get("merchant") ?? "") || undefined;
+  const merchantTypeFilter = Number(params.get("merchantType") ?? "") || undefined;
+  const postDecryptFilter = search || tag || hasMultiTagFilter || hasEncryptedSubstringFilter || identifier || merchantFilter || merchantTypeFilter;
   const filters: TxSortFilter = {
     id: idFilter,
     startDate: params.get("startDate") ?? undefined,
@@ -417,6 +420,23 @@ export async function GET(request: NextRequest) {
       .filter((r): r is NonNullable<typeof r> => r != null);
   }
 
+  let merchantSummary: { count: number; totals: Record<string, number>; truncated: boolean } | undefined;
+  if (merchantFilter || merchantTypeFilter) {
+    const { makeMerchantResolver } = await import("@/lib/rules/merchant-context");
+    const resolve = await makeMerchantResolver(db, userId, dek);
+    decrypted = decrypted.filter((r) => {
+      const m = resolve(r.payee);
+      return (!merchantFilter || m.entityId === merchantFilter) && (!merchantTypeFilter || m.typeId === merchantTypeFilter);
+    });
+    const totals: Record<string, number> = {};
+    for (const r of decrypted) {
+      const cur = String((r as { currency?: string | null }).currency ?? "");
+      totals[cur] = Math.round(((totals[cur] ?? 0) + Number((r as { amount?: number }).amount ?? 0)) * 100) / 100;
+    }
+    // The post-decrypt window is the newest 1000 rows (as for search).
+    merchantSummary = { count: decrypted.length, totals, truncated: rawRows.length >= 1000 };
+  }
+
   if (tag) {
     const hasTag = exactTagMatcher(tag);
     decrypted = decrypted.filter((r) => hasTag(r.tags));
@@ -474,7 +494,7 @@ export async function GET(request: NextRequest) {
     total = await getTransactionCount(userId, filters);
   }
 
-  return NextResponse.json({ data: decrypted, total });
+  return NextResponse.json({ data: decrypted, total, ...(merchantSummary ? { merchantSummary } : {}) });
 }
 
 /**
@@ -939,6 +959,11 @@ export async function PUT(request: NextRequest) {
       }
     } catch {
       /* best-effort — never block the edit */
+    }
+    // P8 stage 10 (B33): the import hint applies to an edited payee too.
+    if (typeof data.payee === "string" && data.payee && auth.dek) {
+      const { canonicalPayeeHint } = await import("@/lib/payees/import-assist");
+      data.payee = (await canonicalPayeeHint(db, auth.userId, auth.dek, data.payee).catch(() => null)) ?? data.payee;
     }
     const encrypted = encryptTxWrite(auth.dek, data);
     const tx = await updateTransaction(id, auth.userId, encrypted, auth.dek);

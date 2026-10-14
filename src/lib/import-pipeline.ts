@@ -10,7 +10,7 @@ import {
   type ExactDuplicateMatchInfo,
 } from "./import-hash";
 import { upsertBankTransaction, type BankLedgerSource } from "./bank-ledger";
-import { applyRulesToBatch, type TransactionRule } from "./auto-categorize";
+import { applyRulesToBatch, type TransactionInput, type TransactionRule } from "./auto-categorize";
 import { computePureActionPatch } from "./rules/execute";
 import { decryptRuleFields } from "./rules/crypto";
 import type { ConditionGroup, Action } from "./rules/schema";
@@ -693,8 +693,13 @@ export async function executeImport(
         // `account.is/is_not` predicates trivially fail here and the row falls
         // through to the user at approve-time — accepted tradeoff (the row is
         // still safely importable; user resolves at /import/pending).
-        const results = applyRulesToBatch(
-          uncategorized.map((r) => ({
+        const { withMerchantContext, recordRuleHits } = await import("@/lib/rules/merchant-context");
+        const inputs = await withMerchantContext({
+          executor: db,
+          userId,
+          dek: userDek,
+          rules: activeRules,
+          inputs: uncategorized.map((r): TransactionInput => ({
             payee: r.payee,
             amount: r.amount,
             tags: r.tags,
@@ -703,10 +708,12 @@ export async function executeImport(
             accountId: null,
             enteredCurrency: r.enteredCurrency ?? r.currency ?? null,
           })),
-          activeRules,
-        );
+        });
+        const results = applyRulesToBatch(inputs, activeRules);
+        const hits: number[] = [];
         for (const { index, match } of results) {
           if (!match) continue;
+          hits.push(match.rule.id);
           const row = uncategorized[index];
           const patch = computePureActionPatch(match.actions);
           if (patch.categoryId != null) row.categoryId = patch.categoryId;
@@ -715,6 +722,7 @@ export async function executeImport(
           if (patch.enteredCurrency != null) row.enteredCurrency = patch.enteredCurrency;
           if (patch.portfolioHoldingId != null) row.portfolioHoldingId = patch.portfolioHoldingId;
         }
+        await recordRuleHits(db, userId, hits);
       }
     }
   } catch {

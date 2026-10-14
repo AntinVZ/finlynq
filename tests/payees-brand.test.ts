@@ -80,7 +80,7 @@ describe("type words leave the brand", () => {
     const clusters = buildPayeeClusters(buildPayeeGroups(fakeScan(["Кафе Мандарин", "Кафе Мандарина"])));
     expect(clusters).toHaveLength(1);
     expect(clusters[0].needsDecision).toBe(true);
-    expect(clusters[0].decisionReason).toMatch(/Різні бренд-токени/);
+    expect(clusters[0].decisionReason).toMatch(/Different brand tokens/);
   });
 
   it("user words extend the vocabulary; switched-off defaults stop counting", () => {
@@ -101,7 +101,7 @@ describe("type words leave the brand", () => {
   it("explain names the stripped word, the core and the brand token", () => {
     const x = explainPayeePair("Ресторан Дача", "Ресторан Липки");
     expect(x.verdict).toBe("separate");
-    expect(x.a.brandLine).toBe(`стоп-слово прибрано: ресторан; ядро: ${payeeMatchKey("Дача")}; бренд-токен: ${payeeMatchKey("Дача")}`);
+    expect(x.a.brandLine).toBe(`stop word removed: ресторан; core: ${payeeMatchKey("Дача")}; brand token: ${payeeMatchKey("Дача")}`);
   });
 });
 
