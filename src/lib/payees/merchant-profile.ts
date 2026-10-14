@@ -10,6 +10,8 @@ import { sql } from "drizzle-orm";
 import { normalizeDbRows } from "@/lib/db-utils";
 import { payeeMatchKey } from "./match-key";
 import { addSlice, decodeStoredPayee, spellingOf, type AmountSlice, type PayeeExecutor } from "./scan";
+import { detectRecurrence } from "./insights";
+import { quantile } from "./merchant-analytics";
 
 export type MerchantKpis = {
   currency: string;
@@ -27,6 +29,21 @@ export type MerchantKpis = {
   recent: Array<{ id: number; date: string; amount: number; currency: string | null; account: string | null; category: string | null; payee: string }>;
   /** P8 stage 10: rows of this entry with no category yet (any date) — «apply the default category to N». */
   uncategorized: number;
+  /**
+   * P8 stage 2: what stands out over the window, from the entry's own rows
+   * only — a regular cadence and the next expected date, the typical payment
+   * range (Q1–Q3) and how many payments were above Q3 + 1.5·IQR. Null when
+   * there are too few rows to say anything.
+   */
+  insights: {
+    cadence: string | null;
+    intervalDays: number | null;
+    nextExpected: string | null;
+    typicalLow: number;
+    typicalHigh: number;
+    largeCount: number;
+    largeThreshold: number;
+  } | null;
   /** Stopped at the scan limit. */
   truncated: boolean;
 };
@@ -69,6 +86,7 @@ export async function loadMerchantKpis(opts: {
   const from = `${window[0]}-01`;
   const byMonth = new Map<string, Map<string, AmountSlice>>(window.map((m) => [m, new Map()]));
   const perRow: number[] = [];
+  const rowDates: string[] = [];
   let count = 0;
   let lastDate: string | null = null;
   type Recent = MerchantKpis["recent"][number];
@@ -119,6 +137,7 @@ export async function loadMerchantKpis(opts: {
         const one = new Map<string, AmountSlice>();
         addSlice(one, amount, currency, reporting, reportingCurrency);
         perRow.push(Math.abs(opts.convert([...one.values()])));
+        rowDates.push(date);
         count++;
       }
       scanned += page.length;
@@ -142,6 +161,34 @@ export async function loadMerchantKpis(opts: {
     months,
     recent,
     uncategorized,
+    insights: merchantInsights(perRow, rowDates),
     truncated,
+  };
+}
+
+function addDays(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+/** See `MerchantKpis.insights`. Exported for tests. */
+export function merchantInsights(amounts: readonly number[], dates: readonly string[]): MerchantKpis["insights"] {
+  if (amounts.length < 3) return null;
+  const sorted = [...amounts].sort((a, b) => a - b);
+  const q1 = quantile(sorted, 0.25);
+  const q3 = quantile(sorted, 0.75);
+  const threshold = q3 + 1.5 * (q3 - q1);
+  // With ≥4 payments a «large» one means something; fewer only shows the range.
+  const largeCount = amounts.length >= 4 && threshold > 0 ? amounts.filter((a) => a > threshold).length : 0;
+  const rec = detectRecurrence([...dates]);
+  return {
+    cadence: rec?.cadence ?? null,
+    intervalDays: rec?.intervalDays ?? null,
+    nextExpected: rec ? addDays(rec.last, rec.intervalDays) : null,
+    typicalLow: round2(q1),
+    typicalHigh: round2(q3),
+    largeCount,
+    largeThreshold: round2(threshold),
   };
 }

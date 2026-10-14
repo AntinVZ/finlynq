@@ -211,4 +211,65 @@ describeDb("P8 Merchants search, queue and page numbers (seeded DB)", () => {
     const after = (await db.execute(sql`SELECT import_hash FROM staged_transactions WHERE staged_import_id = ${seed.stagedImportId} ORDER BY row_index`) as unknown as { rows: Array<{ import_hash: string }> }).rows;
     expect(after).toEqual(before);
   });
+
+  it("stage 2: overview cards — coverage, uncovered top, new merchants, a large check, duplicates; channels stay out", async () => {
+    const { db } = await import("@/db");
+    await op({ op: "create", name: "Rozetka", apply: false, merchantType: { group: "Маркетплейси", name: "Маркетплейси" } });
+    for (const d of ["2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10"]) await addTx("Rozetka", d, -100);
+    await addTx("Rozetka", "2026-09-20", -5000);
+    await addTx("Rozetka", "2026-09-21", -100);
+    await addTx("Rozetka", "2026-09-21", -100);
+    await addTx("ZZ NEW SHOP", "2026-10-01", -700);
+    await addTx("P24 777", "2026-10-02", -900);
+    const { computeOverviewCards } = await import("@/lib/payees/overview-cards");
+    const { matcherFor } = await import("@/lib/payees/resolve-hint");
+    const { loadOwnMatcher } = await import("@/lib/payees/own-accounts");
+    const cards = await computeOverviewCards({
+      executor: db, userId: seed.userId, dek: TEST_DEK,
+      matcher: await matcherFor({ executor: db, userId: seed.userId, dek: TEST_DEK }),
+      own: await loadOwnMatcher(db, seed.userId, TEST_DEK),
+      convert: (slices) => slices.reduce((n, sl) => n + sl.totalAmount, 0), currency: "UAH",
+      period: "30d", today: "2026-10-12",
+    });
+    expect(cards.from).toBe("2026-09-13");
+    expect(cards.coverage.rows).toBeGreaterThanOrEqual(4);
+    expect(cards.coverage.covered).toBeGreaterThanOrEqual(3);
+    expect(cards.coverage.pct).toBeGreaterThan(0);
+    expect(cards.topUncovered.some((u) => u.name === "ZZ NEW SHOP")).toBe(true);
+    expect(JSON.stringify(cards)).not.toContain("P24 777");
+    expect(cards.largeChecks.find((l) => l.name === "Rozetka")).toMatchObject({ amount: -5000, date: "2026-09-20" });
+    expect(cards.duplicates.items.some((d) => d.name === "Rozetka" && d.date === "2026-09-21")).toBe(true);
+    expect(cards.newMerchants.some((m) => m.name === "Rozetka")).toBe(false);
+  });
+
+  it("stage 2: the merchant page insights and Reports by merchant type", async () => {
+    const { merchantInsights } = await import("@/lib/payees/merchant-profile");
+    const ins = merchantInsights([100, 100, 100, 100, 900], ["2026-05-10", "2026-06-10", "2026-07-10", "2026-08-10", "2026-09-10"]);
+    expect(ins).toMatchObject({ cadence: "monthly", typicalLow: 100, typicalHigh: 100, largeCount: 1 });
+    expect(ins!.nextExpected! > "2026-10-05").toBe(true);
+    expect(merchantInsights([1, 2], ["2026-01-01", "2026-02-01"])).toBeNull();
+
+    const { db } = await import("@/db");
+    const { createCategory } = await import("./helpers/portfolio-fixtures");
+    const cat = await createCategory({ userId: seed.userId, name: "Покупки", type: "E" });
+    await op({ op: "create", name: "Rozetka", apply: false, merchantType: { group: "Маркетплейси", name: "Маркетплейси" } });
+    await addTx("Rozetka", "2026-09-10", -300);
+    await addTx("ZZ OTHER", "2026-09-11", -50);
+    await db.execute(sql`UPDATE transactions SET category_id = ${cat} WHERE user_id = ${seed.userId} AND date IN ('2026-09-10', '2026-09-11')`);
+    const { loadMerchantTypeRows } = await import("@/lib/reports/merchant-type-breakdown");
+    const { matcherFor } = await import("@/lib/payees/resolve-hint");
+    const { loadMerchantTypes } = await import("@/lib/payees/merchant-types");
+    const out = await loadMerchantTypeRows({
+      executor: db, userId: seed.userId, dek: TEST_DEK,
+      matcher: await matcherFor({ executor: db, userId: seed.userId, dek: TEST_DEK }),
+      types: await loadMerchantTypes(db, seed.userId),
+      periodSql: sql`to_char(transactions.date::date, 'YYYY-MM')`,
+      where: sql`transactions.user_id = ${seed.userId} AND transactions.date >= '2026-09-01' AND transactions.date <= '2026-09-30'`,
+      label: (t) => t.group,
+    });
+    const typed = out.rows.find((r) => r.amount === -300);
+    expect(typed).toMatchObject({ label: "Маркетплейси", categoryType: "E", period: "2026-09" });
+    expect(typed!.typeId).toBeGreaterThan(0);
+    expect(out.rows.find((r) => r.amount === -50)).toMatchObject({ label: null, typeId: null });
+  });
 });

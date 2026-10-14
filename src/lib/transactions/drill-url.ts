@@ -34,6 +34,8 @@ const ALLOWED_KEYS: ReadonlySet<keyof TxFilters> = new Set([
   "categoryId",
   "search",
   "identifier",
+  "merchant",
+  "merchantType",
   "portfolioHolding",
   "tag",
   "tags_all",

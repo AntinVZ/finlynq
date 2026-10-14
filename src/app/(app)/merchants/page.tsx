@@ -54,6 +54,7 @@ import { isPersonsMerchantGroup, PERSONS_MERCHANT_GROUP } from "@/lib/payees/pay
 import { groupMerchantTypes, localizedType, merchantTypeLabel, MerchantTypesEditor, PayeeTypeLabel, SetMerchantTypeDialog } from "./_components/merchant-type-ui";
 import { OpDialog, describeRows, type OpPreview } from "./_components/op-dialog";
 import { InsightsPanel } from "./_components/insights-panel";
+import { MerchantsOverviewCards } from "./_components/overview-cards";
 import { StudioSettingsDialog, WordListsSection } from "./_components/settings-dialog";
 import { SuspiciousPanel } from "./_components/suspicious-panel";
 import { OwnAccountsPanel } from "./_components/own-accounts-panel";
@@ -837,6 +838,18 @@ function MerchantsSection() {
     body = (
       <div className="space-y-6">
         {summary}
+        <MerchantsOverviewCards
+          start={{ hasDirectory: entities.length > 0, typedAll: entities.length > 0 && entities.every((e) => e.merchantType), hintOn: !!data?.settings.importHint }}
+          onOpen={(to) =>
+            to === "settings"
+              ? setSettingsOpen(true)
+              : to === "queue"
+                ? go({ tab: "queue", view: "unrecognized" })
+                : to === "suspicious"
+                  ? go({ tab: "queue", view: "suspicious" })
+                  : go({ tab: "directory", view: "entries", f: "untyped" })
+          }
+        />
         <InsightsPanel />
       </div>
     );

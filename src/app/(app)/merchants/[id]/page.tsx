@@ -39,6 +39,7 @@ import { RequisitesCard, type Requisite } from "../_components/requisites-card";
 import { MerchantTypeSelect, merchantTypeLabel, PayeeTypeLabel, type MerchantTypeOption, type MerchantTypeRef } from "../_components/merchant-type-ui";
 import { useStudioT } from "../_components/i18n";
 import { MerchantRulesCard } from "../_components/merchant-rules-card";
+import { CADENCE_KEY } from "../_components/overview-cards";
 import type { StudioTextKey } from "@/lib/payees/i18n";
 
 type Alias = { id: number; pattern: string; mode: string; source: string };
@@ -64,6 +65,7 @@ type EntityResponse = {
     months: Array<{ month: string; total: number }>;
     recent: Array<{ id: number; date: string; amount: number; currency: string | null; account: string | null; category: string | null; payee: string }>;
     uncategorized?: number;
+    insights?: { cadence: string | null; intervalDays: number | null; nextExpected: string | null; typicalLow: number; typicalHigh: number; largeCount: number; largeThreshold: number } | null;
     truncated: boolean;
   };
 };
@@ -198,7 +200,7 @@ export default function PayeeEntityPage() {
             }>
             {t("common.edit")}
           </Button>
-          <Link href={buildTxDrillUrl({ search: e.name })}>
+          <Link href={buildTxDrillUrl({ merchant: String(e.id) })}>
             <Button size="sm" variant="outline">{t("common.transactions")}</Button>
           </Link>
           <Button
@@ -256,6 +258,21 @@ export default function PayeeEntityPage() {
             ) : (
               <p className="text-xs text-muted-foreground">{t("profile.kpi.none")}</p>
             )}
+            {data.kpis.insights && (
+              <ul className="space-y-0.5 text-xs" aria-label={t("profile.insight.title")} data-testid="merchant-insights">
+                {data.kpis.insights.cadence && data.kpis.insights.nextExpected && CADENCE_KEY[data.kpis.insights.cadence] && (
+                  <li>{t("profile.insight.cadence", { cadence: t(CADENCE_KEY[data.kpis.insights.cadence]), date: formatDate(data.kpis.insights.nextExpected) })}</li>
+                )}
+                <li className="text-muted-foreground">
+                  {t("profile.insight.range", { low: formatCurrency(data.kpis.insights.typicalLow, data.kpis.currency), high: formatCurrency(data.kpis.insights.typicalHigh, data.kpis.currency) })}
+                </li>
+                <li className={data.kpis.insights.largeCount ? "text-amber-600 dark:text-amber-400" : "text-muted-foreground"}>
+                  {data.kpis.insights.largeCount
+                    ? t("profile.insight.large", { n: data.kpis.insights.largeCount, threshold: formatCurrency(data.kpis.insights.largeThreshold, data.kpis.currency) })
+                    : t("profile.insight.noLarge")}
+                </li>
+              </ul>
+            )}
             {data.kpis.truncated && <p className="text-xs text-amber-600 dark:text-amber-400">{t("profile.kpi.truncated")}</p>}
           </CardContent>
         </Card>
@@ -278,7 +295,7 @@ export default function PayeeEntityPage() {
                 </li>
               ))}
             </ul>
-            <Link href={buildTxDrillUrl({ search: e.name })} className="mt-2 inline-block text-xs underline">
+            <Link href={buildTxDrillUrl({ merchant: String(e.id) })} className="mt-2 inline-block text-xs underline">
               {t("profile.allTransactions")}
             </Link>
           </CardContent>

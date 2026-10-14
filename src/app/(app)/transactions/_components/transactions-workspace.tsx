@@ -37,6 +37,7 @@ import { TransactionsCalendar, describeCalendarSelection, refreshTransactionsCal
 import { buildTransactionQuery } from "@/lib/transactions/build-query";
 import { toTagList } from "@/lib/tags";
 import useSWR from "swr";
+import { MerchantFilters } from "./merchant-filters";
 import { jsonFetcher } from "@/lib/swr";
 import { usePageScope, PageScopeControl } from "@/components/page-scope";
 import { buildTxDrillUrl } from "@/lib/transactions/drill-url";
@@ -129,6 +130,8 @@ export function TransactionsWorkspace({
     categoryId: "",
     search: "",
     identifier: "",
+    merchant: "",
+    merchantType: "",
     portfolioHolding: "",
     tag: "",
     tags_all: "",
@@ -226,6 +229,8 @@ export function TransactionsWorkspace({
       categoryId: urlParams.get("categoryId") ?? "",
       search: urlParams.get("search") ?? "",
       identifier: urlParams.get("identifier") ?? "",
+      merchant: urlParams.get("merchant") ?? "",
+      merchantType: urlParams.get("merchantType") ?? "",
       portfolioHolding: urlParams.get("portfolioHolding") ?? "",
       tag: urlParams.get("tag") ?? "",
       tags_all: urlParams.get("tags_all") ?? "",
@@ -250,7 +255,7 @@ export function TransactionsWorkspace({
   // Main list (txns / total / loading) + loadTxns — extracted to
   // useTransactions (FINLYNQ-111 Phase 2). Same deps, fetch URL, {data,total}
   // unwrap, and driving effect; `page` is owned by the page-level state above.
-  const { txns, total, loading, limit, loadTxns } = useTransactions(
+  const { txns, total, merchantSummary, loading, limit, loadTxns } = useTransactions(
     listFilters,
     sortPref,
     colFilters,
@@ -364,7 +369,7 @@ export function TransactionsWorkspace({
     setSearchInput("");
     setIdentifierInput("");
     // When locked, keep the account scope — only the OTHER filters clear.
-    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", identifier: "", portfolioHolding: "", tag: "", tags_all: "", tags_any: "", tags_none: "", untagged: "" });
+    setFilters({ id: "", startDate: "", endDate: "", accountId: locked ? String(lockedAccountId) : "", categoryId: "", search: "", identifier: "", merchant: "", merchantType: "", portfolioHolding: "", tag: "", tags_all: "", tags_any: "", tags_none: "", untagged: "" });
     // Issue #59 — also wipe the per-column filters + sort. The chip row
     // below the top-bar shows both, so "Clear all" should drop both.
     setColFilters([]);
@@ -395,6 +400,8 @@ export function TransactionsWorkspace({
   const hasTextSearchFilter =
     !!filters.search ||
     !!filters.identifier ||
+    !!filters.merchant ||
+    !!filters.merchantType ||
     !!filters.tag ||
     hasMultiTagFilter ||
     colFilters.some((f) => f.type === "text");
@@ -964,6 +971,12 @@ export function TransactionsWorkspace({
               size="sm"
               className="h-8 w-44 text-xs"
             />
+            <MerchantFilters
+              merchant={filters.merchant}
+              merchantType={filters.merchantType}
+              summary={merchantSummary}
+              onChange={(patch) => { setFilters({ ...filters, ...patch }); setPage(0); }}
+            />
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={
@@ -998,7 +1011,7 @@ export function TransactionsWorkspace({
                 </DropdownMenuGroup>
               </DropdownMenuContent>
             </DropdownMenu>
-            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.identifier || filters.portfolioHolding || filters.tag || hasMultiTagFilter || colFilters.length > 0 || sortPref.columnId) && (
+            {(filters.id || filters.startDate || filters.endDate || (!locked && filters.accountId) || filters.categoryId || filters.search || filters.identifier || filters.merchant || filters.merchantType || filters.portfolioHolding || filters.tag || hasMultiTagFilter || colFilters.length > 0 || sortPref.columnId) && (
               <button onClick={clearFilters} className="text-xs text-muted-foreground hover:text-foreground flex items-center gap-1 transition-colors ml-1">
                 <X className="h-3 w-3" /> Clear all
               </button>

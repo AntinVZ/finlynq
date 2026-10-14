@@ -28,6 +28,9 @@ export type TxFilters = {
   search?: string;
   /** Payee Studio P5g: a requisite (IBAN / card in any form / ІПН / ЄДРПОУ). */
   identifier?: string;
+  /** P8 stage 2: a Merchants directory entry id / merchant type id. */
+  merchant?: string;
+  merchantType?: string;
   portfolioHolding?: string;
   tag?: string;
   // Multi-tag filter (whole tags; comma lists). `untagged` is "true" or empty.
@@ -95,6 +98,8 @@ export function buildTransactionQuery(
   if (filters.categoryId) params.set("categoryId", filters.categoryId);
   if (filters.search) params.set("search", filters.search);
   if (filters.identifier) params.set("identifier", filters.identifier);
+  if (filters.merchant) params.set("merchant", filters.merchant);
+  if (filters.merchantType) params.set("merchantType", filters.merchantType);
   if (filters.portfolioHolding) params.set("portfolioHolding", filters.portfolioHolding);
   if (filters.tag) params.set("tag", filters.tag);
   if (filters.tags_all) params.set("tags_all", filters.tags_all);
